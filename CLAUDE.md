@@ -25,6 +25,11 @@ with a `src/stacscope/` package skeleton matching the architecture plan's tree
 verifies the toolchain. **No application code exists yet.**
 
 **The next task is Milestone 1** (actor core + simulated DAQ timing, test-first).
+Its twelve acceptance tests are listed in the architecture plan under
+"Milestone 1"; they are the spec. Before writing code, read the plan's
+sections on the actor core, the timing FSM and the transports, then propose a
+test order to the user and get agreement. Each test goes red before its
+implementation goes green.
 
 ## Read these first, in this order
 

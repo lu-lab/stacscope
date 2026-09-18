@@ -1,13 +1,16 @@
-# SPIM Engine — orientation
+# STACScope — orientation
 
 Read this before touching anything. It is written for a fresh session.
 
 ## What this project is
 
-A Python reimplementation of the control software for a custom light-sheet
-(SPIM) microscope. The original is a LabVIEW Actor Framework application
-described in thesis Chapter 3; it works, but is being replaced for the reasons
-that chapter's §3.6 gives.
+**STACScope** — *Synchronous Timing, Asynchronous Control & Streaming* — (package
+and import name `stacscope`, source in `src/stacscope/`) is a Python
+reimplementation of the control software for a custom light-sheet
+(SPIM) microscope, meant to generalize to other microscopes. The original is a
+LabVIEW Actor Framework application described in thesis Chapter 3; it works, but
+is being replaced for the reasons that chapter's §3.6 gives. Older notes under
+`reference/` call it the "SPIM engine" — same project.
 
 **The user is the original author** of both the instrument and the thesis. They
 have deep domain knowledge of the optics, the hardware timing, and the design
@@ -16,11 +19,12 @@ have you guess.
 
 ## Current state
 
-Planning is complete. **No application code exists yet.** The tracked repo holds
-only this file and `.gitignore`; everything else is local-only reference
-material under `reference/`.
+Planning is complete and the development environment is set up: a uv project
+with a `src/stacscope/` package skeleton matching the architecture plan's tree
+(empty `__init__.py` stubs, no logic) and `tests/unit/test_environment.py`, which
+verifies the toolchain. **No application code exists yet.**
 
-**The next task is: set up the development environment, then Milestone 1.**
+**The next task is Milestone 1** (actor core + simulated DAQ timing, test-first).
 
 ## Read these first, in this order
 
@@ -35,20 +39,20 @@ the user for a copy if it is missing.
 3. **`reference/notes/claude-workflow-notes.md`** — process lessons, including
    the **hardware safety** section. Read that section before running anything on
    the instrument machine.
-4. **`reference/thesis/ch3.pdf`** — authoritative for design intent. Section
-   numbers cited throughout the plan refer to it.
+4. **`reference/thesis/ch3.md`** — authoritative for design intent. A Markdown
+   conversion of the author's `chapter3.tex` (same folder); `ch3.pdf` is the
+   typeset original, and section numbers cited throughout the plan refer to it.
 5. **`reference/legacy/`** — the original LabVIEW, Jupyter and µManager tree.
    Read-only reference, never a build target.
 
 Do not re-derive these. They took full sessions to produce.
 
-### Reading the thesis PDF
+### Reading the thesis
 
-There is no `pdftotext`/poppler on this machine, so the Read tool cannot render
-it. Perl with `Compress::Zlib` works — inflate the content streams and filter to
-lines that are mostly letters. Embedded font binaries are interleaved with the
-prose and must be filtered out. Spaces are stripped by this method; the text is
-still readable as concatenated words.
+Read `ch3.md`. The PDF is hard to use here: there is no `pdftotext`/poppler on
+this machine and its text is in CID fonts, so plain stream extraction fails.
+Fall back to `chapter3.tex` if the Markdown seems to have lost something (its
+figures are summarized from captions, and citations are dropped).
 
 ## Working agreements
 
@@ -74,11 +78,15 @@ These come from the user directly and override default behaviour.
 
 ## Environment
 
-- **Nothing is installed on this machine** — no `python`, `python3`, `py`,
-  `conda` or `uv`. This is the development box, not the control PC.
-- Target is **uv** with **Python 3.14 free-threaded (`3.14t`)**. Verify
-  `pydantic-core` free-threaded wheels and ctypes behaviour at first install; if
-  either fails, fall back to standard 3.14. The code must be correct on both.
+- This is the development box, not the control PC. **uv** is installed, with
+  both CPython 3.14 and 3.14 free-threaded; `.python-version` pins
+  `3.14+freethreaded`. Run everything through `uv run` (e.g. `uv run pytest`).
+- A `VIRTUAL_ENV` pointing at miniconda makes uv print a mismatch warning. It is
+  harmless — uv uses the project's `.venv`.
+- **Python 3.14 free-threaded (`3.14t`)** is the target. `pydantic-core`'s
+  free-threaded wheel and ctypes behaviour were verified at first install and
+  are pinned by `tests/unit/test_environment.py`. Standard 3.14 remains the
+  fallback, and the code must be correct on both.
 - The test suite must pass green with **zero hardware and zero vendor SDKs**.
 - **CI runs Linux and Windows.** The instrument is Windows, but the core and
   especially buffer management must stay OS-agnostic, and only CI keeps that

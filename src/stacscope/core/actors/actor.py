@@ -129,7 +129,7 @@ class Actor:
                 else:
                     self.exit_error.add_note(f"teardown also failed: {exc!r}")
             finally:
-                for watch in self._children:
+                for watch in list(self._children):
                     watch.close()
                 self.stopped.set()
 
@@ -166,7 +166,11 @@ def spawn(
 
     watch = None
     if parent is not None:
-        watch = ChildWatch(parent.ref, ref)
+        def release() -> None:
+            parent._child_names.discard(name)
+            parent._children.remove(watch)
+
+        watch = ChildWatch(parent.ref, ref, release)
         parent._children.append(watch)
         if heartbeat is not None:
             watch.start_heartbeat(heartbeat, actor.clock)

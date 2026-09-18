@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from stacscope.core.actors import (
+    Accepted,
     Actor,
     ActorRef,
     AskTimeout,
@@ -24,10 +25,12 @@ from stacscope.core.actors import (
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
+    DeviceLaunched,
     DeviceReady,
     DeviceStopped,
     Finish,
     Go,
+    Relaunch,
     SourceFinished,
     SourcePhase,
     StartAcquisition,
@@ -70,7 +73,11 @@ class Coordinator(Actor):
       everyone, then reply ``AcquisitionStopped``.
     - A participant's ``ChildExited`` drops it from the registry. The
       source's is fatal: everyone is stopped and the Coordinator is Faulted,
-      refusing ``StartAcquisition`` from then on.
+      refusing ``StartAcquisition`` until the source is relaunched.
+    - ``Relaunch(name)``: spawn a fresh instance of a lost device from its
+      spec, when Idle or Faulted. Relaunching the source leaves Faulted. Never
+      automatic: when to relaunch is the user's call.
+    - Every launch is published as ``DeviceLaunched(name, ref)``.
     """
 
     def __init__(self, source: DeviceSpec, participants: Sequence[DeviceSpec]) -> None:
@@ -83,13 +90,21 @@ class Coordinator(Actor):
         self._stop_waiters: list[ActorRef] = []
 
     async def setup(self) -> None:
+        self._launch_source()
+        for spec in self._specs.values():
+            self._launch(spec)
+
+    def _launch_source(self) -> None:
         self.source = self._spawn(self._source_spec)
         self.source.tell(Subscribe(self.ref))
-        for spec in self._specs.values():
-            self.participants[spec.name] = self._spawn(spec)
+
+    def _launch(self, spec: DeviceSpec) -> None:
+        self.participants[spec.name] = self._spawn(spec)
 
     def _spawn(self, spec: DeviceSpec) -> ActorRef:
-        return self.spawn_child(spec.factory(), name=spec.name, heartbeat=spec.heartbeat)
+        ref = self.spawn_child(spec.factory(), name=spec.name, heartbeat=spec.heartbeat)
+        self.publish(DeviceLaunched(spec.name, ref))
+        return ref
 
     async def handle(self, msg: object) -> None:
         match msg:
@@ -104,6 +119,8 @@ class Coordinator(Actor):
                 if self.reply_to is not None:
                     self._stop_waiters.append(self.reply_to)
                 self.source.tell(Finish(), Priority.URGENT)
+            case Relaunch(name):
+                self._relaunch(name)
             case SourceFinished():
                 if self.state in (CoordinatorState.RUNNING, CoordinatorState.STOPPING):
                     await self._stop_everyone()
@@ -171,6 +188,25 @@ class Coordinator(Actor):
                 del self.participants[name]
                 reason = f"participant {name} exited: {error or 'clean stop'}"
                 self.publish(Fault(self.ref, reason, fatal=False))
+
+    def _relaunch(self, name: str) -> None:
+        if self._refuse(Relaunch(name), CoordinatorState.IDLE, CoordinatorState.FAULTED):
+            return
+        if name == self._source_spec.name:
+            if self.source is not None:
+                self._reject(f"{name} is running; only a lost device can be relaunched")
+                return
+            self._launch_source()
+            self.state = CoordinatorState.IDLE
+        elif name in self._specs:
+            if name in self.participants:
+                self._reject(f"{name} is running; only a lost device can be relaunched")
+                return
+            self._launch(self._specs[name])
+        else:
+            self._reject(f"no device named {name!r} is configured")
+            return
+        self.reply(Accepted())
 
     def _devices(self) -> list[tuple[DeviceSpec, ActorRef]]:
         devices = [(self._specs[name], ref) for name, ref in self.participants.items()]

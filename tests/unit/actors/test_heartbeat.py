@@ -99,3 +99,17 @@ async def test_child_that_dies_after_heartbeat_timeout_is_not_reported_twice():
     await clock.advance(5.0)
 
     assert len(parent.exits) == 1
+
+
+async def test_a_child_declared_dead_by_heartbeat_can_be_relaunched_under_its_name():
+    parent, clock = await _start(Idle())
+    parent.link.sever()
+    await clock.advance(1.5)
+    [exited] = parent.exits
+
+    name = exited.child.address.rsplit("/", 1)[-1]
+    replacement = parent.spawn_child(Idle(), name=name, heartbeat=POLICY)
+    await clock.advance(10.0)
+
+    assert replacement == exited.child, "same address: the relaunch takes its place"
+    assert len(parent.exits) == 1, "the replacement is alive and answering"

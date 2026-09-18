@@ -6,6 +6,8 @@ The LAST-ACK equivalent: it is what keeps the Coordinator's registry honest.
 import asyncio
 from dataclasses import dataclass
 
+import pytest
+
 from stacscope.core.actors import Actor, ChildExited, Priority, spawn
 
 
@@ -81,3 +83,44 @@ async def test_child_exited_jumps_the_parents_low_priority_queue():
     start, tick, exited = parent.handled
     assert (start, tick) == ("start", Tick(0))
     assert isinstance(exited, ChildExited)
+
+
+class Relauncher(Actor):
+    """Spawns a named child; when it exits, spawns a fresh one under the same
+    name — the relaunch path the Coordinator will use."""
+
+    def __init__(self, first: Actor, second: Actor):
+        super().__init__()
+        self.children = [first, second]
+        self.refs = []
+        self.error = None
+
+    async def setup(self):
+        self.refs.append(self.spawn_child(self.children[0], name="camera"))
+
+    async def handle(self, msg):
+        if isinstance(msg, ChildExited) and len(self.refs) == 1:
+            try:
+                self.refs.append(self.spawn_child(self.children[1], name="camera"))
+            except ValueError as exc:
+                self.error = exc
+            self.stop()
+
+
+async def test_a_dead_childs_name_is_free_for_a_relaunch():
+    parent = Relauncher(Doomed(), Quits())
+    spawn(parent, name="coordinator")
+    await asyncio.wait_for(parent.stopped.wait(), timeout=1)
+
+    assert parent.error is None
+    first, second = parent.refs
+    assert first.address == second.address == "coordinator/camera"
+
+
+async def test_a_live_childs_name_is_still_taken():
+    parent = Relauncher(Quits(), Quits())
+    spawn(parent, name="coordinator")
+    await asyncio.sleep(0)
+
+    with pytest.raises(ValueError):
+        parent.spawn_child(Quits(), name="camera")

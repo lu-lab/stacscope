@@ -1,6 +1,7 @@
 """Parent-side watch over one child: exit reporting and heartbeat liveness."""
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from stacscope.core.actors.ask import AskTimeout, ask
@@ -21,11 +22,17 @@ class HeartbeatPolicy:
 
 class ChildWatch:
     """Guarantees the parent receives exactly one ``ChildExited`` per child,
-    whether the child's exit or a missed heartbeat is noticed first."""
+    whether the child's exit or a missed heartbeat is noticed first.
 
-    def __init__(self, parent: ActorRef, child: ActorRef) -> None:
+    ``release`` runs just before ``ChildExited`` is sent: once the parent hears
+    a child is gone, its name is free for a relaunch. After a heartbeat death
+    the old incarnation may linger unreachable; it is simply never heard from.
+    """
+
+    def __init__(self, parent: ActorRef, child: ActorRef, release: Callable[[], None]) -> None:
         self._parent = parent
         self._child = child
+        self._release = release
         self._reported = False
         self._heartbeat: asyncio.Task[None] | None = None
 
@@ -37,6 +44,7 @@ class ChildWatch:
             return
         self._reported = True
         self._stop_heartbeat()
+        self._release()
         self._parent.tell(ChildExited(self._child, error), Priority.URGENT)
 
     def close(self) -> None:

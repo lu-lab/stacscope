@@ -10,6 +10,7 @@ from enum import Enum
 
 import numpy as np
 
+from stacscope.core.actors.ref import ActorRef
 from stacscope.core.protocol.registry import message
 
 # --- client → Coordinator ----------------------------------------------------
@@ -42,6 +43,30 @@ class AcquisitionStarted:
 @dataclass(frozen=True, slots=True)
 class AcquisitionStopped:
     """Reply to ``StopAcquisition``: output has ceased and every device stopped."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class Relaunch:
+    """Spawn a fresh instance of a lost device from its config. Replied
+    ``Accepted`` once spawned (a failed setup then arrives as a ``Fault``) or
+    ``Rejected``. Never sent by STACScope itself: when to relaunch is the
+    user's decision."""
+
+    name: str
+
+
+# --- Coordinator → its subscribers ---------------------------------------------
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class DeviceLaunched:
+    """A device was (re)launched; ``device`` is its current ref. Refs to a
+    previous incarnation reach nothing, so clients holding one refresh it."""
+
+    name: str
+    device: ActorRef
 
 
 # --- Coordinator ↔ every participant, the timing source included -------------

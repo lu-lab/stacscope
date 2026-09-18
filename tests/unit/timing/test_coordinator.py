@@ -7,11 +7,13 @@ may depend on the source being an AO board.
 import asyncio
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource, VirtualClock
-from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
+from stacscope.core.actors import Accepted, Actor, Fault, Rejected, Subscribe, ask, spawn
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
+    DeviceLaunched,
     Phase,
+    Relaunch,
     StartAcquisition,
     StopAcquisition,
 )
@@ -33,6 +35,20 @@ class Listener(Actor):
         return [m for m in self.heard if isinstance(m, Fault)]
 
 
+class Factory:
+    """Makes a fresh instance per launch: the n-th launch uses the n-th maker
+    (the last one repeats). Keeps every instance made."""
+
+    def __init__(self, *makers):
+        self.makers = makers
+        self.made = []
+
+    def __call__(self):
+        maker = self.makers[min(len(self.made), len(self.makers) - 1)]
+        self.made.append(maker())
+        return self.made[-1]
+
+
 class Rig:
     """A Coordinator with a simulated source and named simulated participants."""
 
@@ -50,16 +66,21 @@ class Rig:
 
     @staticmethod
     def _spec(name, instance):
-        return DeviceSpec(name=name, factory=lambda: instance, ready_timeout=READY_TIMEOUT)
+        factory = instance if isinstance(instance, Factory) else (lambda: instance)
+        return DeviceSpec(name=name, factory=factory, ready_timeout=READY_TIMEOUT)
 
     def request(self, msg):
         """Ask from a client, as a task: replies may need virtual time to pass."""
         return asyncio.create_task(ask(self.ref, msg, timeout=100.0, clock=self.clock))
 
-    async def start(self, cycles=-1):
-        starting = self.request(StartAcquisition(cycles, "run-01"))
+    async def call(self, msg):
+        """Ask and let the reply arrive, when no virtual time needs to pass."""
+        replying = self.request(msg)
         await self.clock.advance(0)
-        return await starting
+        return await replying
+
+    async def start(self, cycles=-1):
+        return await self.call(StartAcquisition(cycles, "run-01"))
 
 
 # --- C1 ------------------------------------------------------------------------
@@ -203,3 +224,97 @@ async def test_c5_losing_the_source_faults_the_coordinator():
     retry = rig.request(StartAcquisition(-1, "run-02"))
     await rig.clock.advance(0)
     assert isinstance(await retry, Rejected)
+
+
+# --- Relaunch: possible, never automatic -------------------------------------------
+#
+# When to relaunch is a decision for the user (a fault may be a hardware stop
+# they must deal with first). The Coordinator only makes it possible.
+
+
+class BrokenSource(SimulatedTimingSource):
+    async def setup(self):
+        raise RuntimeError("hardware still wedged")
+
+
+def failing_then_healthy_source():
+    return Factory(
+        lambda: SimulatedTimingSource(cycle_period=PERIOD, fail_on_cycle=2),
+        lambda: SimulatedTimingSource(cycle_period=PERIOD),
+    )
+
+
+async def test_faulted_is_reported_with_its_cause_and_nothing_relaunches_on_its_own():
+    source = failing_then_healthy_source()
+    rig = Rig(source=source, camera=SimulatedDevice())
+    await rig.start()
+    await rig.clock.advance(100.0)
+
+    assert rig.coordinator.state is CoordinatorState.FAULTED
+    assert len(source.made) == 1
+    [fatal] = [f for f in rig.listener.faults() if f.fatal]
+    assert "simulated source failure on cycle 2" in fatal.reason
+
+
+async def test_relaunching_the_source_recovers_from_faulted():
+    source = failing_then_healthy_source()
+    camera = SimulatedDevice()
+    rig = Rig(source=source, camera=camera)
+    await rig.start()
+    await rig.clock.advance(3.0)
+    assert rig.coordinator.state is CoordinatorState.FAULTED
+
+    assert await rig.call(Relaunch("source")) == Accepted()
+    assert rig.coordinator.state is CoordinatorState.IDLE
+    assert DeviceLaunched("source", rig.coordinator.source) in rig.listener.heard
+
+    assert await rig.start(cycles=2) == AcquisitionStarted()
+    await rig.clock.advance(5.0)
+
+    fresh = source.made[-1]
+    assert fresh is not source.made[0], "a relaunch uses a new instance"
+    assert fresh.calls.count("cycle") == 2
+    assert rig.coordinator.state is CoordinatorState.IDLE, "heard the new source finish"
+    assert camera.names() == ["start", "stop", "start", "stop"]
+
+
+async def test_a_relaunch_that_fails_returns_to_faulted_and_says_why():
+    source = Factory(
+        lambda: SimulatedTimingSource(cycle_period=PERIOD, fail_on_cycle=1),
+        BrokenSource,
+    )
+    rig = Rig(source=source, camera=SimulatedDevice())
+    await rig.start()
+    await rig.clock.advance(2.0)
+
+    assert await rig.call(Relaunch("source")) == Accepted()
+    await rig.clock.advance(0)
+
+    assert rig.coordinator.state is CoordinatorState.FAULTED
+    assert any(f.fatal and "hardware still wedged" in f.reason for f in rig.listener.faults())
+
+
+async def test_relaunching_a_lost_participant_brings_it_back_into_acquisitions():
+    shutter = Factory(lambda: SimulatedDevice(fail_in_setup=True), SimulatedDevice)
+    rig = Rig(camera=SimulatedDevice(), shutter=shutter)
+    await rig.clock.advance(0)
+    assert "shutter" not in rig.coordinator.participants
+
+    assert await rig.call(Relaunch("shutter")) == Accepted()
+    assert DeviceLaunched("shutter", rig.coordinator.participants["shutter"]) in rig.listener.heard
+
+    assert await rig.start() == AcquisitionStarted()
+    assert shutter.made[-1].names() == ["start"]
+
+
+async def test_relaunch_is_refused_unless_the_device_is_gone_and_nothing_is_running():
+    shutter = Factory(lambda: SimulatedDevice(fail_in_setup=True), SimulatedDevice)
+    rig = Rig(camera=SimulatedDevice(), shutter=shutter)
+    await rig.clock.advance(0)
+
+    for name in ("nonexistent", "camera", "source"):  # unknown, or alive
+        assert isinstance(await rig.call(Relaunch(name)), Rejected), name
+
+    await rig.start()
+    assert isinstance(await rig.call(Relaunch("shutter")), Rejected), "not mid-acquisition"
+    assert len(shutter.made) == 1

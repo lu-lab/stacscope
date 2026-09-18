@@ -4,6 +4,7 @@ from stacscope.core.actors.actor import Actor, spawn
 from stacscope.core.actors.ask import AskTimeout, ask
 from stacscope.core.actors.mailbox import Mailbox, Priority
 from stacscope.core.actors.messages import (
+    Accepted,
     ChildExited,
     Fault,
     Heartbeat,
@@ -16,6 +17,7 @@ from stacscope.core.actors.ref import ActorRef, Envelope, LocalTransport, Transp
 from stacscope.core.actors.supervision import HeartbeatPolicy
 
 __all__ = [
+    "Accepted",
     "Actor",
     "ActorRef",
     "AskTimeout",

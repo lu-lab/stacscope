@@ -31,6 +31,11 @@ _LEGAL = {
 }
 
 
+class NotReady(Exception):
+    """Raised by ``arm`` when the source cannot be armed; answered ``Rejected``
+    and the source stays Idle."""
+
+
 @dataclass(frozen=True, slots=True)
 class _NextCycle:
     """LOW-priority self-message sustaining Run. Never leaves this actor, so
@@ -63,7 +68,8 @@ class TimingSource(Actor):
     # --- hooks for implementations -----------------------------------------
 
     async def arm(self, root_filename: str, cycles: int) -> None:
-        """Prepare hardware so that ``warmup`` can start output immediately."""
+        """Prepare hardware so that ``warmup`` can start output immediately.
+        Raise ``NotReady`` to refuse."""
 
     async def disarm(self) -> None:
         """Undo ``arm`` without ever having produced output."""
@@ -88,7 +94,11 @@ class TimingSource(Actor):
             case StartDevice(root_filename, cycles):
                 if self._refuse(msg, Phase.IDLE):
                     return
-                await self.arm(root_filename, cycles)
+                try:
+                    await self.arm(root_filename, cycles)
+                except NotReady as exc:
+                    self._reject(str(exc))
+                    return
                 self._remaining = cycles
                 self._enter(Phase.ARMED)
                 self.reply(DeviceReady())

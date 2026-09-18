@@ -19,8 +19,8 @@ have you guess.
 
 ## Current state
 
-**Milestone 1 is in progress** (actor runtime + Coordinator + simulated timing
-source, test-first). Its acceptance tests are listed, in agreed order, in the
+**Milestone 1's spec tests are complete** (actor runtime + Coordinator +
+simulated timing source, test-first), on branch `milestone-1`. Its acceptance tests are listed, in agreed order, in the
 architecture plan under "Milestone 1"; they are the spec. The list was revised
 when the thesis's central timing actor was split into a `Coordinator` and a
 single configured `TimingSource`. The plan's "Coordinator and timing source"
@@ -33,11 +33,18 @@ section explains why.
   msgpack `Codec` in `core/transport/`. T1: the `TimingSource` base in
   `core/timing/` and `SimulatedTimingSource`, plus runtime publish/subscribe
   and the `Rejected` / `Fault` error messages. C1–C5: the `Coordinator` in
-  `core/timing/coordinator.py`, and `SimulatedDevice`.
-- **Next:** W1–W6 (`WaveformSource` over the `SignalOutput` port). Each test
-  goes red before its implementation goes green. Tests that pass on the first
-  implementation get a mutation check: break the code on purpose and confirm a
-  test fails. Each test
+  `core/timing/coordinator.py`, and `SimulatedDevice`. W1–W6: `WaveformSource`
+  (`core/timing/waveform.py`) over the `SignalOutput` port
+  (`core/ports/signal_output.py`), with `SimulatedSignalOutput` and its port
+  contract suite in `tests/contract/`. Plus end-to-end tests in
+  `tests/integration/`.
+- **Open before Milestone 2:** the W defaults (segment format, trigger lines as
+  DO rows, buffer depth as config) await the user's confirmation. Recovering
+  from the Faulted state is not designed. The Linux+Windows CI workflow awaits
+  a greenlight.
+- **Method:** each test goes red before its implementation goes green. Tests
+  that pass on the first implementation get a mutation check: break the code
+  on purpose and confirm a test fails. Each test
   goes red before its implementation goes green.
 
 Names follow the plan: `setup` / `run` / `teardown` hooks; "segment" for

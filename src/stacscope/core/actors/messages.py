@@ -49,6 +49,12 @@ class Unsubscribe:
 
 @message
 @dataclass(frozen=True, slots=True)
+class Accepted:
+    """Reply to a request that was carried out and has nothing else to say."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
 class Rejected:
     """Reply to a request the actor cannot honour in its current state."""
 

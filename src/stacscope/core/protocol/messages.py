@@ -8,6 +8,8 @@ are ``*Acquisition``; Coordinator → device messages are ``*Device``.
 from dataclasses import dataclass
 from enum import Enum
 
+import numpy as np
+
 from stacscope.core.protocol.registry import message
 
 # --- client → Coordinator ----------------------------------------------------
@@ -111,3 +113,28 @@ class SourcePhase:
 @dataclass(frozen=True, slots=True)
 class SourceFinished:
     """Hardware output has ceased."""
+
+
+# --- client → WaveformSource, directly (never through the Coordinator) ---------
+
+
+class Segment(Enum):
+    """The three waveform segments an AO source holds (§3.4.1's "buffers";
+    that word is reserved for the data flow)."""
+
+    WARMUP = "warmup"
+    MAIN = "main"
+    COOLDOWN = "cooldown"
+
+
+@message
+@dataclass(frozen=True, slots=True, eq=False)
+class SetSegment:
+    """Replace a segment. ``ao`` is AO channels × samples in volts; ``do`` is
+    DO lines × samples, boolean; both in the configured channel order and the
+    same length. A MAIN update mid-run takes effect at the next cycle boundary.
+    Replied ``Accepted`` or ``Rejected``."""
+
+    segment: Segment
+    ao: np.ndarray
+    do: np.ndarray

@@ -5,6 +5,7 @@ description = "Synchronous Timing, Asynchronous Control & Streaming for microsco
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "msgpack>=1.2.2",
     "numpy>=2.5.3",
     "pydantic>=2.13.5",
 ]
@@ -21,9 +22,12 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Virtual time never expires on its own: a missing reply would hang, not fail.
+timeout = 10
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pytest-timeout>=2.4.0",
 ]

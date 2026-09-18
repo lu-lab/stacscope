@@ -19,17 +19,30 @@ have you guess.
 
 ## Current state
 
-Planning is complete and the development environment is set up: a uv project
-with a `src/stacscope/` package skeleton matching the architecture plan's tree
-(empty `__init__.py` stubs, no logic) and `tests/unit/test_environment.py`, which
-verifies the toolchain. **No application code exists yet.**
+**Milestone 1 is in progress** (actor runtime + Coordinator + simulated timing
+source, test-first). Its acceptance tests are listed, in agreed order, in the
+architecture plan under "Milestone 1"; they are the spec. The list was revised
+when the thesis's central timing actor was split into a `Coordinator` and a
+single configured `TimingSource`. The plan's "Coordinator and timing source"
+section explains why.
 
-**The next task is Milestone 1** (actor core + simulated DAQ timing, test-first).
-Its twelve acceptance tests are listed in the architecture plan under
-"Milestone 1"; they are the spec. Before writing code, read the plan's
-sections on the actor core, the timing FSM and the transports, then propose a
-test order to the user and get agreement. Each test goes red before its
-implementation goes green.
+- **Done:** R1–R5, the actor runtime in `src/stacscope/core/actors/` (priority
+  mailbox, `ask`, lifecycle, supervision, heartbeat, hierarchical addresses),
+  the `Clock` port in `core/ports/`, and `VirtualClock` / `SimulatedLink` in
+  `adapters/simulated/`. P1: message types in `core/protocol/`, and the strict
+  msgpack `Codec` in `core/transport/`. T1: the `TimingSource` base in
+  `core/timing/` and `SimulatedTimingSource`, plus runtime publish/subscribe
+  and the `Rejected` / `Fault` error messages. C1–C5: the `Coordinator` in
+  `core/timing/coordinator.py`, and `SimulatedDevice`.
+- **Next:** W1–W6 (`WaveformSource` over the `SignalOutput` port). Each test
+  goes red before its implementation goes green. Tests that pass on the first
+  implementation get a mutation check: break the code on purpose and confirm a
+  test fails. Each test
+  goes red before its implementation goes green.
+
+Names follow the plan: `setup` / `run` / `teardown` hooks; "segment" for
+WARMUP/MAIN/COOLDOWN (reserve "buffer" for the data flow); "actor runtime", not
+"actor core".
 
 ## Read these first, in this order
 
@@ -93,6 +106,11 @@ These come from the user directly and override default behaviour.
   are pinned by `tests/unit/test_environment.py`. Standard 3.14 remains the
   fallback, and the code must be correct on both.
 - The test suite must pass green with **zero hardware and zero vendor SDKs**.
+  Tests run in virtual time (`VirtualClock`), where a missing reply waits
+  forever rather than timing out. `pytest-timeout` (10 s) is the backstop, so a
+  test that times out usually means an expected message never arrived.
+- Git Bash's `python` writes cp1252 by default. Scripted file edits must pass
+  `encoding="utf-8"`.
 - **CI runs Linux and Windows.** The instrument is Windows, but the core and
   especially buffer management must stay OS-agnostic, and only CI keeps that
   honest.

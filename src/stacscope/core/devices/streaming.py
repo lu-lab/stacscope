@@ -1,0 +1,80 @@
+"""Streaming: a device that produces frames into a shared-memory buffer.
+
+This is the seam between the two flows that otherwise never touch. On one side
+the device protocol, which is asynchronous control; on the other the buffer,
+which is throughput and nothing else. The mixin is thin on purpose — it decides
+*when* the buffer is created, configured and released, and never touches a
+frame.
+
+**Buffer lifetime is device lifetime.** The segment is created when the device
+launches and released only when it goes, so a consumer can attach before the
+first acquisition and keep the segment across every one that follows. STACScope
+cannot assume it knows every consumer, and a consumer is not part of the
+control flow, so it learns from the buffer itself that the layout changed or a
+new acquisition began.
+
+**The producer defines the structure.** Shape, dtype, padding and in-flight
+depth are the device's to declare, through ``layout()``, because only the
+device knows what its hardware writes. The header carries all of it, so a
+consumer outside Python can read the buffer without asking anyone.
+"""
+
+from stacscope.core.buffer import FrameBuffer, FrameWriter, Layout, Metadata
+
+
+class Streaming:
+    """Mixin for a ``TimedDevice`` that produces frames. Put it first:
+    ``class Camera(Streaming, TimedDevice)``.
+
+    ``buffer_name``, ``capacity_bytes`` and ``max_slots`` come from config:
+    the name because a consumer has to find the buffer without talking to the
+    engine, and the capacity because it is an allocation, made once, that every
+    acquisition's layout must fit inside.
+    """
+
+    buffer_name: str = ""
+    capacity_bytes: int = 0
+    max_slots: int = 0
+
+    writer: FrameWriter | None = None
+    acquisition_id: int = 0
+
+    def layout(self) -> Layout:
+        """The structure of this acquisition's frames, which only the device
+        knows. Called on every ``arm``, so it may change between acquisitions."""
+        raise NotImplementedError
+
+    def metadata(self) -> Metadata:
+        """Which per-frame fields this producer fills. The default declares
+        none, which is what a device with no frame counter or clock reports."""
+        return Metadata()
+
+    async def setup(self) -> None:
+        await super().setup()
+        self.writer = FrameBuffer.create(
+            self.buffer_name, capacity_bytes=self.capacity_bytes, max_slots=self.max_slots
+        )
+
+    async def arm(self, root_filename: str, cycles: int) -> None:
+        """The buffer is configured **before** the rest of the chain arms the
+        hardware: a driver is pointed at the frame memory as it arms (DCAM
+        attaches the slot pointers), so the layout has to be in place, and no
+        frame may arrive before its acquisition has been started.
+
+        ``Recording`` goes the other way, opening its file after the chain
+        returns, which composes: ``class Camera(Recording, Streaming, Hardware)``
+        configures the buffer, arms the camera, then starts the recorder.
+        """
+        self.writer.configure(self.layout(), self.metadata())
+        self.acquisition_id = self.writer.start_acquisition()
+        await super().arm(root_filename, cycles)
+
+    async def close(self) -> None:
+        """Releases the segment. Stopping an acquisition deliberately does not:
+        the last frames stay readable until the next acquisition overwrites
+        them, because nothing says a consumer has finished reading when the
+        producer has finished writing."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+        await super().close()

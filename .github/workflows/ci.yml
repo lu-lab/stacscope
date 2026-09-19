@@ -1,0 +1,41 @@
+name: CI
+
+# The instrument is Windows, but the core and especially buffer management must
+# stay OS-agnostic. POSIX shared-memory lifetime (unlink, persistence in
+# /dev/shm, resource_tracker) only shows on the Linux leg.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.14t", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: uv sync --locked
+
+      - name: Confirm the interpreter is the one this leg claims
+        shell: bash
+        run: |
+          uv run python - <<'EOF'
+          import sys
+          print(sys.version)
+          free_threaded = "${{ matrix.python }}".endswith("t")
+          assert sys._is_gil_enabled() is not free_threaded, "wrong interpreter build"
+          EOF
+
+      - name: Test
+        run: uv run pytest

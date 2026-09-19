@@ -40,12 +40,18 @@ section explains why.
   `tests/integration/`.
   Relaunch: `Relaunch(name)` to the Coordinator respawns a lost device. It is
   never automatic; the user decides.
-- **Milestone 2 (data flow) is in design.** CI runs on Linux and Windows
-  (`.github/workflows/ci.yml`). The buffer decisions are in the architecture
-  plan's "Open items → Consumer API", including the `publish`/`published`
-  barrier (x86-64 only for now), views not copies, no backpressure,
-  producer-defined layout, and per-frame metadata. Tests B1–B10 are drafted
-  there, pending approval.
+- **Milestone 2's spec tests are complete** (B1–B10, the data flow), on
+  `main`. The shared-memory frame buffer is in `src/stacscope/core/buffer/`:
+  the header spec (`header.py`), producer-defined `Layout`, the
+  `publish`/`published` counter (`counter.py`, the only place memory ordering
+  lives; x86-64 only by decision), `Cursor` (`next` / `latest` /
+  `latest_group` / `wait`), per-frame metadata (`metadata.py`), and segment
+  lifetime. `PatternProducer` in `adapters/simulated/` is the synthetic
+  camera. `benchmarks/buffer_tiers.py` reports throughput against the
+  interface tiers on demand. Decisions and their reasons are in the plan's
+  "Open items → Consumer API". CI runs Linux + Windows
+  (`.github/workflows/ci.yml`); the POSIX paths of B7 are exercised only
+  there.
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
   on purpose and confirm a test fails.

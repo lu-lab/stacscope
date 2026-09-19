@@ -5,11 +5,17 @@ Losing a device and a device reporting a fault are different failures, and
 reports a hardware fault is still there, and the fix is the user's.
 """
 
-from conftest import PERIOD, READY_TIMEOUT, Dev, Rig
+from conftest import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
-from stacscope.core.actors import Fault
-from stacscope.core.protocol import AcquisitionStarted, Phase, StartAcquisition
+from stacscope.core.actors import Accepted, Fault
+from stacscope.core.protocol import (
+    AcquisitionStarted,
+    Phase,
+    Relaunch,
+    SourcePhase,
+    StartAcquisition,
+)
 from stacscope.core.timing import CoordinatorState
 
 SLOW_TIMEOUT = 6.0
@@ -212,3 +218,57 @@ async def test_d6_a_fatal_source_fault_stops_and_idles_like_any_other():
 
     assert rig.coordinator.state is CoordinatorState.IDLE
     assert "stop" in rig.devices["camera"].names()
+
+
+# --- D8: the Coordinator relays the source's phases ---------------------------
+
+
+class PhaseWatcher(Fragile):
+    """A participant that hears what the source is doing, and can be killed."""
+
+    def __init__(self):
+        super().__init__()
+        self.phases = []
+
+    async def handle(self, msg):
+        match msg:
+            case SourcePhase(phase):
+                self.phases.append(phase)
+            case _:
+                await super().handle(msg)
+
+
+async def test_d8_participants_hear_the_sources_phases():
+    """A software-timed device synchronizes to the acquisition through these,
+    so they must reach devices, not only clients."""
+    rig = Rig(pressure=PhaseWatcher())
+    await rig.start(cycles=2)
+    await rig.clock.advance(5.0)
+
+    assert rig.devices["pressure"].phases == [
+        Phase.ARMED, Phase.WARMUP, Phase.RUN, Phase.COOLDOWN, Phase.IDLE,
+    ]  # fmt: skip
+
+
+async def test_d8_clients_hear_them_too():
+    rig = Rig(camera=SimulatedDevice())
+    await rig.start(cycles=1)
+    await rig.clock.advance(5.0)
+
+    heard = [m.phase for m in rig.listener.heard if isinstance(m, SourcePhase)]
+    assert Phase.RUN in heard and Phase.COOLDOWN in heard
+
+
+async def test_d8_a_relaunched_participant_hears_them_as_well():
+    """A device respawned by Relaunch is a new actor: it has to be resubscribed
+    or it would sit through the next acquisition hearing nothing."""
+    rig = Rig(pressure=Dev(Factory(PhaseWatcher), required=False))
+    await rig.clock.advance(0)
+    rig.coordinator.participants["pressure"].tell(Die())
+    await rig.clock.advance(1.0)
+
+    assert await rig.call(Relaunch("pressure")) == Accepted()
+    await rig.start(cycles=1)
+    await rig.clock.advance(5.0)
+
+    assert Phase.RUN in rig.coordinator._specs["pressure"].factory.made[-1].phases

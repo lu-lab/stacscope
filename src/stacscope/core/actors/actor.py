@@ -48,6 +48,10 @@ class Actor:
             envelope: Envelope = await self._mailbox.get()
             match envelope.msg:
                 case Subscribe(subscriber):
+                    # Refs are equal by address, so a relaunched actor's ref is
+                    # equal to its dead predecessor's and a plain assignment
+                    # would keep the old key -- and publish into the void.
+                    self._subscribers.pop(subscriber, None)
                     self._subscribers[subscriber] = None
                 case Unsubscribe(subscriber):
                     self._subscribers.pop(subscriber, None)

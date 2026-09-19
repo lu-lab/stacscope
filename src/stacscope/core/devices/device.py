@@ -15,7 +15,14 @@ timing.
 from enum import Enum
 
 from stacscope.core.actors import Actor, Fault, Rejected
-from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
+from stacscope.core.protocol import (
+    DeviceLaunched,
+    DeviceReady,
+    DeviceStopped,
+    SourcePhase,
+    StartDevice,
+    StopDevice,
+)
 
 
 class DeviceState(Enum):
@@ -85,6 +92,8 @@ class TimedDevice(Actor):
                 if self.state is DeviceState.ARMED:
                     await self._disarm()
                 self.reply(DeviceStopped())
+            case Fault() | DeviceLaunched() | SourcePhase():
+                pass  # broadcasts: a device acts only on the ones it subscribed for
             case _:
                 self._reject(f"{type(msg).__name__} is not understood by {type(self).__name__}")
 

@@ -105,6 +105,7 @@ class Coordinator(Actor):
     def _launch(self, spec: DeviceSpec) -> None:
         ref = self.participants[spec.name] = self._spawn(spec)
         ref.tell(Subscribe(self.ref))  # so a device's faults reach here, not just its death
+        self.ref.tell(Subscribe(ref))  # and so the source's phases reach the device
 
     def _spawn(self, spec: DeviceSpec) -> ActorRef:
         ref = self.spawn_child(spec.factory(), name=spec.name, heartbeat=spec.heartbeat)
@@ -132,7 +133,7 @@ class Coordinator(Actor):
                     self.state = CoordinatorState.IDLE
                     self._release_stop_waiters(AcquisitionStopped())
             case SourcePhase():
-                pass
+                self.publish(msg)  # a software-timed device synchronizes to these
             case Fault(_, reason, fatal):
                 self.publish(msg)  # a device's fault is the Coordinator's clients' news
                 if fatal:

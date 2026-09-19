@@ -1,0 +1,70 @@
+"""SoftwareTimed: a participant that acts during the acquisition, on the clock.
+
+The pressure box is the case this exists for. It takes serial commands, drives
+an experimental apparatus, and works at the scale of seconds against sub-second
+volume rates. It has no trigger line and never will, so it **can never be part
+of the acquisition loop** — but it is part of the imaging system, and what it
+does needs to line up with the acquisition.
+
+It lines up with the acquisition's *edges*, and nothing finer. The timing
+source publishes its phases, the Coordinator relays them, and a device starts
+its routine on the phase it chose: a shutter at WARMUP, so it is already
+moving; a driven variable at RUN, with the first image.
+
+**That edge is control flow.** It crosses a mailbox, and possibly a process, so
+it is good to milliseconds, never microseconds. Nothing whose timing matters to
+the data may depend on it. A device whose own timing is experimentally
+important keeps its own record, to be reconciled afterwards, the same way a
+camera is responsible for its own recording.
+"""
+
+import asyncio
+
+from stacscope.core.devices.device import DeviceState
+from stacscope.core.protocol import Phase, SourcePhase
+
+
+class SoftwareTimed:
+    """Mixin for a ``TimedDevice`` that runs a routine. Put it first:
+    ``class PressureBox(SoftwareTimed, TimedDevice)``.
+
+    The routine is an ordinary coroutine on ``self.clock``, which is what lets
+    it be written the way the experiment reads — ramp, hold, step — rather than
+    as a state machine. It runs as its own task, so a routine that sleeps for a
+    minute never blocks the device's mailbox; the cost is that it interleaves
+    with ``handle`` at every await, so a routine and a command handler must not
+    both write the same attribute.
+
+    A routine is cancelled when the device stops, before the adapter's
+    ``disarm`` reaches its safe state: an interrupted experiment vents the
+    pressure and closes the shutter like any other.
+    """
+
+    start_phase: Phase = Phase.RUN
+    """Which published phase starts the routine."""
+
+    _routine: asyncio.Task | None = None
+
+    async def routine(self) -> None:
+        """This device's own sequence, on ``self.clock``. Runs once per
+        acquisition, may finish early, and is cancelled if the acquisition
+        stops first."""
+
+    async def handle(self, msg: object) -> None:
+        match msg:
+            case SourcePhase(phase):
+                if phase is self.start_phase and self.state is DeviceState.ARMED:
+                    self._start_routine()
+            case _:
+                await super().handle(msg)
+
+    def _start_routine(self) -> None:
+        if self._routine is None:
+            self._routine = asyncio.create_task(self.routine())
+
+    async def disarm(self) -> None:
+        routine, self._routine = self._routine, None
+        if routine is not None:
+            routine.cancel()
+            await asyncio.gather(routine, return_exceptions=True)
+        await super().disarm()

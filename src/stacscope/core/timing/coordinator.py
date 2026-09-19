@@ -58,6 +58,10 @@ class DeviceSpec:
     stop_timeout: float | None = None
     """Defaults to ``ready_timeout``."""
     heartbeat: HeartbeatPolicy | None = None
+    required: bool = True
+    """Whether losing this device mid-run ends the acquisition. Default true,
+    so the safe answer is the one nobody has to remember. An optional device is
+    a deliberate choice: an experiment worth finishing without it."""
 
 
 class Coordinator(Actor):
@@ -99,7 +103,8 @@ class Coordinator(Actor):
         self.source.tell(Subscribe(self.ref))
 
     def _launch(self, spec: DeviceSpec) -> None:
-        self.participants[spec.name] = self._spawn(spec)
+        ref = self.participants[spec.name] = self._spawn(spec)
+        ref.tell(Subscribe(self.ref))  # so a device's faults reach here, not just its death
 
     def _spawn(self, spec: DeviceSpec) -> ActorRef:
         ref = self.spawn_child(spec.factory(), name=spec.name, heartbeat=spec.heartbeat)
@@ -128,8 +133,10 @@ class Coordinator(Actor):
                     self._release_stop_waiters(AcquisitionStopped())
             case SourcePhase():
                 pass
-            case Fault():
+            case Fault(_, reason, fatal):
                 self.publish(msg)  # a device's fault is the Coordinator's clients' news
+                if fatal:
+                    await self._abort(f"stopped by a fatal fault: {reason}")
             case ChildExited(child, error):
                 await self._child_exited(child, error)
             case _:
@@ -188,6 +195,29 @@ class Coordinator(Actor):
                 del self.participants[name]
                 reason = f"participant {name} exited: {error or 'clean stop'}"
                 self.publish(Fault(self.ref, reason, fatal=False))
+                if self._specs[name].required:
+                    await self._abort(f"stopped by the loss of {name}")
+
+    async def _abort(self, reason: str) -> None:
+        """End a running acquisition that cannot go on, and return to Idle.
+
+        Deliberately not Faulted: that is for a lost source, where there is
+        something to relaunch. Here the cause is outside STACScope, so nothing
+        is latched — if the user has not fixed it, the next acquisition simply
+        fails the same way, which beats holding a lock they have to clear.
+
+        Stopping goes straight through ``StopDevice`` rather than ``Finish``,
+        because the thing that just failed may be the source itself: every
+        device's own stop timeout then bounds the wait, and a healthy source
+        still cools down before it confirms.
+        """
+        if self.state not in (CoordinatorState.RUNNING, CoordinatorState.STOPPING):
+            return
+        self.state = CoordinatorState.STOPPING
+        self.publish(Fault(self.ref, reason, fatal=False))
+        await self._stop_everyone()
+        self.state = CoordinatorState.IDLE
+        self._release_stop_waiters(AcquisitionStopped())
 
     def _relaunch(self, name: str) -> None:
         if self._refuse(Relaunch(name), CoordinatorState.IDLE, CoordinatorState.FAULTED):

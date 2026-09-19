@@ -5,6 +5,7 @@ Readers get views into the shared memory, not copies.
 """
 
 import mmap
+import re
 import time
 from multiprocessing.shared_memory import SharedMemory
 
@@ -22,14 +23,49 @@ def _align(n, to):
     return -(-n // to) * to
 
 
+# Portable on every OS: Windows kernel names, POSIX /dev/shm file names, and
+# macOS's 31-character shm_open limit including the leading slash.
+_NAME = re.compile(r"[A-Za-z0-9_]{1,30}")
+
+
+def check_name(name: str) -> str:
+    """The one place buffer names are validated."""
+    if not isinstance(name, str) or not _NAME.fullmatch(name):
+        raise ValueError(f"buffer name {name!r} must be 1-30 of [A-Za-z0-9_]")
+    return name
+
+
+def _create_segment(name: str, size: int) -> SharedMemory:
+    """Create the segment, clearing a stale one a crashed producer left.
+
+    On POSIX a segment outlives its creator until unlinked, so a crash leaves
+    it behind; unlink it and create afresh. On Windows a mapping lives only
+    while a handle is open, so a name still taken means a live process (an
+    old reader, say) holds it, and unlinking cannot free it.
+    """
+    try:
+        return SharedMemory(name, create=True, size=size, track=False)
+    except FileExistsError:
+        stale = SharedMemory(name, track=False)
+        stale.close()
+        stale.unlink()
+    try:
+        return SharedMemory(name, create=True, size=size, track=False)
+    except FileExistsError:
+        raise FileExistsError(
+            f"buffer {name!r} is still mapped by another process; close its readers first"
+        ) from None
+
+
 class FrameBuffer:
     """Entry points: ``create`` for the producer, ``open`` for readers."""
 
     @staticmethod
     def create(name: str, *, capacity_bytes: int, max_slots: int) -> "FrameWriter":
+        check_name(name)
         meta_offset = HEADER_BYTES
         data_offset = _align(meta_offset + max_slots * META_RECORD_BYTES, mmap.PAGESIZE)
-        shm = SharedMemory(name, create=True, size=data_offset + capacity_bytes, track=False)
+        shm = _create_segment(name, data_offset + capacity_bytes)
         buf = shm.buf
         header.write(buf, "magic", MAGIC)
         header.write(buf, "version", VERSION)
@@ -46,7 +82,7 @@ class FrameBuffer:
     def open(name: str, *, timeout: float = 1.0) -> "FrameReader":
         """Map a buffer by name. If the producer is mid-way through a layout
         change, retry until it settles or ``timeout`` expires."""
-        return FrameReader(SharedMemory(name, track=False), timeout)
+        return FrameReader(SharedMemory(check_name(name), track=False), timeout)
 
 
 class _Mapped:

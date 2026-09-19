@@ -35,25 +35,45 @@ def check_name(name: str) -> str:
     return name
 
 
-def _create_segment(name: str, size: int) -> SharedMemory:
-    """Create the segment, clearing a stale one a crashed producer left.
+def _take_over(name: str, capacity_bytes: int, max_slots: int) -> SharedMemory | None:
+    """The segment a previous producer left under ``name``, if it is a frame
+    buffer this producer can use; otherwise None.
 
-    On POSIX a segment outlives its creator until unlinked, so a crash leaves
-    it behind; unlink it and create afresh. On Windows a mapping lives only
-    while a handle is open, so a name still taken means a live process (an
-    old reader, say) holds it, and unlinking cannot free it.
+    Taking it over is what lets readers that still hold it carry on across a
+    producer restart, and it behaves the same on every OS.
     """
-    try:
-        return SharedMemory(name, create=True, size=size, track=False)
-    except FileExistsError:
-        stale = SharedMemory(name, track=False)
-        stale.close()
-        stale.unlink()
+    shm = SharedMemory(name, track=False)
+    buf = shm.buf
+    fits = (
+        shm.size >= HEADER_BYTES
+        and header.read(buf, "magic") == MAGIC
+        and header.read(buf, "version") == VERSION
+        and header.read(buf, "capacity_bytes") >= capacity_bytes
+        and header.read(buf, "max_slots") >= max_slots
+    )
+    del buf
+    if fits:
+        return shm
+    shm.close()
+    return None
+
+
+def _replace_segment(name: str, size: int) -> SharedMemory:
+    """Unlink a segment that can't be taken over and create afresh.
+
+    POSIX can, and the old segment's readers keep an orphan. Windows cannot:
+    a mapping lives while any handle is open, so the name stays taken until
+    the last reader of the old segment closes.
+    """
+    stale = SharedMemory(name, track=False)
+    stale.close()
+    stale.unlink()
     try:
         return SharedMemory(name, create=True, size=size, track=False)
     except FileExistsError:
         raise FileExistsError(
-            f"buffer {name!r} is still mapped by another process; close its readers first"
+            f"buffer {name!r} is held by another process and doesn't fit this producer; "
+            "close its readers first"
         ) from None
 
 
@@ -62,11 +82,21 @@ class FrameBuffer:
 
     @staticmethod
     def create(name: str, *, capacity_bytes: int, max_slots: int) -> "FrameWriter":
+        """Create the buffer, or take over the one a previous producer left
+        under this name if it fits: its counter and acquisition ids carry on,
+        and readers still holding it follow the next ``configure``."""
         require_ordered_memory()
         check_name(name)
         meta_offset = HEADER_BYTES
         data_offset = _align(meta_offset + max_slots * META_RECORD_BYTES, mmap.PAGESIZE)
-        shm = _create_segment(name, data_offset + capacity_bytes)
+        size = data_offset + capacity_bytes
+        try:
+            shm = SharedMemory(name, create=True, size=size, track=False)
+        except FileExistsError:
+            previous = _take_over(name, capacity_bytes, max_slots)
+            if previous is not None:
+                return FrameWriter(previous)
+            shm = _replace_segment(name, size)
         buf = shm.buf
         header.write(buf, "magic", MAGIC)
         header.write(buf, "version", VERSION)
@@ -170,6 +200,8 @@ class FrameWriter(_Mapped):
         self.slots: np.ndarray | None = None
         self._acquiring = False
         self._written = self._counter.published()
+        self.acquisition_id = header.read(shm.buf, "acquisition_id")
+        self.acquisition_start = header.read(shm.buf, "acquisition_start")
 
     def configure(self, layout: Layout, metadata: Metadata = Metadata()) -> None:
         """Set the frame layout and declare what per-frame metadata the
@@ -235,11 +267,12 @@ class FrameWriter(_Mapped):
         """Change the layout block under a seqlock: the generation is odd while
         fields change, so readers never see a half-written block."""
         buf = self._shm.buf
-        generation = header.read(buf, "layout_generation")
-        header.write(buf, "layout_generation", generation + 1)
+        # Already odd means a previous producer died mid-change: finish it.
+        changing = header.read(buf, "layout_generation") | 1
+        header.write(buf, "layout_generation", changing)
         for name, value in fields.items():
             header.write(buf, name, value)
-        header.write(buf, "layout_generation", generation + 2)
+        header.write(buf, "layout_generation", changing + 1)
 
     def _release(self):
         super()._release()

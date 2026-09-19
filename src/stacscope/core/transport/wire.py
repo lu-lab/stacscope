@@ -1,0 +1,78 @@
+"""The wire frame: an envelope, ready for a byte stream.
+
+The codec carries a message. This carries what surrounds one on its way to a
+mailbox -- the reply address and the priority -- neither of which is part of
+any message, deliberately: message types stay plain data.
+
+The frame is a msgpack map of four keys, so it stays readable from another
+language, like the messages inside it:
+
+    {"t": <destination address>, "p": <priority>,
+     "r": <reply address or nil>, "m": <encoded message>}
+
+The destination rides the frame rather than the connection because one link
+carries traffic for many addresses: a child's device answers the Coordinator,
+and the one-shot reply address of every ``ask`` in flight is its own
+destination.
+
+Priority rides the wire as a number but is *enforced* at the receiving actor's
+mailbox, not here. A transport that has no priorities of its own -- ZeroMQ
+will not -- loses nothing by it.
+"""
+
+import msgpack
+
+from stacscope.core.actors import ActorRef, Envelope, Priority
+from stacscope.core.transport.codec import Codec, CodecError, Resolve
+
+_TO = "t"
+_PRIORITY = "p"
+_REPLY = "r"
+_MESSAGE = "m"
+_KEYS = {_TO, _PRIORITY, _REPLY, _MESSAGE}
+
+
+class Wire:
+    """Packs and unpacks one frame. Framing on a stream is the connection's job."""
+
+    def __init__(self, codec: Codec) -> None:
+        self._codec = codec
+
+    def pack(self, to: str, envelope: Envelope, priority: Priority) -> bytes:
+        reply_to = envelope.reply_to
+        if reply_to is not None and not isinstance(reply_to, ActorRef):
+            raise CodecError(f"reply address {reply_to!r} is not an ActorRef")
+        return msgpack.packb(
+            {
+                _TO: to,
+                _PRIORITY: int(priority),
+                _REPLY: None if reply_to is None else reply_to.address,
+                _MESSAGE: self._codec.encode(envelope.msg),
+            },
+            use_bin_type=True,
+        )
+
+    def unpack(self, frame: bytes, *, resolve: Resolve) -> tuple[str, Envelope, Priority]:
+        """``resolve`` turns an address back into a ref that reaches wherever it
+        lives. Frames come from another process, so nothing here is trusted."""
+        try:
+            raw = msgpack.unpackb(frame, raw=False)
+        except Exception as exc:
+            raise CodecError(f"not a frame: {exc!r}") from None
+        if not isinstance(raw, dict) or raw.keys() != _KEYS:
+            raise CodecError(f"not a frame: {raw!r:.60}")
+        if not isinstance(raw[_TO], str):
+            raise CodecError(f"frame has no destination: {raw[_TO]!r}")
+        try:
+            priority = Priority(raw[_PRIORITY])
+        except ValueError:
+            raise CodecError(f"unknown priority {raw[_PRIORITY]!r}") from None
+
+        address = raw[_REPLY]
+        reply_to = None
+        if address is not None:
+            reply_to = resolve(address)
+            if reply_to is None:
+                raise CodecError(f"cannot resolve reply address {address!r}")
+        envelope = Envelope(self._codec.decode(raw[_MESSAGE], resolve=resolve), reply_to)
+        return raw[_TO], envelope, priority

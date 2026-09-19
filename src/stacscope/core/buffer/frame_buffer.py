@@ -5,6 +5,7 @@ Readers get views into the shared memory, not copies.
 """
 
 import mmap
+import time
 from multiprocessing.shared_memory import SharedMemory
 
 import numpy as np
@@ -39,8 +40,10 @@ class FrameBuffer:
         return FrameWriter(shm)
 
     @staticmethod
-    def open(name: str) -> "FrameReader":
-        return FrameReader(SharedMemory(name, track=False))
+    def open(name: str, *, timeout: float = 1.0) -> "FrameReader":
+        """Map a buffer by name. If the producer is mid-way through a layout
+        change, retry until it settles or ``timeout`` expires."""
+        return FrameReader(SharedMemory(name, track=False), timeout)
 
 
 class _Mapped:
@@ -83,6 +86,10 @@ class FrameWriter(_Mapped):
         if resolved.n_slots > header.read(buf, "max_slots"):
             raise LayoutError(f"{resolved.n_slots} slots exceed the buffer's maximum")
         pad = header.MAX_NDIM - len(resolved.shape)
+        # A seqlock: odd while the layout block is being rewritten, so readers
+        # never map a half-written layout.
+        generation = header.read(buf, "layout_generation")
+        header.write(buf, "layout_generation", generation + 1)
         header.write(buf, "n_slots", resolved.n_slots)
         header.write(buf, "slot_bytes", resolved.slot_bytes)
         header.write(buf, "frame_offset", resolved.frame_offset)
@@ -90,6 +97,7 @@ class FrameWriter(_Mapped):
         header.write(buf, "ndim", len(resolved.shape))
         header.write(buf, "shape", resolved.shape + (0,) * pad)
         header.write(buf, "strides", resolved.strides + (0,) * pad)
+        header.write(buf, "layout_generation", generation + 2)
         data_offset = header.read(buf, "data_offset")
         del buf
         self._map(resolved, writable=True)
@@ -110,15 +118,38 @@ class FrameWriter(_Mapped):
 class FrameReader(_Mapped):
     """A consumer's side. Read-only views; never removes the segment."""
 
-    def __init__(self, shm: SharedMemory):
+    def __init__(self, shm: SharedMemory, timeout: float):
         super().__init__(shm)
+        self._generation: int | None = None
         try:
             self._check_identity()
-            self._map(_read_layout(shm.buf), writable=False)
+            deadline = time.monotonic() + timeout
+            while not self.sync() and self._generation is None:
+                if time.monotonic() > deadline:
+                    raise LayoutError(f"{shm.name!r} never settled on a layout")
+                time.sleep(0.001)
         except BaseException:
             self._release()
             shm.close()
             raise
+
+    def sync(self) -> bool:
+        """Re-map if the producer changed the layout. True if it did.
+
+        A layout seen mid-change is ignored; the current mapping stays.
+        """
+        seen = _read_stable_layout(self._shm.buf)
+        if seen is None:
+            return False
+        generation, layout = seen
+        if generation == self._generation:
+            return False
+        self._generation = generation
+        if layout is None:
+            self._release()
+            return False
+        self._map(layout, writable=False)
+        return True
 
     def _check_identity(self):
         buf = self._shm.buf
@@ -131,6 +162,25 @@ class FrameReader(_Mapped):
     def close(self) -> None:
         self._release()
         self._shm.close()
+
+
+def _read_stable_layout(buf) -> tuple[int, ResolvedLayout | None] | None:
+    """(generation, layout) if the layout block is stable, else None.
+    Generation 0 is a buffer the producer has not configured yet."""
+    before = header.read(buf, "layout_generation")
+    if before % 2:
+        return None
+    try:
+        layout = _read_layout(buf) if before else None
+    except (TypeError, ValueError):
+        # Half-written fields (a torn dtype, say) from a change that began
+        # after the first read; the second read below tells which.
+        layout = None
+        if header.read(buf, "layout_generation") == before:
+            raise
+    if header.read(buf, "layout_generation") != before:
+        return None
+    return before, layout
 
 
 def _read_layout(buf) -> ResolvedLayout:

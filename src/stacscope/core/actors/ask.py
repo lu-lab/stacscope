@@ -10,6 +10,14 @@ from stacscope.core.ports.clock import Clock, MonotonicClock
 
 _reply_ids = itertools.count()
 
+REPLY_MARK = "#reply-"
+"""Separates an actor's address from the one-shot address of an ``ask`` on it.
+
+Public because a router has to tell the two apart: an actor that is not there
+is a routing failure worth reporting, while a reply nobody is waiting for any
+more is exactly what this module promises to discard.
+"""
+
 
 class AskTimeout(TimeoutError):
     """No reply arrived before the deadline. A late reply is discarded."""
@@ -36,7 +44,7 @@ async def ask(
 ) -> object:
     """Send ``msg`` and await the reply, raising ``AskTimeout`` after ``timeout``."""
     reply = asyncio.get_running_loop().create_future()
-    reply_to = ActorRef(_ReplyTransport(reply), f"{ref.address}#reply-{next(_reply_ids)}")
+    reply_to = ActorRef(_ReplyTransport(reply), f"{ref.address}{REPLY_MARK}{next(_reply_ids)}")
     ref.tell(msg, priority, reply_to=reply_to)
     try:
         return await (clock or MonotonicClock()).wait_for(reply, timeout)

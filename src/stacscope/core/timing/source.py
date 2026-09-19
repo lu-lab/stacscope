@@ -9,6 +9,7 @@ import asyncio
 from dataclasses import dataclass
 
 from stacscope.core.actors import Actor, ActorRef, Fault, Priority, Rejected
+from stacscope.core.devices import NotReady
 from stacscope.core.protocol import (
     DeviceReady,
     DeviceStopped,
@@ -21,6 +22,8 @@ from stacscope.core.protocol import (
     StopDevice,
 )
 
+__all__ = ["NotReady", "TimingSource"]  # NotReady is a device's refusal; a source is a device too
+
 _LEGAL = {
     (Phase.IDLE, Phase.ARMED),
     (Phase.ARMED, Phase.IDLE),
@@ -29,11 +32,6 @@ _LEGAL = {
     (Phase.RUN, Phase.COOLDOWN),
     (Phase.COOLDOWN, Phase.IDLE),
 }
-
-
-class NotReady(Exception):
-    """Raised by ``arm`` when the source cannot be armed; answered ``Rejected``
-    and the source stays Idle."""
 
 
 @dataclass(frozen=True, slots=True)

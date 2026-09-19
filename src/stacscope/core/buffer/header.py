@@ -31,6 +31,9 @@ offset  format  field                 meaning
 256     u64     frames_written        frames published, ever; alone on its line
 ======  ======  ====================  ==============================================
 
+The per-frame metadata record, and the meaning of ``metadata_fields`` and
+``device_time_source``, are specified in ``metadata.py``.
+
 Frame ``i`` of slot ``s`` starts at ``data_offset + s * slot_bytes +
 frame_offset``. Bytes in a slot outside the frame (padding, embedded device
 data) belong to the producer's hardware and are described, never rewritten.

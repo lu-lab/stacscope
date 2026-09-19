@@ -25,12 +25,14 @@ class Frame:
 
     ``data`` is a view into shared memory, not a copy. Check
     ``reader.still_valid(index)`` after using it to know it was not overwritten
-    meanwhile; ``data.copy()`` is the copy if one is wanted.
+    meanwhile; ``data.copy()`` is the copy if one is wanted. ``meta`` is a copy
+    of the frame's metadata record (40 bytes).
     """
 
     index: int
     acquisition_id: int
     data: np.ndarray
+    meta: np.void
 
 
 @dataclass(frozen=True, eq=False)
@@ -45,6 +47,7 @@ class Group:
     first: int
     acquisition_id: int
     data: np.ndarray | Sequence[np.ndarray]
+    meta: np.ndarray
 
 
 class Cursor:
@@ -65,7 +68,7 @@ class Cursor:
             return None
         index = self.position
         self.position += 1
-        return Frame(index, reader.acquisition_id, reader.frames[reader.slot_of(index)])
+        return _frame(reader, index)
 
     def latest(self) -> Frame | None:
         """The newest frame, if it is newer than this cursor's position.
@@ -76,7 +79,7 @@ class Cursor:
         if newest < max(self.position, oldest):
             return None
         self.position = published
-        return Frame(newest, reader.acquisition_id, reader.frames[reader.slot_of(newest)])
+        return _frame(reader, newest)
 
     def latest_group(self, size: int) -> Group | None:
         """The newest complete group of ``size`` frames, counted from the
@@ -97,9 +100,14 @@ class Cursor:
         if first < max(self.position, oldest):
             return None
         self.position = first + size
-        slot = reader.slot_of(first)
-        if slot + size <= layout.n_slots:
-            data = reader.frames[slot : slot + size]
+        slots = [reader.slot_of(i) for i in range(first, first + size)]
+        if slots[0] + size <= layout.n_slots:
+            data = reader.frames[slots[0] : slots[0] + size]
         else:
-            data = tuple(reader.frames[reader.slot_of(i)] for i in range(first, first + size))
-        return Group(first, reader.acquisition_id, data)
+            data = tuple(reader.frames[s] for s in slots)
+        return Group(first, reader.acquisition_id, data, reader.meta[slots])
+
+
+def _frame(reader, index):
+    slot = reader.slot_of(index)
+    return Frame(index, reader.acquisition_id, reader.frames[slot], reader.meta[slot : slot + 1].copy()[0])

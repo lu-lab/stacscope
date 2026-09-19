@@ -15,6 +15,7 @@ from stacscope.core.buffer.counter import Counter
 from stacscope.core.buffer.cursor import Cursor
 from stacscope.core.buffer.header import HEADER_BYTES, MAGIC, META_RECORD_BYTES, VERSION
 from stacscope.core.buffer.layout import Layout, LayoutError, ResolvedLayout
+from stacscope.core.buffer.metadata import META_DTYPE, Metadata, MetaField, TimeSource
 
 
 def _align(n, to):
@@ -57,6 +58,8 @@ class _Mapped:
         self._counter = Counter(shm.buf)
         self._layout: ResolvedLayout | None = None
         self.frames: np.ndarray | None = None
+        self.meta: np.ndarray | None = None
+        self.metadata = Metadata()
         self.acquisition_id = 0
         self.acquisition_start = 0
 
@@ -100,14 +103,20 @@ class _Mapped:
             strides=(layout.slot_bytes, *layout.strides),
         )
         frames.flags.writeable = writable
+        meta = np.ndarray(
+            (layout.n_slots,), META_DTYPE, buffer=self._shm.buf, offset=header.read(self._shm.buf, "meta_offset")
+        )
+        meta.flags.writeable = writable
         self._layout = layout
         self.frames = frames
+        self.meta = meta
 
     def _release(self):
         """Drop our own views so the segment can close. Views a caller still
         holds keep it open, and ``close`` raises ``BufferError``."""
         self._layout = None
         self.frames = None
+        self.meta = None
 
     def _close(self):
         self._release()
@@ -124,8 +133,9 @@ class FrameWriter(_Mapped):
         self._acquiring = False
         self._written = self._counter.published()
 
-    def configure(self, layout: Layout) -> None:
-        """Set the frame layout. Ends any acquisition in progress."""
+    def configure(self, layout: Layout, metadata: Metadata = Metadata()) -> None:
+        """Set the frame layout and declare what per-frame metadata the
+        producer fills. Ends any acquisition in progress."""
         resolved = layout.resolve()
         buf = self._shm.buf
         if resolved.total_bytes > header.read(buf, "capacity_bytes"):
@@ -144,7 +154,11 @@ class FrameWriter(_Mapped):
             in_flight=resolved.in_flight,
             shape=resolved.shape + (0,) * pad,
             strides=resolved.strides + (0,) * pad,
+            metadata_fields=int(metadata.fields),
+            device_time_source=int(metadata.device_time_source),
+            device_clock_hz=float(metadata.device_clock_hz),
         )
+        self.metadata = metadata
         self._acquiring = False
         self._map(resolved, writable=True)
         self.slots = np.ndarray(
@@ -166,8 +180,18 @@ class FrameWriter(_Mapped):
         """Declare the next ``n`` frames written. The only way the counter moves."""
         if not self._acquiring:
             raise RuntimeError("publish outside an acquisition")
+        for index in range(self._written, self._written + n):
+            self.meta[self.slot_of(index)]["sequence"] = index
         self._written += n
         self._counter.publish(self._written)
+
+    def stamp(self, index: int, *, hw_frame: int = 0, device_ticks: int = 0, host_time_ns: int = 0) -> None:
+        """Record what the device reported for frame ``index``, before
+        publishing it. Writes only the metadata table, never the slot."""
+        record = self.meta[self.slot_of(index)]
+        record["hw_frame"] = hw_frame
+        record["device_ticks"] = device_ticks
+        record["host_time_ns"] = host_time_ns
 
     def _rewrite(self, **fields) -> None:
         """Change the layout block under a seqlock: the generation is odd while
@@ -220,7 +244,7 @@ class FrameReader(_Mapped):
         seen = _read_stable(self._shm.buf)
         if seen is None:
             return False
-        generation, layout, acquisition = seen
+        generation, layout, acquisition, metadata = seen
         if generation == self._generation:
             return False
         self._generation = generation
@@ -228,6 +252,7 @@ class FrameReader(_Mapped):
             self._release()
             return False
         self.acquisition_id, self.acquisition_start = acquisition
+        self.metadata = metadata
         self._map(layout, writable=False)
         return True
 
@@ -270,9 +295,19 @@ def _read_stable(buf):
         if header.read(buf, "layout_generation") == before:
             raise
     acquisition = (header.read(buf, "acquisition_id"), header.read(buf, "acquisition_start"))
+    try:
+        metadata = Metadata(
+            MetaField(header.read(buf, "metadata_fields")),
+            TimeSource(header.read(buf, "device_time_source")),
+            header.read(buf, "device_clock_hz"),
+        )
+    except ValueError:
+        metadata = None  # torn, or garbage; the generation check decides
     if header.read(buf, "layout_generation") != before:
         return None
-    return before, layout, acquisition
+    if metadata is None:
+        raise LayoutError("unreadable metadata declaration in a stable header")
+    return before, layout, acquisition, metadata
 
 
 def _read_layout(buf) -> ResolvedLayout:

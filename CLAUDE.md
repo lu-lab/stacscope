@@ -40,9 +40,12 @@ section explains why.
   `tests/integration/`.
   Relaunch: `Relaunch(name)` to the Coordinator respawns a lost device. It is
   never automatic; the user decides.
-- **Open before Milestone 2:** the Linux+Windows CI workflow awaits a
-  greenlight, and Milestone 2 needs it (POSIX shared-memory behaviour only
-  shows on Linux). How `publish(n)` gets its memory barrier is undecided.
+- **Milestone 2 (data flow) is in design.** CI runs on Linux and Windows
+  (`.github/workflows/ci.yml`). The buffer decisions are in the architecture
+  plan's "Open items → Consumer API", including the `publish`/`published`
+  barrier (x86-64 only for now), views not copies, no backpressure,
+  producer-defined layout, and per-frame metadata. Tests B1–B10 are drafted
+  there, pending approval.
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
   on purpose and confirm a test fails.
@@ -135,7 +138,8 @@ These come from the user directly and override default behaviour.
   behind it.
 - The uEye is hardware-triggered by the DAQ while being controlled by µManager —
   a device in the timing flow but not the control flow. Trigger channels come
-  from config, not from the device registry.
+  from config, not from the device registry. A STACScope uEye producer is
+  planned as an option, secondary to the sCMOS path; its specifics are deferred.
 
 Channel map and the rest of the hardware facts are in the architecture plan.
 

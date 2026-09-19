@@ -52,9 +52,24 @@ section explains why.
   "Open items → Consumer API". CI runs Linux + Windows
   (`.github/workflows/ci.yml`); the POSIX paths of B7 are exercised only
   there.
+- **Milestone 3's spec tests are complete** (D1–D12, device actors), on
+  `main`. The participant side of the protocol is in `src/stacscope/core/devices/`:
+  `TimedDevice` (IDLE ↔ ARMED, `arm` / `disarm` / `close`), and three mixins
+  that compose in that order — `Recording` (the acquisition's shared stem
+  becomes this device's own file), `SoftwareTimed` (a routine on the clock,
+  started by the published `SourcePhase` the device chose), and `Streaming`
+  (a `FrameBuffer` for the device's lifetime). The Coordinator gained
+  `DeviceSpec.required`, an abort on a live device's fatal `Fault`, and
+  relaying of `SourcePhase` to participants. `adapters/simulated/` gained
+  `TriggerBus` — the wire, in simulation, so an end-to-end frame count is
+  caused by the pulses that played — plus `SimulatedCamera` and
+  `SimulatedPressureBox`. Decisions are in the plan's "Devices — the
+  participant side".
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
-  on purpose and confirm a test fails.
+  on purpose and confirm a test fails. It earns its keep: in Milestone 3 it
+  found a stale-`ActorRef` bug in the runtime, a failed file close that could
+  leave a shutter open, and two vacuous assertions.
 
 Names follow the plan: `setup` / `run` / `teardown` hooks; "segment" for
 WARMUP/MAIN/COOLDOWN (reserve "buffer" for the data flow); "actor runtime", not

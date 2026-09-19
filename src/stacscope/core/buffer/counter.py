@@ -13,8 +13,28 @@ replaces the two accesses below, and nothing else changes.
 """
 
 import ctypes
+import platform
+import sys
 
 from stacscope.core.buffer.header import COUNTER_OFFSET
+
+_ORDERED = {"amd64", "x86_64"}
+
+
+class UnsupportedPlatform(RuntimeError):
+    """The counter's plain accesses are not safe on this architecture."""
+
+
+def require_ordered_memory() -> None:
+    """Refuse anything but x86-64, where the plain accesses below are correct.
+    32-bit x86 tears 8-byte accesses; ARM and others reorder them. A 32-bit
+    interpreter on a 64-bit machine still reports AMD64, so check both."""
+    machine = platform.machine()
+    if machine.lower() not in _ORDERED or sys.maxsize <= 2**32:
+        raise UnsupportedPlatform(
+            f"the frame buffer needs x86-64 memory ordering, not {machine or 'unknown'!r}; "
+            "see counter.py for the upgrade path"
+        )
 
 
 class Counter:

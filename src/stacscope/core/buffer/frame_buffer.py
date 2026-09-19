@@ -12,7 +12,7 @@ from multiprocessing.shared_memory import SharedMemory
 import numpy as np
 
 from stacscope.core.buffer import header
-from stacscope.core.buffer.counter import Counter
+from stacscope.core.buffer.counter import Counter, require_ordered_memory
 from stacscope.core.buffer.cursor import Cursor
 from stacscope.core.buffer.header import HEADER_BYTES, MAGIC, META_RECORD_BYTES, VERSION
 from stacscope.core.buffer.layout import Layout, LayoutError, ResolvedLayout
@@ -62,6 +62,7 @@ class FrameBuffer:
 
     @staticmethod
     def create(name: str, *, capacity_bytes: int, max_slots: int) -> "FrameWriter":
+        require_ordered_memory()
         check_name(name)
         meta_offset = HEADER_BYTES
         data_offset = _align(meta_offset + max_slots * META_RECORD_BYTES, mmap.PAGESIZE)
@@ -82,6 +83,7 @@ class FrameBuffer:
     def open(name: str, *, timeout: float = 1.0) -> "FrameReader":
         """Map a buffer by name. If the producer is mid-way through a layout
         change, retry until it settles or ``timeout`` expires."""
+        require_ordered_memory()
         return FrameReader(SharedMemory(check_name(name), track=False), timeout)
 
 

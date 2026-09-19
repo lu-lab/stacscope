@@ -9,6 +9,7 @@ CI leg.
 
 import ctypes
 import ctypes.util
+import functools
 import sys
 import threading
 
@@ -42,7 +43,10 @@ def test_pydantic_basic_validation():
     assert (p.x, p.y) == (1.0, 2.5)
 
 
-def _libc_getpid() -> int:
+@functools.cache
+def _getpid_function():
+    # Resolved once: on Linux, find_library runs ldconfig (or gcc) in a
+    # subprocess, and the concurrency test below makes 80,000 calls.
     if sys.platform == "win32":
         lib = ctypes.WinDLL("kernel32", use_last_error=True)
         func = lib.GetCurrentProcessId
@@ -50,7 +54,11 @@ def _libc_getpid() -> int:
         lib = ctypes.CDLL(ctypes.util.find_library("c"))
         func = lib.getpid
     func.restype = ctypes.c_uint32
-    return func()
+    return func
+
+
+def _libc_getpid() -> int:
+    return _getpid_function()()
 
 
 def test_ctypes_call_matches_os_getpid():

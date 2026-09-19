@@ -38,6 +38,12 @@ class PatternProducer:
 
     def configure(self, layout: Layout) -> None:
         self._writer.configure(layout, self.metadata)
+        self.reset()
+
+    def reset(self) -> None:
+        """Start drawing afresh against the writer's current layout. Separate
+        from ``configure`` because a device may have configured the buffer
+        itself — a streaming device does, as part of arming."""
         self._writer.frames[...] = 0  # once, so old pixels don't read as bars
         self._bars.clear()
         dtype = self._writer.frames.dtype

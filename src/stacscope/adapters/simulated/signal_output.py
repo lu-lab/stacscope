@@ -15,9 +15,12 @@ class SimulatedSignalOutput:
     in virtual time. Keeps everything written, for tests to inspect.
     """
 
-    def __init__(self, clock: Clock) -> None:
+    def __init__(self, clock: Clock, bus=None) -> None:
         self.clock = clock
         self.config: OutputConfig | None = None
+        self.bus = bus
+        """An optional ``TriggerBus``: the wire a triggered device listens on.
+        Real hardware has no equivalent, so nothing here depends on it."""
         self._reset()
 
     def _reset(self) -> None:
@@ -39,9 +42,11 @@ class SimulatedSignalOutput:
     async def configure(self, config: OutputConfig) -> None:
         self.config = config
         self._reset()
+        if self.bus is not None:
+            self.bus.configured(config)
 
     async def arm(self) -> None:
-        self._reset()
+        self._reset()  # the bus is reset by stop(), which always precedes this
 
     def space_available(self) -> int:
         self._check()
@@ -60,12 +65,16 @@ class SimulatedSignalOutput:
             self.timeline.append((label, self.samples_written))
         self._ao.append(ao.copy())
         self._do.append(do.copy())
+        if self.bus is not None:
+            self.bus.wrote(do, self.samples_written)
         self.samples_written += n
 
     async def go(self) -> None:
         if self.samples_written == 0:
             raise RuntimeError("cannot start output with nothing written")
         self._started_at = self.clock.now()
+        if self.bus is not None:
+            self.bus.started(self._started_at)
 
     async def wait_for_space(self, n: int) -> None:
         if n > self.config.buffer_samples:
@@ -88,6 +97,8 @@ class SimulatedSignalOutput:
         if not self.stopped:
             self._played_at_stop = self.samples_played()
             self.stopped = True
+        if self.bus is not None:
+            self.bus.stopped()
 
     # --- simulation controls and inspection -------------------------------------
 

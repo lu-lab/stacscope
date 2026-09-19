@@ -1,5 +1,6 @@
 """A reader's own position in the ring, for reading every frame in order."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,20 @@ class Frame:
     data: np.ndarray
 
 
+@dataclass(frozen=True, eq=False)
+class Group:
+    """A complete group of frames (a stack, say), ``first`` to ``first + len - 1``.
+
+    ``data`` is one contiguous view when the group does not wrap the ring (set
+    ``n_slots`` to a multiple of the group size to guarantee it), otherwise a
+    sequence of per-frame views. Either way, no copies.
+    """
+
+    first: int
+    acquisition_id: int
+    data: np.ndarray | Sequence[np.ndarray]
+
+
 class Cursor:
     def __init__(self, reader: "FrameReader", position: int):
         self._reader = reader
@@ -51,3 +66,40 @@ class Cursor:
         index = self.position
         self.position += 1
         return Frame(index, reader.acquisition_id, reader.frames[reader.slot_of(index)])
+
+    def latest(self) -> Frame | None:
+        """The newest frame, if it is newer than this cursor's position.
+        Frames skipped on the way are not an error."""
+        reader = self._reader
+        oldest, published = reader._window()
+        newest = published - 1
+        if newest < max(self.position, oldest):
+            return None
+        self.position = published
+        return Frame(newest, reader.acquisition_id, reader.frames[reader.slot_of(newest)])
+
+    def latest_group(self, size: int) -> Group | None:
+        """The newest complete group of ``size`` frames, counted from the
+        acquisition's first frame, if it is newer than this cursor's position
+        and none of it has been overwritten."""
+        reader = self._reader
+        oldest, published = reader._window()
+        layout = reader._layout
+        if layout is None:
+            return None
+        if size > layout.n_slots - layout.in_flight:
+            raise ValueError(f"a group of {size} can never fit in the readable slots")
+        start = reader.acquisition_start
+        complete = (published - start) // size
+        if complete == 0:
+            return None
+        first = start + (complete - 1) * size
+        if first < max(self.position, oldest):
+            return None
+        self.position = first + size
+        slot = reader.slot_of(first)
+        if slot + size <= layout.n_slots:
+            data = reader.frames[slot : slot + size]
+        else:
+            data = tuple(reader.frames[reader.slot_of(i)] for i in range(first, first + size))
+        return Group(first, reader.acquisition_id, data)

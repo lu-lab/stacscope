@@ -1,9 +1,9 @@
 """B4 — reading every frame, in order, and knowing when you could not.
 
 No backpressure: a reader that falls a ring behind loses frames. It must be
-told how many, never handed an overwritten frame as if it were fine. A DMA
-producer's device writes ``in_flight`` frames ahead of the counter, so those
-slots are unsafe before the counter says so.
+told how many, never handed an overwritten frame as if it were fine. Every
+producer writes at least the next frame before publishing it (a DMA device
+may write more), so ``in_flight`` slots are unsafe before the counter says so.
 """
 
 import pytest
@@ -12,7 +12,7 @@ from conftest import produce
 from stacscope.core.buffer import FrameBuffer, Layout, Overrun
 
 
-def layout(n_slots=4, in_flight=0, shape=(2, 2)):
+def layout(n_slots=4, in_flight=1, shape=(2, 2)):
     return Layout(shape=shape, dtype="<u2", n_slots=n_slots, in_flight=in_flight)
 
 
@@ -63,24 +63,25 @@ def test_a_cursor_starts_now_unless_told_otherwise(rig):
 def test_a_lapped_cursor_is_told_how_many_frames_it_lost(rig):
     writer, reader = rig(n_slots=4)
     cursor = reader.cursor()
-    produce(writer, 6)  # frames 0 and 1 are overwritten by 4 and 5
+    produce(writer, 6)  # 0 and 1 overwritten by 4 and 5; 2's slot takes 6 next
 
     with pytest.raises(Overrun) as lost:
         cursor.next()
-    assert lost.value.skipped == 2
-    assert [f.index for f in drain(cursor)] == [2, 3, 4, 5]
+    assert lost.value.skipped == 3
+    assert [f.index for f in drain(cursor)] == [3, 4, 5]
 
 
 def test_frames_in_flight_are_already_unsafe(rig):
-    # The device is writing frame 4 into slot 0 before the counter says so.
-    writer, reader = rig(n_slots=4, in_flight=1)
+    # A DMA device two frames ahead is writing frames 4 and 5 into slots 0
+    # and 1 before the counter says so.
+    writer, reader = rig(n_slots=4, in_flight=2)
     cursor = reader.cursor()
     produce(writer, 4)
 
     with pytest.raises(Overrun) as lost:
         cursor.next()
-    assert lost.value.skipped == 1
-    assert [f.index for f in drain(cursor)] == [1, 2, 3]
+    assert lost.value.skipped == 2
+    assert [f.index for f in drain(cursor)] == [2, 3]
 
 
 def test_still_valid_is_exact_at_both_ends(rig):
@@ -143,9 +144,10 @@ def test_a_cursor_follows_a_layout_change(rig):
     assert (frame.data == 1).all()
 
 
-def test_in_flight_must_leave_at_least_one_readable_slot(make_writer):
+@pytest.mark.parametrize("n_slots, in_flight", [(2, 2), (4, 0)])
+def test_in_flight_is_at_least_one_and_leaves_a_readable_slot(make_writer, n_slots, in_flight):
     from stacscope.core.buffer import LayoutError
 
     writer = make_writer()
     with pytest.raises(LayoutError):
-        writer.configure(layout(n_slots=2, in_flight=2))
+        writer.configure(layout(n_slots=n_slots, in_flight=in_flight))

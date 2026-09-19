@@ -18,6 +18,11 @@ class Layout:
     ``strides`` default to C order; ``slot_bytes`` defaults to the smallest
     slot that holds ``frame_offset`` plus the frame. Padding and embedded
     device data are expressed through these, never removed.
+
+    ``in_flight`` is how many frames the producer may be writing ahead of the
+    counter. It is at least 1: every producer, DMA or not, writes frame
+    ``published()`` into its slot before publishing it, so the frame that
+    slot held is already being overwritten.
     """
 
     shape: tuple[int, ...]
@@ -26,7 +31,7 @@ class Layout:
     strides: tuple[int, ...] | None = None
     frame_offset: int = 0
     slot_bytes: int | None = None
-    in_flight: int = 0
+    in_flight: int = 1
 
     def resolve(self) -> "ResolvedLayout":
         dtype = np.dtype(self.dtype)
@@ -49,7 +54,9 @@ class Layout:
         slot_bytes = needed if self.slot_bytes is None else self.slot_bytes
         if slot_bytes < needed:
             raise LayoutError(f"frame needs {needed} bytes of its slot, slot has {slot_bytes}")
-        if not 0 <= self.in_flight < self.n_slots:
+        if self.in_flight < 1:
+            raise LayoutError("every producer has at least the next frame in flight")
+        if self.in_flight >= self.n_slots:
             raise LayoutError(f"{self.in_flight} frames in flight leave no slot to read")
         return ResolvedLayout(
             shape, dtype, self.n_slots, strides, self.frame_offset, slot_bytes, self.in_flight
@@ -64,7 +71,7 @@ class ResolvedLayout:
     strides: tuple[int, ...]
     frame_offset: int
     slot_bytes: int
-    in_flight: int = 0
+    in_flight: int = 1
 
     @property
     def total_bytes(self) -> int:

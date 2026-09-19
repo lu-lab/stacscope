@@ -70,8 +70,8 @@ def test_a_camera_drop_and_a_lapped_reader_are_told_apart(rig):
     camera(writer, [4, 5, 6, 7, 8, 9])  # now the reader falls a ring behind
     with pytest.raises(Overrun):
         cursor.next()
-    hw = [int(cursor.next().meta["hw_frame"]) for _ in range(4)]
-    assert hw == [6, 7, 8, 9], "no camera gap: this loss was the reader's"
+    hw = [int(cursor.next().meta["hw_frame"]) for _ in range(3)]
+    assert hw == [7, 8, 9], "no camera gap: this loss was the reader's"
 
 
 def test_the_header_declares_what_the_metadata_holds(rig):

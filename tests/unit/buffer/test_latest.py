@@ -17,7 +17,7 @@ from stacscope.core.buffer import FrameBuffer, Layout
 def rig(make_writer, name):
     readers = []
 
-    def build(n_slots=6, in_flight=0):
+    def build(n_slots=6, in_flight=1):
         writer = make_writer()
         writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=n_slots, in_flight=in_flight))
         writer.start_acquisition()

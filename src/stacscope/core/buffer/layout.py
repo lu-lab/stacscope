@@ -26,6 +26,7 @@ class Layout:
     strides: tuple[int, ...] | None = None
     frame_offset: int = 0
     slot_bytes: int | None = None
+    in_flight: int = 0
 
     def resolve(self) -> "ResolvedLayout":
         dtype = np.dtype(self.dtype)
@@ -48,7 +49,11 @@ class Layout:
         slot_bytes = needed if self.slot_bytes is None else self.slot_bytes
         if slot_bytes < needed:
             raise LayoutError(f"frame needs {needed} bytes of its slot, slot has {slot_bytes}")
-        return ResolvedLayout(shape, dtype, self.n_slots, strides, self.frame_offset, slot_bytes)
+        if not 0 <= self.in_flight < self.n_slots:
+            raise LayoutError(f"{self.in_flight} frames in flight leave no slot to read")
+        return ResolvedLayout(
+            shape, dtype, self.n_slots, strides, self.frame_offset, slot_bytes, self.in_flight
+        )
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,7 @@ class ResolvedLayout:
     strides: tuple[int, ...]
     frame_offset: int
     slot_bytes: int
+    in_flight: int = 0
 
     @property
     def total_bytes(self) -> int:

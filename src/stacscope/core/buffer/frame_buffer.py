@@ -12,6 +12,7 @@ import numpy as np
 
 from stacscope.core.buffer import header
 from stacscope.core.buffer.counter import Counter
+from stacscope.core.buffer.cursor import Cursor
 from stacscope.core.buffer.header import HEADER_BYTES, MAGIC, META_RECORD_BYTES, VERSION
 from stacscope.core.buffer.layout import Layout, LayoutError, ResolvedLayout
 
@@ -62,6 +63,28 @@ class _Mapped:
     def published(self) -> int:
         """Frames published, ever. Frame ``i`` exists for ``i < published()``."""
         return self._counter.published()
+
+    def oldest(self) -> int:
+        """The oldest frame still safe to read: in this acquisition, and not in
+        a slot the device may already be overwriting."""
+        return self._window()[0]
+
+    def still_valid(self, index: int) -> bool:
+        """Whether frame ``index`` is published and not yet overwritten. Check it
+        after using a view to know the view was not torn."""
+        oldest, published = self._window()
+        return oldest <= index < published
+
+    def _window(self) -> tuple[int, int]:
+        """(oldest safe frame, published) from one read of the counter."""
+        published = self.published()
+        return self._oldest(published), published
+
+    def _oldest(self, published: int) -> int:
+        layout = self._layout
+        if layout is None:
+            return published
+        return max(self.acquisition_start, published + layout.in_flight - layout.n_slots)
 
     def slot_of(self, index: int) -> int:
         """The slot holding global frame ``index`` in the current acquisition."""
@@ -118,6 +141,7 @@ class FrameWriter(_Mapped):
             frame_offset=resolved.frame_offset,
             dtype=resolved.dtype.str.encode(),
             ndim=len(resolved.shape),
+            in_flight=resolved.in_flight,
             shape=resolved.shape + (0,) * pad,
             strides=resolved.strides + (0,) * pad,
         )
@@ -181,11 +205,18 @@ class FrameReader(_Mapped):
             self._close()
             raise
 
+    def cursor(self, position: int | None = None) -> Cursor:
+        """A reading position of this reader's own. Starts at the next frame to
+        be published unless given one (e.g. ``oldest()``)."""
+        return Cursor(self, self.published() if position is None else position)
+
     def sync(self) -> bool:
         """Catch up with a new layout or acquisition. True if either changed.
 
         A layout block seen mid-change is ignored; the current mapping stays.
         """
+        if header.read(self._shm.buf, "layout_generation") == self._generation:
+            return False
         seen = _read_stable(self._shm.buf)
         if seen is None:
             return False
@@ -199,6 +230,17 @@ class FrameReader(_Mapped):
         self.acquisition_id, self.acquisition_start = acquisition
         self._map(layout, writable=False)
         return True
+
+    def _window(self) -> tuple[int, int]:
+        # The producer changes the layout block before publishing frames under
+        # it, so if the generation is unchanged after loading the counter,
+        # every frame below that count belongs to the layout this reader holds.
+        while True:
+            published = self.published()
+            if header.read(self._shm.buf, "layout_generation") == self._generation:
+                return self._oldest(published), published
+            if not self.sync():
+                time.sleep(0)  # the producer is mid-change
 
     def _check_identity(self):
         buf = self._shm.buf
@@ -242,4 +284,5 @@ def _read_layout(buf) -> ResolvedLayout:
         strides=header.read(buf, "strides")[:ndim],
         frame_offset=header.read(buf, "frame_offset"),
         slot_bytes=header.read(buf, "slot_bytes"),
+        in_flight=header.read(buf, "in_flight"),
     )

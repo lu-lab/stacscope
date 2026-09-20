@@ -6,7 +6,6 @@ seen in practice from C libraries behind a ctypes layer, and the same harness
 is what the DCAM adapter will be put through when it arrives.
 """
 
-import faulthandler
 import os
 import pathlib
 import sys
@@ -83,15 +82,20 @@ class FaultyDevice(Actor):
 
 
 def _crash() -> None:
-    """Die the way a bad pointer dereference dies.
+    """Die the way a driver dies: at once, with no Python left running.
 
-    Windows would otherwise put up a crash dialog and wait for someone to
-    click it, which in a test suite is indistinguishable from the hang this
-    milestone exists to rule out.
+    ``os.abort`` rather than a raised SIGSEGV. A free-threaded interpreter
+    installs handling of its own for segmentation faults, so raising one there
+    can return instead of killing the process -- which looked exactly like a
+    death that went unreported. SIGABRT is nobody's to catch.
+
+    The suppression is so the process dies silently: Windows would otherwise
+    put up a crash dialog and wait for someone to click it, which in a test
+    suite is indistinguishable from the hang this milestone exists to rule out.
     """
     if sys.platform == "win32":
         import ctypes
 
         SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX = 0x0001, 0x0002
         ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
-    faulthandler._sigsegv()
+    os.abort()

@@ -38,6 +38,7 @@ from stacscope.core.protocol import (
     StopAcquisition,
     StopDevice,
 )
+from stacscope.core.timing.launcher import Launcher, Placement
 
 
 class CoordinatorState(Enum):
@@ -58,6 +59,9 @@ class DeviceSpec:
     stop_timeout: float | None = None
     """Defaults to ``ready_timeout``."""
     heartbeat: HeartbeatPolicy | None = None
+    placement: Placement = Placement.IN_PROCESS
+    """Where the device runs. A process of its own costs a link and buys fault
+    isolation: the right trade for a vendor driver, not for a shutter."""
     required: bool = True
     """Whether losing this device mid-run ends the acquisition. Default true,
     so the safe answer is the one nobody has to remember. An optional device is
@@ -84,8 +88,14 @@ class Coordinator(Actor):
     - Every launch is published as ``DeviceLaunched(name, ref)``.
     """
 
-    def __init__(self, source: DeviceSpec, participants: Sequence[DeviceSpec]) -> None:
+    def __init__(
+        self,
+        source: DeviceSpec,
+        participants: Sequence[DeviceSpec],
+        launcher: Launcher | None = None,
+    ) -> None:
         super().__init__()
+        self._launcher = launcher or Launcher()
         self._source_spec = source
         self._specs = {spec.name: spec for spec in participants}
         self.source: ActorRef | None = None
@@ -94,21 +104,22 @@ class Coordinator(Actor):
         self._stop_waiters: list[ActorRef] = []
 
     async def setup(self) -> None:
-        self._launch_source()
+        await self._launch_source()
         for spec in self._specs.values():
-            self._launch(spec)
+            await self._launch(spec)
 
-    def _launch_source(self) -> None:
-        self.source = self._spawn(self._source_spec)
+    async def _launch_source(self) -> None:
+        self.source = await self._spawn(self._source_spec)
         self.source.tell(Subscribe(self.ref))
 
-    def _launch(self, spec: DeviceSpec) -> None:
-        ref = self.participants[spec.name] = self._spawn(spec)
+    async def _launch(self, spec: DeviceSpec) -> None:
+        ref = self.participants[spec.name] = await self._spawn(spec)
         ref.tell(Subscribe(self.ref))  # so a device's faults reach here, not just its death
         self.ref.tell(Subscribe(ref))  # and so the source's phases reach the device
 
-    def _spawn(self, spec: DeviceSpec) -> ActorRef:
-        ref = self.spawn_child(spec.factory(), name=spec.name, heartbeat=spec.heartbeat)
+    async def _spawn(self, spec: DeviceSpec) -> ActorRef:
+        """Wherever the launcher puts it, what comes back is a ref like any other."""
+        ref = await self._launcher.launch(self, spec)
         self.publish(DeviceLaunched(spec.name, ref))
         return ref
 
@@ -126,7 +137,7 @@ class Coordinator(Actor):
                     self._stop_waiters.append(self.reply_to)
                 self.source.tell(Finish(), Priority.URGENT)
             case Relaunch(name):
-                self._relaunch(name)
+                await self._relaunch(name)
             case SourceFinished():
                 if self.state in (CoordinatorState.RUNNING, CoordinatorState.STOPPING):
                     await self._stop_everyone()
@@ -220,20 +231,20 @@ class Coordinator(Actor):
         self.state = CoordinatorState.IDLE
         self._release_stop_waiters(AcquisitionStopped())
 
-    def _relaunch(self, name: str) -> None:
+    async def _relaunch(self, name: str) -> None:
         if self._refuse(Relaunch(name), CoordinatorState.IDLE, CoordinatorState.FAULTED):
             return
         if name == self._source_spec.name:
             if self.source is not None:
                 self._reject(f"{name} is running; only a lost device can be relaunched")
                 return
-            self._launch_source()
+            await self._launch_source()
             self.state = CoordinatorState.IDLE
         elif name in self._specs:
             if name in self.participants:
                 self._reject(f"{name} is running; only a lost device can be relaunched")
                 return
-            self._launch(self._specs[name])
+            await self._launch(self._specs[name])
         else:
             self._reject(f"no device named {name!r} is configured")
             return

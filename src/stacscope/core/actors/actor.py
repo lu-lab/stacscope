@@ -18,6 +18,15 @@ _NAME = re.compile(r"[A-Za-z0-9_.-]+")
 _default_ids = itertools.count()
 
 
+class _WakeUp:
+    """Put in the mailbox by ``stop`` so a loop waiting on an empty one notices.
+
+    Without it, an actor told to stop from outside would sit in ``get()`` until
+    something else happened to arrive -- and its ``teardown``, which is what
+    releases the hardware, would never run.
+    """
+
+
 class Actor:
     """Base actor: ``setup()`` → ``run()`` → ``teardown()``.
 
@@ -36,6 +45,8 @@ class Actor:
         self._subscribers: dict[ActorRef, None] = {}  # ordered set
         self.ref: ActorRef | None = None
         self.clock: Clock = MonotonicClock()
+        self.started = asyncio.Event()
+        """Set once ``setup`` has returned and the mailbox is being served."""
         self.stopped = asyncio.Event()
         self.exit_error: Exception | None = None
         """Why the actor ended, or ``None`` for a clean ``stop()``."""
@@ -55,6 +66,8 @@ class Actor:
                     self._subscribers[subscriber] = None
                 case Unsubscribe(subscriber):
                     self._subscribers.pop(subscriber, None)
+                case _WakeUp():
+                    pass  # only here to end the wait above
                 case msg:
                     self._reply_to = envelope.reply_to
                     try:
@@ -88,8 +101,13 @@ class Actor:
             subscriber.tell(msg, priority)
 
     def stop(self) -> None:
-        """End the message loop once the current message has been handled."""
+        """End the message loop once the current message has been handled.
+
+        Safe to call from outside the actor -- which is how a child process
+        shuts its device down when the engine goes away.
+        """
         self._stopping = True
+        self._mailbox.put(Envelope(_WakeUp()), Priority.URGENT)
 
     def spawn_child(
         self,
@@ -121,6 +139,7 @@ class Actor:
     async def _lifecycle(self) -> None:
         try:
             await self.setup()
+            self.started.set()
             await self.run()
         except Exception as exc:
             self.exit_error = exc
@@ -138,6 +157,26 @@ class Actor:
                 self.stopped.set()
 
 
+def adopt(
+    parent: Actor,
+    child: ActorRef,
+    *,
+    heartbeat: HeartbeatPolicy | None = None,
+    clock: Clock | None = None,
+    on_release: Callable[[], None] | None = None,
+) -> ChildWatch:
+    """Supervise a child this actor did not start -- one in another process.
+
+    Supervision needs only an address: exits are reported by whoever notices
+    them, and a heartbeat travels like any other message. ``on_release`` runs
+    with the name, just before ``ChildExited``, for whatever else the far side
+    owns -- a process to be reaped, a connection to be closed.
+    """
+    name = child.address.rsplit("/", 1)[-1]
+    _reserve(parent, name)
+    return _watch(parent, child, name, heartbeat, clock or parent.clock, on_release)
+
+
 def spawn(
     actor: Actor,
     *,
@@ -146,22 +185,28 @@ def spawn(
     heartbeat: HeartbeatPolicy | None = None,
     link: Link | None = None,
     name: str | None = None,
+    address: str | None = None,
 ) -> ActorRef:
     """Start ``actor`` on the running event loop and return its address.
 
     ``name`` must match ``[A-Za-z0-9_.-]+``; by default it is derived from the
     class name. With a ``parent``, the address is the parent's path plus the
     name, and the actor's exit is reported to the parent as ``ChildExited``.
+
+    ``address`` places the actor at an explicit path instead. It is for an
+    actor whose parent is in another process: the hierarchy it belongs to is
+    real, but no part of it is here to hang the name from.
     """
+    if address is not None and parent is not None:
+        raise ValueError("an actor with a parent takes its address from it")
     if name is None:
         name = f"{type(actor).__name__}-{next(_default_ids)}"
     elif not _NAME.fullmatch(name):
         raise ValueError(f"actor name {name!r} must match {_NAME.pattern}")
     if parent is not None:
-        if name in parent._child_names:
-            raise ValueError(f"{parent.ref.address} already has a child named {name!r}")
-        parent._child_names.add(name)
-    address = name if parent is None else f"{parent.ref.address}/{name}"
+        _reserve(parent, name)
+    if address is None:
+        address = name if parent is None else f"{parent.ref.address}/{name}"
 
     transport: Transport = LocalTransport(actor._receive)
     ref = actor.ref = ActorRef(link(transport) if link else transport, address)
@@ -170,14 +215,7 @@ def spawn(
 
     watch = None
     if parent is not None:
-        def release() -> None:
-            parent._child_names.discard(name)
-            parent._children.remove(watch)
-
-        watch = ChildWatch(parent.ref, ref, release)
-        parent._children.append(watch)
-        if heartbeat is not None:
-            watch.start_heartbeat(heartbeat, actor.clock)
+        watch = _watch(parent, ref, name, heartbeat, actor.clock, None)
 
     async def lifecycle() -> None:
         cancelled = False
@@ -196,3 +234,32 @@ def spawn(
 
     actor._task = asyncio.create_task(lifecycle())
     return ref
+
+
+def _reserve(parent: Actor, name: str) -> None:
+    if name in parent._child_names:
+        raise ValueError(f"{parent.ref.address} already has a child named {name!r}")
+    parent._child_names.add(name)
+
+
+def _watch(
+    parent: Actor,
+    child: ActorRef,
+    name: str,
+    heartbeat: HeartbeatPolicy | None,
+    clock: Clock,
+    on_release: Callable[[], None] | None,
+) -> ChildWatch:
+    watch: ChildWatch
+
+    def release() -> None:
+        parent._child_names.discard(name)
+        parent._children.remove(watch)
+        if on_release is not None:
+            on_release()
+
+    watch = ChildWatch(parent.ref, child, release)
+    parent._children.append(watch)
+    if heartbeat is not None:
+        watch.start_heartbeat(heartbeat, clock)
+    return watch

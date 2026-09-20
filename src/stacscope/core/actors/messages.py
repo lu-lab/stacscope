@@ -22,6 +22,20 @@ class ChildExited:
 
 @message
 @dataclass(frozen=True, slots=True)
+class ActorDied:
+    """A runtime's last word about the actor it was hosting, sent to its peer.
+
+    Never reaches a handler. It exists so that a death across a boundary says
+    as much as the same death in this process would: without it, an actor that
+    raised would be reported only as a process that exited, and the exception
+    that explains it would be lost at exactly the moment it is wanted.
+    """
+
+    reason: str | None
+
+
+@message
+@dataclass(frozen=True, slots=True)
 class Heartbeat:
     """Liveness ping. Answered by the runtime on receipt, never by ``handle``."""
 

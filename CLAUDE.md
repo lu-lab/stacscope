@@ -65,11 +65,31 @@ section explains why.
   caused by the pulses that played — plus `SimulatedCamera` and
   `SimulatedPressureBox`. Decisions are in the plan's "Devices — the
   participant side".
+- **Milestone 4's spec tests are complete** (X1–X11, the process boundary), on
+  `main`. `core/transport/` now holds the wire frame (`wire.py`), the address
+  book for one link (`routing.py`, `Peer`), framing over a stream
+  (`stream.py`, `Connection`), the parent side (`process.py`, `ProcessHost`)
+  and the child entry point (`child.py`, run as `python -m
+  stacscope.core.transport.child`). Placement is config: `DeviceSpec.placement`
+  plus `Launcher` in `core/timing/launcher.py`, so the Coordinator asks for a
+  device and never learns where it went. The runtime gained `adopt` (watch a
+  child it did not start), `spawn(address=...)`, an `Actor.started` event, and
+  a `stop()` that works from outside so `teardown` still releases the hardware.
+  `adapters/simulated/` gained `FaultyDevice` and `SimulatedStreamingCamera`.
+  **A heartbeat is mandatory for a process child**, by decision: the link
+  catches a process that dies, only a heartbeat catches one that is alive and
+  no longer answering. Decisions and findings are in the plan's "Milestone 4".
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
   on purpose and confirm a test fails. It earns its keep: in Milestone 3 it
   found a stale-`ActorRef` bug in the runtime, a failed file close that could
-  leave a shutter open, and two vacuous assertions.
+  leave a shutter open, and two vacuous assertions; in Milestone 4 it found a
+  shutdown backstop that was masking the bug it was added for.
+- **Real-clock tests.** The process tests in `tests/integration/` cannot run in
+  virtual time — a fresh interpreter has a real clock. They are bounded twice:
+  each has its own deadline, and the `host` fixture kills whatever is left. A
+  child that cannot reach its endpoint exits rather than waits, as does one
+  whose link home drops. Never add a wait here without a deadline.
 
 Names follow the plan: `setup` / `run` / `teardown` hooks; "segment" for
 WARMUP/MAIN/COOLDOWN (reserve "buffer" for the data flow); "actor runtime", not

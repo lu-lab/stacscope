@@ -8,6 +8,7 @@ is what the DCAM adapter will be put through when it arrives.
 
 import os
 import pathlib
+import signal
 import sys
 import time
 from enum import Enum
@@ -82,20 +83,19 @@ class FaultyDevice(Actor):
 
 
 def _crash() -> None:
-    """Die the way a driver dies: at once, with no Python left running.
+    """Die the way a driver crash kills a process: at once, no Python left.
 
-    ``os.abort`` rather than a raised SIGSEGV. A free-threaded interpreter
-    installs handling of its own for segmentation faults, so raising one there
-    can return instead of killing the process -- which looked exactly like a
-    death that went unreported. SIGABRT is nobody's to catch.
-
-    The suppression is so the process dies silently: Windows would otherwise
-    put up a crash dialog and wait for someone to click it, which in a test
-    suite is indistinguishable from the hang this milestone exists to rule out.
+    The mode is defined by that observable, not by a particular signal, and
+    deliberately so. Raising a fatal signal from inside the process -- SIGSEGV
+    via faulthandler, or SIGABRT via ``os.abort`` -- proved unreliable on the
+    free-threaded build, where the process carried on and its "death" was
+    never reported. An uncatchable kill behaves the same everywhere, and is
+    what a caller sees of a segfault anyway: the process is simply gone.
     """
     if sys.platform == "win32":
         import ctypes
 
         SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX = 0x0001, 0x0002
         ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
-    os.abort()
+        os.abort()  # no SIGKILL here; this is the decisive one Windows has
+    os.kill(os.getpid(), signal.SIGKILL)

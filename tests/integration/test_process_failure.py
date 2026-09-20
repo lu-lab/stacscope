@@ -63,11 +63,15 @@ async def test_a_process_that_dies_is_reported_at_once_naming_the_status(host, p
     device = await host.launch(
         parent, name="camera", factory=failing(mode), heartbeat=PATIENT_HEARTBEAT
     )
+    process = host.process("camera")
     started = asyncio.get_running_loop().time()
 
     device.tell(StartDevice("", 1))
 
-    assert await until(lambda: parent.exits, deadline=3.0)
+    assert await until(lambda: parent.exits, deadline=3.0), (
+        f"no death reported; the child's returncode is {process.returncode!r}"
+        " (None means it is still running, so it never died at all)"
+    )
     assert asyncio.get_running_loop().time() - started < 2.0
     [exited] = parent.exits
     assert "process" in exited.error

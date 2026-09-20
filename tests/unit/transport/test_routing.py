@@ -33,7 +33,7 @@ from stacscope.core.protocol import (
     StartDevice,
     StopDevice,
 )
-from stacscope.core.transport import Codec, Peer, Undeliverable, Wire
+from stacscope.core.transport import Codec, Connection, Peer, Undeliverable, Wire
 
 
 class Loopback:
@@ -183,3 +183,29 @@ async def test_a_reply_nobody_is_waiting_for_is_dropped_rather_than_refused(link
     promises to discard -- and must not be reported as one during the slow
     device that caused it."""
     link.here.ref_to(f"device{REPLY_MARK}7").tell(DeviceStopped())
+
+
+# --- the stream underneath ---------------------------------------------------
+
+
+async def test_a_connection_lets_go_of_its_socket_when_the_stream_ends():
+    """A socket nobody owns is a shutdown that waits on it. When the far side
+    goes, this side is finished with it too -- and says so."""
+    wire = Wire(Codec(MESSAGES))
+    accepted: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def on_client(reader, writer):
+        accepted.set_result(Connection(reader, writer, wire))
+
+    server = await asyncio.start_server(on_client, "127.0.0.1", 0)
+    host, port = server.sockets[0].getsockname()[:2]
+    client_reader, client_writer = await asyncio.open_connection(host, port)
+    connection = await accepted
+
+    client_writer.close()
+    await connection.serve()  # returns when the far side is gone
+
+    assert connection.closed.is_set()
+    assert connection.let_go()
+    server.close()
+    await server.wait_closed()

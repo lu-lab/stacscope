@@ -1,6 +1,6 @@
 """Simulated implementations of every port. First-class, not test scaffolding."""
 
-from stacscope.adapters.simulated.camera import SimulatedCamera
+from stacscope.adapters.simulated.camera import SimulatedCamera, SimulatedStreamingCamera
 from stacscope.adapters.simulated.clock import VirtualClock
 from stacscope.adapters.simulated.device import SimulatedDevice
 from stacscope.adapters.simulated.faulty import Fail, FaultyDevice
@@ -20,6 +20,7 @@ __all__ = [
     "SimulatedLink",
     "SimulatedPressureBox",
     "SimulatedSignalOutput",
+    "SimulatedStreamingCamera",
     "SimulatedTimingSource",
     "TriggerBus",
     "VirtualClock",

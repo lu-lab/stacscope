@@ -27,6 +27,7 @@ from stacscope.core.protocol import (
     StopAcquisition,
 )
 from stacscope.core.timing import Coordinator, CoordinatorState, DeviceSpec, Launcher, Placement
+from stacscope.core.transport import ProcessHost
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -98,6 +99,56 @@ async def test_a_process_alive_but_no_longer_answering_is_found_by_heartbeat(hos
     [exited] = parent.exits
     assert "heartbeat" in exited.error
     assert host.running() == 0
+
+
+async def test_a_process_child_is_given_a_heartbeat_even_when_none_was_asked_for(parent):
+    """Decision, deliberately not left to config: the link catches a process
+    that dies, and only a heartbeat catches one that is alive and no longer
+    answering. The safe answer must not be one a spec can forget."""
+    host = ProcessHost(heartbeat=FAST_HEARTBEAT)
+    await host.start()
+    try:
+        device = await host.launch(parent, name="camera", factory=failing(Fail.BLOCK))
+
+        device.tell(StartDevice("", 1))
+
+        assert await until(lambda: parent.exits, deadline=3.0)
+        assert "heartbeat" in parent.exits[0].error
+    finally:
+        await host.close()
+
+
+async def test_closing_the_link_lets_the_device_release_its_hardware(host, parent, tmp_path):
+    """The orderly shutdown. A child is asked to go by closing its link, and it
+    stops its device first -- because ``teardown`` is where a camera is handed
+    back, and a process killed outright never runs one."""
+    note = tmp_path / "released.txt"
+    await host.launch(parent, name="camera", factory=partial(FaultyDevice, note=str(note)))
+
+    started = asyncio.get_running_loop().time()
+    await host.close()
+
+    assert note.read_text(encoding="utf-8") == "released"
+    # Promptly, too: letting the interpreter tear the process down would also
+    # leave a note, but only after the grace period and only for a teardown
+    # that never awaits anything. A device asked to stop stops.
+    assert asyncio.get_running_loop().time() - started < 2.0
+
+
+async def test_shutting_down_after_a_death_waits_for_nothing(parent):
+    """A dead child's socket is nobody's to hold. Left open on this side,
+    shutdown waits on a connection that will never close -- which is how this
+    suite first hung, and the reason that wait is bounded at all."""
+    host = ProcessHost(heartbeat=FAST_HEARTBEAT)
+    await host.start()
+    device = await host.launch(parent, name="camera", factory=failing(Fail.EXIT))
+    device.tell(StartDevice("", 1))
+    assert await until(lambda: parent.exits, deadline=3.0)
+
+    started = asyncio.get_running_loop().time()
+    await host.close()
+
+    assert asyncio.get_running_loop().time() - started < 1.0
 
 
 async def test_a_wedged_process_is_killed_rather_than_left_holding_its_device(host, parent):

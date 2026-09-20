@@ -11,7 +11,8 @@ in Milestone 2, so what a viewer shows is a bar moving across the field.
 
 from stacscope.adapters.simulated.pattern_producer import PatternProducer
 from stacscope.core.buffer import Layout
-from stacscope.core.devices import DeviceState, Streaming, TimedDevice
+from stacscope.core.devices import DeviceState, SoftwareTimed, Streaming, TimedDevice
+from stacscope.core.protocol import Phase
 
 
 class SimulatedCamera(Streaming, TimedDevice):
@@ -74,3 +75,58 @@ class SimulatedCamera(Streaming, TimedDevice):
             self.producer.emit(1)
         else:
             self.missed += 1
+
+
+class SimulatedStreamingCamera(SoftwareTimed, Streaming, TimedDevice):
+    """A camera with no trigger line, free-running once the acquisition reaches
+    the phase it chose.
+
+    Not how the instrument works -- the DAQ's pulse reaches a camera's hardware
+    whichever process owns the driver -- but a trigger is a wire, and a wire
+    does not cross a process boundary. What this stands in for is the part that
+    does: control over the link, frames through shared memory. A frame count
+    here is therefore timed by the camera and not caused by the source, which
+    is the one thing an out-of-process camera cannot demonstrate in simulation.
+    """
+
+    def __init__(
+        self,
+        buffer_name: str,
+        *,
+        interval: float = 0.005,
+        start_phase: Phase = Phase.RUN,
+        shape: tuple[int, ...] = (64, 64),
+        dtype: str = "<u2",
+        n_slots: int = 16,
+        capacity_bytes: int = 1 << 24,
+        max_slots: int = 64,
+    ) -> None:
+        super().__init__()
+        self.buffer_name = buffer_name
+        self.capacity_bytes = capacity_bytes
+        self.max_slots = max_slots
+        self.interval = interval
+        self.start_phase = start_phase
+        self.shape = shape
+        self.dtype = dtype
+        self.n_slots = n_slots
+        self.producer: PatternProducer | None = None
+
+    def layout(self) -> Layout:
+        return Layout(shape=self.shape, dtype=self.dtype, n_slots=self.n_slots)
+
+    def metadata(self):
+        return self.producer.metadata
+
+    async def setup(self) -> None:
+        await super().setup()
+        self.producer = PatternProducer(self.writer)
+
+    async def arm(self, root_filename: str, cycles: int) -> None:
+        await super().arm(root_filename, cycles)  # buffer configured, acquisition started
+        self.producer.reset()
+
+    async def routine(self) -> None:
+        while True:
+            await self.clock.sleep(self.interval)
+            self.producer.emit(1)

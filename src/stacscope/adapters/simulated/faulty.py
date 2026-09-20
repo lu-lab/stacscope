@@ -8,6 +8,7 @@ is what the DCAM adapter will be put through when it arrives.
 
 import faulthandler
 import os
+import pathlib
 import sys
 import time
 from enum import Enum
@@ -41,10 +42,20 @@ class Fail(Enum):
 class FaultyDevice(Actor):
     """Speaks the device protocol until the named message, then misbehaves."""
 
-    def __init__(self, fail: Fail = Fail.NOTHING, *, on: str = "StartDevice") -> None:
+    def __init__(
+        self, fail: Fail = Fail.NOTHING, *, on: str = "StartDevice", note: str = ""
+    ) -> None:
         super().__init__()
         self.fail = fail
         self.on = on
+        self.note = note
+        """A path to write in ``teardown``, standing in for releasing hardware.
+        A file is the only evidence of an orderly shutdown that survives the
+        process it happened in."""
+
+    async def teardown(self) -> None:
+        if self.note:
+            pathlib.Path(self.note).write_text("released", encoding="utf-8")
 
     async def handle(self, msg: object) -> None:
         if type(msg).__name__ == self.on:

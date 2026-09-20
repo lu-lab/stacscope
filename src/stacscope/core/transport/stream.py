@@ -87,6 +87,10 @@ class Connection:
         finally:
             await self.close()  # the stream is over; let go of the socket too
 
+    def let_go(self) -> bool:
+        """Whether this side has released the socket. Diagnostic."""
+        return self._writer.is_closing()
+
     async def close(self) -> None:
         self._writer.close()
         try:

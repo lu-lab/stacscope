@@ -230,24 +230,36 @@ class ProcessHost:
     # --- death --------------------------------------------------------------
 
     async def _reap(self, child: _Child) -> None:
-        """A process exit is a death, reported as such. This is the prompt path:
-        it needs no heartbeat to expire, and a segfault cannot slip past it."""
-        code = await child.process.wait()
-        # Its runtime may have said why on the way out, and that reason is
-        # better than an exit status. Give the link a moment to finish
-        # delivering it -- but only a moment.
+        """The prompt path: no heartbeat has to expire for a dead child.
+
+        Two independent signals, because neither can be trusted alone. A
+        process exit carries a status and a reason; a closed link carries
+        neither but cannot be missed. Waiting only for the exit was enough
+        everywhere but one build, where a child killed by a signal is not
+        reaped promptly and its death went unreported until the heartbeat --
+        which is the backstop, not the mechanism.
+        """
+        exited = asyncio.create_task(child.process.wait())
+        closed = asyncio.create_task(child.connection.closed.wait())
         try:
-            await asyncio.wait_for(child.connection.closed.wait(), 1.0)
-        except TimeoutError:
-            pass
+            await asyncio.wait({exited, closed}, return_when=asyncio.FIRST_COMPLETED)
+            # Let the other catch up: the exit status and the child's own last
+            # word both say more than "the link went". Briefly, then report.
+            await asyncio.wait({exited, closed}, timeout=1.0)
+        finally:
+            exited.cancel()
+            closed.cancel()
         if child.watch is not None:
-            child.watch.report(self._why(child, code))
+            child.watch.report(self._why(child))
 
     @staticmethod
-    def _why(child: _Child, code: int) -> str | None:
+    def _why(child: _Child) -> str | None:
         """What killed it, said the way an in-process death would say it."""
         if child.heard_last_word:
             return child.last_word
+        code = child.process.returncode
+        if code is None:
+            return "the link to its process closed"
         return None if code == 0 else f"process exited with status {code}"
 
     def _release(self, name: str) -> None:
@@ -259,7 +271,10 @@ class ProcessHost:
 
     async def _kill(self, process: asyncio.subprocess.Process) -> None:
         _terminate(process)
-        await process.wait()
+        try:
+            await asyncio.wait_for(process.wait(), STOP_GRACE)
+        except TimeoutError:
+            pass  # killed and unreaped is still gone; nothing is served by waiting
 
 
 class _LastWord:

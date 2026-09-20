@@ -53,9 +53,13 @@ async def test_a_clean_exit_is_reported_once_and_frees_the_name(host, parent):
 @pytest.mark.parametrize("mode", [Fail.CRASH, Fail.EXIT], ids=["segfault", "exit"])
 async def test_a_process_that_dies_is_reported_at_once_naming_the_status(host, parent, mode):
     """X7. The heartbeat here is deliberately slow: if it were what noticed,
-    this would take five seconds instead of milliseconds. Process exit needs
-    nothing to be running in the child, which is what makes it the better
-    death signal -- a segfault runs no Python at all."""
+    this would take five seconds instead of milliseconds. A dying process needs
+    nothing to be running in the child, which is what makes it the better death
+    signal -- an aborted process runs no Python at all.
+
+    What the reason says depends on which signal arrived: an exit status when
+    the process has been reaped, the closed link when it has not. Either names
+    the process, and either is a death."""
     device = await host.launch(
         parent, name="camera", factory=failing(mode), heartbeat=PATIENT_HEARTBEAT
     )
@@ -66,7 +70,7 @@ async def test_a_process_that_dies_is_reported_at_once_naming_the_status(host, p
     assert await until(lambda: parent.exits, deadline=3.0)
     assert asyncio.get_running_loop().time() - started < 2.0
     [exited] = parent.exits
-    assert "status" in exited.error
+    assert "process" in exited.error
     assert host.running() == 0
 
 

@@ -79,6 +79,17 @@ section explains why.
   **A heartbeat is mandatory for a process child**, by decision: the link
   catches a process that dies, only a heartbeat catches one that is alive and
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
+- **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
+  for watching a frame buffer live: a slider over the ring's slots, live
+  follow, pause and refresh, the full header and per-frame metadata, and the
+  magma colormap embedded as a table. The model (`follower.py`) holds every
+  decision and imports no Qt, so it is tested in the default suite; the window
+  is thin wiring and is not. Run it with
+  `uv run --python 3.14 --with pyqtgraph --with PySide6 -m stacscope.monitor <name>`,
+  or `--demo` for a moving-bar producer in its own process. **PySide6 has no
+  free-threaded wheel**, so the monitor runs on standard 3.14 beside a `3.14t`
+  engine — which works because it is a pure consumer of shared memory, proven
+  by `tests/tools/test_cross_interpreter.py`.
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
   on purpose and confirm a test fails. It earns its keep: in Milestone 3 it
@@ -156,6 +167,14 @@ These come from the user directly and override default behaviour.
   free-threaded wheel and ctypes behaviour were verified at first install and
   are pinned by `tests/unit/test_environment.py`. Standard 3.14 remains the
   fallback, and the code must be correct on both.
+- **Testing on standard 3.14 needs an environment of its own.**
+  `uv run --python 3.14 pytest` does **not** do what it looks like: it reuses
+  the project's `.venv`, which is free-threaded, so it runs `3.14t` twice and
+  reports a pass for a leg that never ran. Use instead:
+  `UV_PROJECT_ENVIRONMENT=.venv314 uv run --python 3.14 pytest`
+  (`.venv3*/` is gitignored). CI was never affected — each leg is its own
+  runner with its own `.venv` — but local "green on both" claims made with the
+  short form were worth nothing.
 - The test suite must pass green with **zero hardware and zero vendor SDKs**.
   Tests run in virtual time (`VirtualClock`), where a missing reply waits
   forever rather than timing out. `pytest-timeout` (10 s) is the backstop, so a

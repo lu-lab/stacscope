@@ -8,19 +8,15 @@ no other link to the producer. ``--demo`` starts a moving-bar producer under
 that same name rather than inventing one, so the buffer being watched is
 always the one named on the command line.
 
-Needs a Qt: ``pyqtgraph`` and ``PySide6``. Neither is a project dependency,
-and PySide6 has no free-threaded build, so this needs an interpreter of its
-own. Note that ``uv run --python 3.14 --with PySide6`` does **not** provide
-one: ``uv run`` reuses the project's free-threaded ``.venv`` and the
-resolution fails against ``cp314t``. Make the environment explicitly, once::
+Needs a Qt: ``pyqtgraph`` and ``PySide6``, which live in the ``viewer`` extra
+rather than the project's dependencies. PySide6 has no free-threaded build, so
+they cannot be installed into this project's ``3.14t`` environment and get a
+standard-CPython one of their own. Normally you do not invoke this module
+directly -- ``scripts/monitor.py`` builds that environment from ``uv.lock``
+and launches this::
 
-    uv venv --python 3.14 .venv-monitor
-    uv pip install --python .venv-monitor -e . pyqtgraph PySide6
-
-and then run it directly, with no environment variables involved::
-
-    .venv-monitor\\Scripts\\python -m stacscope.monitor <buffer-name>
-    .venv-monitor\\Scripts\\python -m stacscope.monitor --demo --fps 20
+    uv run scripts/monitor.py <buffer-name>
+    uv run scripts/monitor.py <buffer-name> --demo --fps 20
 
 Running on a different interpreter from the engine is the point rather than a
 workaround. The monitor is a pure consumer -- it opens a segment by name and
@@ -38,23 +34,16 @@ from stacscope.monitor.follower import BufferMonitor
 
 HELP = """\
 examples:
+  Launch through scripts/monitor.py, which builds the environment this
+  needs from uv.lock (PySide6 has no free-threaded build, so it cannot
+  live in the project's own environment) and then runs this module.
+
   watch a buffer an engine is already writing
-    python -m stacscope.monitor camera_main
+    uv run scripts/monitor.py camera_main
 
   try it with no hardware and nothing else running: a moving-bar
   producer starts in its own process, under the same name
-    python -m stacscope.monitor demo_buf --demo --fps 20
-
-first-time setup:
-  The monitor needs pyqtgraph and PySide6, and PySide6 has no
-  free-threaded build, so it runs from an environment of its own:
-
-    uv venv --python 3.14 .venv-monitor
-    uv pip install --python .venv-monitor -e . pyqtgraph PySide6
-
-  then run it with that interpreter:
-    .venv-monitor/Scripts/python -m stacscope.monitor NAME     (Windows)
-    .venv-monitor/bin/python -m stacscope.monitor NAME         (Linux, macOS)
+    uv run scripts/monitor.py demo_buf --demo --fps 20
 
 controls:
   slider        which slot of the ring to watch
@@ -102,8 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError as exc:
         _stop(producer)
         print(
-            f"the monitor needs pyqtgraph and PySide6 ({exc}).\nTry:\n  uv run "
-            f"--python 3.14 --with pyqtgraph --with PySide6 -m stacscope.monitor ...",
+            f"the monitor needs pyqtgraph and PySide6 ({exc}), which are not in "
+            f"this interpreter.\nRun it the usual way instead, which builds an "
+            f"environment that has them:\n"
+            f"  uv run scripts/monitor.py {name}"
+            f"{' --demo' if args.demo else ''}",
             file=sys.stderr,
         )
         return 2

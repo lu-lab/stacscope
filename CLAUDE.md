@@ -85,20 +85,18 @@ section explains why.
   magma colormap embedded as a table. The model (`follower.py`) holds every
   decision and imports no Qt, so it is tested in the default suite; the window
   is thin wiring and is not. **PySide6 has no free-threaded wheel**, so it
-  needs an environment of its own — `uv run --python 3.14 ... --with PySide6`
-  does *not* work, because `uv run` reuses the project's `3.14t` `.venv` and
-  the resolution fails. Set it up once:
+  needs an environment of its own, `.venv-monitor`, built from `uv.lock`
+  under the `viewer` extra so its versions are reproducible. One command does
+  everything, including creating the environment the first time:
 
-      uv venv --python 3.14 .venv-monitor
-      uv pip install --python .venv-monitor -e . pyqtgraph PySide6
-
-  then run it with no environment variables and no `uv`:
-
-      .venv-monitor\Scripts\python -m stacscope.monitor <buffer-name>
-      .venv-monitor\Scripts\python -m stacscope.monitor <buffer-name> --demo --fps 20
+      uv run scripts/monitor.py <buffer-name>
+      uv run scripts/monitor.py <buffer-name> --demo --fps 20
 
   The name is always required — it is the only way a consumer finds a segment
-  — and `--demo` starts its moving-bar producer under that same name.
+  — and `--demo` starts its moving-bar producer under that same name. Do not
+  reach for `UV_PROJECT_ENVIRONMENT` by hand: a shell that keeps it will send
+  every later `uv run` to the monitor's environment. The script sets it for
+  one subprocess.
 
   The monitor runs on standard 3.14 beside a `3.14t` engine — which works because it is a pure consumer of shared memory, proven
   by `tests/tools/test_cross_interpreter.py`.

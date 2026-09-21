@@ -1,15 +1,13 @@
 """TimedDevice: the participant side of the device protocol.
 
-The Coordinator's half was built in Milestone 1; this is the other end of the
-same handshake. The base class owns the states and every protocol reply, so an
-adapter writes only what preparing and releasing *its* hardware means.
+The base class owns the states and every protocol reply, so an adapter writes
+only what preparing and releasing *its* hardware means.
 
-Deliberately smaller than ``TimingSource``. A participant has no phases of its
-own: once armed, frames arrive when the hardware says so, and the device learns
-the acquisition is over from ``StopDevice``. Devices that want to act on the
-acquisition's progress subscribe to the Coordinator's republished
-``SourcePhase`` instead, which is control flow and never to be trusted for
-timing.
+A participant has no phases of its own: once armed, frames arrive when the
+hardware says so, and the device learns the acquisition is over from
+``StopDevice``. Devices that want to act on the acquisition's progress
+subscribe to the Coordinator's republished ``SourcePhase`` instead, which is
+control flow and never to be trusted for timing.
 """
 
 from enum import Enum

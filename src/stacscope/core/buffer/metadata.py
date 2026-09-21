@@ -17,6 +17,8 @@ frame in slot ``s``. The header's ``metadata_fields`` says which of
 ``hw_frame`` / ``device_ticks`` / ``host_time_ns`` the producer fills; device
 time is kept as raw ticks, never converted, because it is the device's.
 """
+# IMPORTANT: this table is what consumers outside Python build against, not
+# META_DTYPE below -- keep the two in sync by hand.
 
 import enum
 from dataclasses import dataclass

@@ -1,8 +1,5 @@
 """The frame buffer's binary header — the contract for every consumer.
 
-Consumers outside Python read this table, so it is the specification; the
-code below only transcribes it. All fields are little-endian.
-
 ======  ======  ====================  ==============================================
 offset  format  field                 meaning
 ======  ======  ====================  ==============================================
@@ -32,12 +29,15 @@ offset  format  field                 meaning
 ======  ======  ====================  ==============================================
 
 The per-frame metadata record, and the meaning of ``metadata_fields`` and
-``device_time_source``, are specified in ``metadata.py``.
+``device_time_source``, are specified in ``metadata.py``. All fields are
+little-endian.
 
 Frame ``i`` of slot ``s`` starts at ``data_offset + s * slot_bytes +
 frame_offset``. Bytes in a slot outside the frame (padding, embedded device
 data) belong to the producer's hardware and are described, never rewritten.
 """
+# IMPORTANT: this table is what consumers outside Python build against, not
+# FIELDS below -- keep the two in sync by hand.
 
 import struct
 

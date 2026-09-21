@@ -2,9 +2,7 @@
 
 Modelled on continuous output with regeneration disabled: each sample written
 plays exactly once, in order, at ``rate``. The caller must keep the buffer fed;
-running dry mid-stream is an ``Underflow``, never a silent gap. The port is
-deliberately dumb — chunking, pre-roll and when to start belong to the
-``WaveformSource`` using it, so each hardware adapter stays thin.
+running dry mid-stream is an ``Underflow``, never a silent gap.
 """
 
 from dataclasses import dataclass
@@ -41,6 +39,8 @@ class Underflow(RuntimeError):
         self.at = at
 
 
+# Deliberately dumb: chunking, pre-roll and when to start belong to the
+# WaveformSource using it, so each hardware adapter stays thin.
 class SignalOutput(Protocol):
     async def configure(self, config: OutputConfig) -> None:
         """Reserve and commit hardware. Once, at setup."""

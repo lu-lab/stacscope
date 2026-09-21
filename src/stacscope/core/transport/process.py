@@ -1,10 +1,5 @@
 """Devices in processes of their own.
 
-The point, from thesis 3.6: a vendor driver that segfaults should kill one
-process, not the engine. Process exit is also a *better* death signal than any
-in-process callback -- nothing can be missed, and nothing has to be running to
-notice it.
-
 A child is a fresh interpreter that connects back to an endpoint this host
 listens on, identifying itself with a one-time token. It is given the actor's
 factory as a pickle, which is why an actor must be constructible from plain
@@ -67,6 +62,10 @@ class _Child:
     heard_last_word: bool = False
 
 
+# The point: a vendor driver that segfaults should kill one process, not the
+# engine. Process exit is also a better death signal than any in-process
+# callback -- nothing can be missed, and nothing has to be running to notice
+# it.
 class ProcessHost:
     """Launches actors in their own processes and holds this end of each link.
 

@@ -3,7 +3,7 @@
 The Coordinator issues one root filename for the whole acquisition and knows
 nothing else about recording. Each device joins that stem to its own directory,
 its own name and its own format — DCIMG through the camera's driver here, TIFF
-or CSV elsewhere — which is why the engine cannot own the writer (§3.3.3).
+or CSV elsewhere — which is why the engine cannot own the writer.
 
 Sharing the stem is what makes one acquisition's files identifiable as one
 acquisition's files, and the device's own name is what keeps them apart.

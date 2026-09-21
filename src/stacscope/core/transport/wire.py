@@ -2,7 +2,7 @@
 
 The codec carries a message. This carries what surrounds one on its way to a
 mailbox -- the reply address and the priority -- neither of which is part of
-any message, deliberately: message types stay plain data.
+any message: message types stay plain data.
 
 The frame is a msgpack map of four keys, so it stays readable from another
 language, like the messages inside it:
@@ -10,14 +10,12 @@ language, like the messages inside it:
     {"t": <destination address>, "p": <priority>,
      "r": <reply address or nil>, "m": <encoded message>}
 
-The destination rides the frame rather than the connection because one link
-carries traffic for many addresses: a child's device answers the Coordinator,
-and the one-shot reply address of every ``ask`` in flight is its own
-destination.
+The destination travels in the frame, not the connection: one link carries
+traffic for many addresses, a child's device answering the Coordinator and
+every ``ask``'s one-shot reply address among them.
 
-Priority rides the wire as a number but is *enforced* at the receiving actor's
-mailbox, not here. A transport that has no priorities of its own -- ZeroMQ
-will not -- loses nothing by it.
+Priority travels in the frame as a number but is *enforced* at the receiving
+actor's mailbox, not here.
 """
 
 import msgpack
@@ -32,6 +30,10 @@ _MESSAGE = "m"
 _KEYS = {_TO, _PRIORITY, _REPLY, _MESSAGE}
 
 
+# The destination rides the frame rather than the connection because one
+# link carries traffic for many addresses. Priority is enforced at the
+# mailbox rather than here so a transport with no priorities of its own --
+# ZeroMQ will not -- loses nothing by it.
 class Wire:
     """Packs and unpacks one frame. Framing on a stream is the connection's job."""
 

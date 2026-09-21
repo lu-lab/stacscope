@@ -3,11 +3,8 @@
 A frame is its length as four big-endian bytes, then that many bytes. Small
 and explicit, so a client in another language can speak it without a library.
 
-Nothing here drains the writer. ``tell`` is synchronous by design and control
-traffic is tiny -- the largest message in the system is a waveform retune at
-roughly 200 KB -- so the socket's own buffer is the only queue there is. This
-link deliberately has no backpressure, for the same reason the frame buffer
-does not: a sender that must wait on a receiver has coupled the two.
+Nothing here drains the writer or applies backpressure: a send goes straight
+into the socket's own buffer.
 """
 
 import asyncio
@@ -52,6 +49,11 @@ async def read_frame(reader: asyncio.StreamReader) -> bytes | None:
         return None
 
 
+# tell is synchronous by design, and control traffic is tiny -- the largest
+# message in the system is a waveform retune at roughly 200 KB -- so the
+# socket's own buffer is queue enough. This link deliberately has no
+# backpressure, for the same reason the frame buffer does not: a sender that
+# must wait on a receiver has coupled the two.
 class Connection:
     """One link: a stream at the bottom, a ``Peer`` at the top."""
 

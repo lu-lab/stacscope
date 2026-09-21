@@ -4,10 +4,10 @@ Everything NI-specific lives here: which task is master, where the digital
 lines get their clock, and which driver error codes mean the output gapped.
 The port itself knows none of it.
 
-The board is the rig's sole timing authority (thesis 3.4.1), so the AO task
-runs on its own onboard clock and the DO task is slaved to it. Regeneration is
-disabled, which is what makes a sample play exactly once: fall behind and the
-driver reports a gap rather than silently replaying the last block. That single
+The board is the rig's sole timing authority, so the AO task runs on its own
+onboard clock and the DO task is slaved to it. Regeneration is disabled,
+which is what makes a sample play exactly once: fall behind and the driver
+reports a gap rather than silently replaying the last block. That single
 constraint is why the caller is a refill loop.
 """
 

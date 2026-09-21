@@ -21,10 +21,11 @@ class Fail(Enum):
     NOTHING = "nothing"
     """Behaves. The control for every other mode."""
     CRASH = "crash"
-    """A real segmentation fault -- thesis 3.6's reason for all of this. No
-    Python runs afterwards, so nothing in the process can report it, and the
-    parent has only the exit status to go on. Note that ``ctypes.string_at(0)``
-    would *not* do: ctypes traps the access violation and raises instead."""
+    """A real segmentation fault -- the reason a device gets a process of its
+    own in the first place. No Python runs afterwards, so nothing in the
+    process can report it, and the parent has only the exit status to go on.
+    Note that ``ctypes.string_at(0)`` would *not* do: ctypes traps the access
+    violation and raises instead."""
     RAISE = "raise"
     """An ordinary exception in a handler. The device dies, the process lives
     long enough to say why."""

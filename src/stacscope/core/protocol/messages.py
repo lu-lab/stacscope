@@ -20,7 +20,7 @@ from stacscope.core.protocol.registry import message
 @dataclass(frozen=True, slots=True)
 class StartAcquisition:
     """Begin acquiring. ``cycles < 0`` runs until ``StopAcquisition``; an empty
-    ``root_filename`` means do not record (§3.4.1)."""
+    ``root_filename`` means do not record."""
 
     cycles: int
     root_filename: str
@@ -144,8 +144,8 @@ class SourceFinished:
 
 
 class Segment(Enum):
-    """The three waveform segments an AO source holds (§3.4.1's "buffers";
-    that word is reserved for the data flow)."""
+    """The three waveform segments an AO source holds. Not called "buffers":
+    that word is reserved for the data flow."""
 
     WARMUP = "warmup"
     MAIN = "main"

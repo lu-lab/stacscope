@@ -1,10 +1,15 @@
-"""A producer to watch when there is no real one: the moving-bar pattern.
+"""A moving-bar test pattern producer, for the buffer monitor's --demo mode.
 
-It runs in a process of its own, launched by ``--demo``, rather than in a
-thread beside the window. That is the topology the monitor is for -- a
-consumer attaching to a segment some other process owns -- so the demo
-exercises the same path as real use instead of a shortcut past it.
+    python -m stacscope.monitor.demo <name> [--fps FPS] [--height H] [--width W] [--slots N]
+
+Publishes frames under NAME until killed. Normally started automatically by
+``stacscope.monitor --demo`` rather than run directly.
 """
+
+# A process of its own, rather than a thread beside the window, because that
+# is the topology the monitor is for -- a consumer attaching to a segment
+# some other process owns. Running it that way here exercises the same path
+# as real use instead of a shortcut past it.
 
 import argparse
 import time

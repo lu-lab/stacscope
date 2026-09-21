@@ -1,16 +1,17 @@
-"""The magma colormap, 256 RGB entries, embedded.
+"""The magma colormap, 256 RGB entries.
 
-Magma is one of the four perceptually uniform maps designed by Nathaniel Smith
-and Stefan van der Walt for matplotlib, and released by them into the public
-domain (CC0). It is used here because a monitor for checking imaging results
-should not make brightness differences look bigger in one part of the range
-than another, which is exactly what the usual rainbow maps do.
-
-Embedded rather than imported: matplotlib is a large dependency to carry for
-one lookup table, and pyqtgraph's own bundled maps are a different set. The
-table below was generated once from the source of record --
-generated with matplotlib 3.11.2 -- and is not edited by hand.
+Designed by Nathaniel Smith and Stefan van der Walt for matplotlib, and
+released by them into the public domain (CC0).
 """
+
+# Perceptually uniform, unlike the usual rainbow maps, so a monitor for
+# checking imaging results doesn't make brightness differences look bigger in
+# one part of the range than another.
+#
+# Embedded rather than imported: matplotlib is a large dependency to carry
+# for one lookup table, and pyqtgraph's own bundled maps are a different set.
+# The table below was generated once from the source of record -- matplotlib
+# 3.11.2 -- and is not edited by hand.
 
 import numpy as np
 

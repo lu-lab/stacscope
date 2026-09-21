@@ -1,15 +1,16 @@
-"""The buffer monitor's model: everything it decides, with no Qt in sight.
+"""The buffer monitor's model: what to show for a given slot, with no Qt import.
 
-A monitor is a *consumer*. It opens a segment by name and has no link to the
-engine, no actor, no control protocol -- which is why it can run in a process
-of its own, on a different interpreter, without disturbing what it watches.
-That matters in practice: the GUI toolkit has no free-threaded build, and the
-engine runs free-threaded. Shared memory does not care.
-
-Keeping the model separate from the window is not ceremony. The window cannot
-be tested on a machine with no display, and this can, so everything that could
-be wrong lives here.
+Opens a frame-buffer segment by name and reports its state, slot count,
+header fields, and a view of any slot on request. See
+``stacscope.monitor.window`` for the window that draws this.
 """
+
+# No Qt import here, on purpose: it is what makes the monitor a pure consumer
+# of shared memory, free to run in a process of its own on a different
+# interpreter from the engine it watches (the GUI toolkit has no free-threaded
+# build; shared memory does not care). It is also what is tested -- the
+# window cannot be tested on a machine with no display, and this can, so
+# everything that could be wrong lives here.
 
 from dataclasses import dataclass
 from enum import Enum

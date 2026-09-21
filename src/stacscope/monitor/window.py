@@ -1,13 +1,13 @@
-"""The monitor's window: a thin wiring of decisions made in ``follower``.
+"""The monitor's window: draws what ``follower.BufferMonitor`` reports.
 
-Nothing here decides anything. It polls the model on a timer, draws what it
-gets, and turns widget events into model calls. That is deliberate -- this
-module cannot be tested on a machine with no display, so anything that could
-be wrong belongs on the other side of the seam.
-
-Imported only by ``__main__``; the model never imports Qt, which is what lets
-the monitor run on a different interpreter from the engine it watches.
+Polls the model on a timer, draws what it gets, and turns widget events
+(the slider, follow, pause, refresh) into calls on the model.
 """
+
+# Deliberately thin: this module cannot be tested on a machine with no
+# display, so every decision belongs in follower.py, which can be. Imported
+# only by __main__ -- the model itself never imports Qt, which is what lets
+# the monitor run on a different interpreter from the engine.
 
 import numpy as np
 import pyqtgraph as pg

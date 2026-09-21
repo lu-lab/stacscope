@@ -2,7 +2,7 @@
 
 The Coordinator issues a single root filename and no more: what a device does
 with it is the device's own business, because only the device knows which
-format is fastest for it (§3.3.3 — the Flash writes DCIMG through its driver).
+format is fastest for it (the Flash writes DCIMG through its driver).
 The shared stem is what ties the files of one acquisition together.
 
 An empty stem means do not record, and is not an error: it is how every

@@ -11,15 +11,37 @@ driver reports a gap rather than silently replaying the last block. That single
 constraint is why the caller is a refill loop.
 """
 
+import contextlib
 from typing import TYPE_CHECKING
 
 from nidaqmx.constants import AcquisitionType, LineGrouping, RegenerationMode
+from nidaqmx.error_codes import DAQmxErrors
+from nidaqmx.errors import DaqError
+
+from stacscope.core.ports import Underflow
 
 if TYPE_CHECKING:
     from stacscope.core.ports import Clock, OutputConfig
 
 AO_TASK = "stacscope_ao"
 DO_TASK = "stacscope_do"
+
+POLL = 0.001
+"""How often to ask the driver for space. Through the injected clock, so a test
+pays nothing for it and the instrument pays one millisecond."""
+
+DRAIN_MARGIN = 1.0
+"""Seconds added to the buffer's own playing time before a drain gives up. A
+drain that hangs would hold the whole shutdown path."""
+
+UNDERFLOW_CODES = frozenset({
+    DAQmxErrors.OUTPUT_FIFO_UNDERFLOW,
+    DAQmxErrors.OUTPUT_FIFO_UNDERFLOW_2,
+    DAQmxErrors.DAC_UNDERFLOW,
+})
+"""The driver's several ways of saying the output ran dry. Nothing else is an
+underflow: reporting another fault as one would send a caller off refilling
+harder at a board that has, say, overheated."""
 
 
 class NiSignalOutput:
@@ -59,9 +81,12 @@ class NiSignalOutput:
 
     async def arm(self) -> None:
         self._written = 0
+        self._playing = False
+        self._draining = False
 
     def space_available(self) -> int:
-        return self._ao.out_stream.space_avail
+        with self._translated():
+            return self._ao.out_stream.space_avail
 
     async def write(self, ao, do, *, label: str | None = None) -> None:
         """``label`` is for diagnostics on our side and never reaches the
@@ -77,8 +102,9 @@ class NiSignalOutput:
             )
         # Never auto-start: the first write must not be what starts the AO
         # task, or it would clock out before the digital lines are waiting.
-        self._ao.write(ao, auto_start=False)
-        self._do.write(do, auto_start=False)
+        with self._translated():
+            self._ao.write(ao, auto_start=False)
+            self._do.write(do, auto_start=False)
         self._written += samples
 
     async def go(self) -> None:
@@ -88,6 +114,58 @@ class NiSignalOutput:
         # has to be waiting before the master produces an edge.
         self._do.start()
         self._ao.start()
+        self._playing = True
+
+    async def wait_for_space(self, n: int) -> None:
+        while (space := self.space_available()) < n:
+            if not self._playing:
+                raise RuntimeError(
+                    f"{space} samples free and nothing is playing: no more will free"
+                )
+            await self._clock.sleep(POLL)
+
+    async def drain(self) -> None:
+        """Everything written plays out. From here running dry is the ending
+        we asked for, so an underflow reported during it is not a fault."""
+        self._draining = True
+        timeout = self._config.buffer_samples / self._config.rate + DRAIN_MARGIN
+        # Each task gets its own attempt. Sharing one guard meant an underflow
+        # swallowed on the AO wait skipped the DO wait altogether, leaving the
+        # digital lines undrained -- which is the half-stopped rig that `stop`
+        # goes to such lengths to avoid.
+        for task in (self._ao, self._do):
+            with self._translated():
+                task.wait_until_done(timeout=timeout)
+
+    async def stop(self) -> None:
+        """Safe in any state, any number of times. Both tasks are stopped even
+        if the first refuses: giving up halfway leaves half the rig running,
+        which on this instrument means lines still asserted."""
+        self._playing = False
+        failures = []
+        for task in (self._ao, self._do):
+            if task is None:
+                continue
+            try:
+                task.stop()
+            except DaqError as exc:  # noqa: PERF203 - each task gets its own attempt
+                failures.append(exc)
+        if failures:
+            raise ExceptionGroup("the driver refused to stop a task", failures)
+
+    @contextlib.contextmanager
+    def _translated(self):
+        """Turn the driver's underflow codes into the port's one exception,
+        and leave every other error exactly as the driver raised it."""
+        try:
+            yield
+        except DaqError as exc:
+            if exc.error_code not in UNDERFLOW_CODES:
+                raise
+            if self._draining:
+                return  # running dry is what a drain is waiting for
+            raise Underflow(self._ao.out_stream.total_samp_per_chan_generated
+                            / self._config.rate) from exc
 
     @staticmethod
     def _configure_timing(task, config: "OutputConfig", *, source: str) -> None:

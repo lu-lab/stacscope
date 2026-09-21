@@ -43,14 +43,18 @@ class FakeTask:
         self.ao_channels = _AoChannels()
         self.do_channels = _DoChannels()
         self.timing = _Timing()
-        self.out_stream = _OutStream(daq)
+        self.out_stream = _OutStream(self)
         self.started = False
         self.closed = False
         self.waited: float | None = None
         self.written: list = []
         self.auto_started: list = []
+        self.fail: Exception | None = None
+        """Set to a DaqError to make this task fail the way the driver would."""
 
     def write(self, data, auto_start=None, timeout=10.0):
+        if self.fail is not None:
+            raise self.fail
         self.written.append(data)
         self.auto_started.append(auto_start)
         self._daq.log.append(("write", self.name))
@@ -61,6 +65,8 @@ class FakeTask:
         self._daq.log.append(("start", self.name))
 
     def stop(self) -> None:
+        if self.fail is not None:
+            raise self.fail  # the driver refused; this task's state is anyone's guess
         self.started = False
         self._daq.log.append(("stop", self.name))
 
@@ -71,6 +77,8 @@ class FakeTask:
     def wait_until_done(self, timeout: float = 10.0) -> None:
         self.waited = timeout
         self._daq.log.append(("wait", self.name))
+        if self.fail is not None:
+            raise self.fail
 
 
 class _AoChannels:
@@ -112,8 +120,8 @@ class _OutStream:
     """Enough of ``task.out_stream`` for the adapter: the two settings the
     refill design rests on, plus the counters it reads back."""
 
-    def __init__(self, daq: FakeDaq) -> None:
-        self._daq = daq
+    def __init__(self, task: "FakeTask") -> None:
+        self._task = task
         self.regen_mode: RegenerationMode | None = None
         self.output_buf_size: int | None = None
         self.auto_start: bool | None = None
@@ -121,4 +129,6 @@ class _OutStream:
 
     @property
     def space_avail(self) -> int:
-        return self._daq.space
+        if self._task.fail is not None:
+            raise self._task.fail
+        return self._task._daq.space

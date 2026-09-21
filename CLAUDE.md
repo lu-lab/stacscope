@@ -184,6 +184,11 @@ These come from the user directly and override default behaviour.
   behaviour would otherwise surprise a caller ("creates its environment on
   first use, so the first run takes a moment"). Everything else is a comment.
 
+  **This applies to production code only.** Tests are exempt: anyone reading
+  them is developing this code directly and needs the rationale. A test's
+  docstring is where the spec lives — what it protects and why that failure
+  would matter — and the acceptance-test lists in the plan depend on it.
+
 ## Environment
 
 - This is the development box, not the control PC. **uv** is installed, with

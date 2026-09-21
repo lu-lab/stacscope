@@ -78,8 +78,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
         left.addWidget(self.status)
 
         tables = QtWidgets.QVBoxLayout()
-        tables.addWidget(self.header_table)
-        tables.addWidget(self.meta_table)
+        tables.addWidget(self.header_table, stretch=1)
+        tables.addWidget(self.meta_table)  # sized to its rows by _fit, below
 
         split = QtWidgets.QHBoxLayout()
         split.addLayout(left, stretch=3)
@@ -133,6 +133,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.status.setText(_describe(view))
         _fill(self.header_table, self.monitor.header().items())
         _fill(self.meta_table, view.meta.items())
+        _fit(self.meta_table)
 
     def _sync_slider(self) -> None:
         slots = self.monitor.slots()
@@ -155,6 +156,7 @@ def _table(title: str) -> QtWidgets.QTableWidget:
     table.verticalHeader().setVisible(False)
     table.horizontalHeader().setStretchLastSection(True)
     table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     return table
 
 
@@ -165,6 +167,19 @@ def _fill(table: QtWidgets.QTableWidget, items) -> None:
     for row, (name, value) in enumerate(items):
         table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(name)))
         table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
+
+
+def _fit(table: QtWidgets.QTableWidget) -> None:
+    """Shrink a table to exactly the rows it holds.
+
+    The frame metadata is a handful of fields where the header is twenty-odd,
+    so left to share the column evenly it sits in a tall box of empty grid.
+    Capping it at its content height gives the space to the header table,
+    which can use it."""
+    table.resizeRowsToContents()
+    height = table.horizontalHeader().height() + 2 * table.frameWidth()
+    height += sum(table.rowHeight(row) for row in range(table.rowCount()))
+    table.setMaximumHeight(height)
 
 
 def _quietly(slider: QtWidgets.QSlider, value: int) -> None:

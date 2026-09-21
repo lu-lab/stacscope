@@ -4,15 +4,23 @@
     python -m stacscope.monitor --demo
 
 Needs a Qt: ``pyqtgraph`` and ``PySide6``. Neither is a project dependency,
-and PySide6 has no free-threaded build, so the usual way to run this is on
-standard CPython beside a free-threaded engine:
+and PySide6 has no free-threaded build, so this needs an interpreter of its
+own. Note that ``uv run --python 3.14 --with PySide6`` does **not** provide
+one: ``uv run`` reuses the project's free-threaded ``.venv`` and the
+resolution fails against ``cp314t``. Make the environment explicitly, once::
 
-    uv run --python 3.14 --with pyqtgraph --with PySide6 -m stacscope.monitor <name>
+    uv venv --python 3.14 .venv-monitor
+    uv pip install --python .venv-monitor -e . pyqtgraph PySide6
 
-That separation is the point rather than a workaround. The monitor is a pure
-consumer -- it opens a segment by name and has no link to the engine -- so it
-can be a different process on a different interpreter without touching what it
-watches.
+and then run it directly, with no environment variables involved::
+
+    .venv-monitor\\Scripts\\python -m stacscope.monitor <buffer-name>
+    .venv-monitor\\Scripts\\python -m stacscope.monitor --demo --fps 20
+
+Running on a different interpreter from the engine is the point rather than a
+workaround. The monitor is a pure consumer -- it opens a segment by name and
+has no link to the engine -- so it can be a different process on a different
+interpreter without touching what it watches.
 """
 
 import argparse

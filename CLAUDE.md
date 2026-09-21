@@ -84,11 +84,20 @@ section explains why.
   follow, pause and refresh, the full header and per-frame metadata, and the
   magma colormap embedded as a table. The model (`follower.py`) holds every
   decision and imports no Qt, so it is tested in the default suite; the window
-  is thin wiring and is not. Run it with
-  `uv run --python 3.14 --with pyqtgraph --with PySide6 -m stacscope.monitor <name>`,
-  or `--demo` for a moving-bar producer in its own process. **PySide6 has no
-  free-threaded wheel**, so the monitor runs on standard 3.14 beside a `3.14t`
-  engine — which works because it is a pure consumer of shared memory, proven
+  is thin wiring and is not. **PySide6 has no free-threaded wheel**, so it
+  needs an environment of its own — `uv run --python 3.14 ... --with PySide6`
+  does *not* work, because `uv run` reuses the project's `3.14t` `.venv` and
+  the resolution fails. Set it up once:
+
+      uv venv --python 3.14 .venv-monitor
+      uv pip install --python .venv-monitor -e . pyqtgraph PySide6
+
+  then run it with no environment variables and no `uv`:
+
+      .venv-monitor\Scripts\python -m stacscope.monitor <buffer-name>
+      .venv-monitor\Scripts\python -m stacscope.monitor --demo --fps 20
+
+  The monitor runs on standard 3.14 beside a `3.14t` engine — which works because it is a pure consumer of shared memory, proven
   by `tests/tools/test_cross_interpreter.py`.
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code

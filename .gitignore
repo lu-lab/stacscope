@@ -9,8 +9,7 @@ USER-ACTIONS.md
 # Python
 __pycache__/
 *.py[cod]
-.venv/
-.venv3*/
+.venv*/
 venv/
 *.egg-info/
 build/

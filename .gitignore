@@ -2,6 +2,10 @@
 # thesis chapter, and session handoff notes. Deliberately not published.
 reference/
 
+# Local-only: the running list of driver installs, NI MAX setup and instrument
+# checks that only the user can perform. Machine-specific, not part of the repo.
+USER-ACTIONS.md
+
 # Python
 __pycache__/
 *.py[cod]

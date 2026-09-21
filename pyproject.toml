@@ -21,6 +21,13 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Device-specific tests are skipped over, not skipped: `tests/adapters/<vendor>/`
+# needs that vendor's package installed, and a future `tests/hardware/` would
+# actuate the instrument. Whoever is developing that adapter runs the directory
+# directly; nobody else ever collects it. An --ignore list rather than a
+# testpaths allowlist, so a new directory of ordinary tests is picked up without
+# anyone remembering to add it here.
+addopts = ["--ignore=tests/adapters", "--ignore=tests/hardware"]
 asyncio_mode = "auto"
 # Virtual time never expires on its own: a missing reply would hang, not fail.
 timeout = 10

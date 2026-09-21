@@ -4,7 +4,7 @@ Run against ``SimulatedTimingSource``, whose phases are no-ops: nothing here
 may depend on the source being an AO board.
 """
 
-from conftest import PERIOD, READY_TIMEOUT, Factory, Rig
+from timing_support import PERIOD, READY_TIMEOUT, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
 from stacscope.core.actors import Accepted, Rejected

@@ -2,6 +2,11 @@
 
 Run against ``SimulatedTimingSource``, whose phases are no-ops: nothing here
 may depend on the source being an AO board.
+
+This holds no fixtures, so it is a plain module rather than a ``conftest.py``.
+A bare ``from conftest import ...`` binds to whichever of this suite's several
+``conftest.py`` files was imported first, which depends on how pytest was
+invoked; see the note in ``tests/integration/process_support.py``.
 """
 
 import asyncio

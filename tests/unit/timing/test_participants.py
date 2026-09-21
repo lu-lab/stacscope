@@ -5,7 +5,7 @@ Losing a device and a device reporting a fault are different failures, and
 reports a hardware fault is still there, and the fix is the user's.
 """
 
-from conftest import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
+from timing_support import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
 from stacscope.core.actors import Accepted, Fault

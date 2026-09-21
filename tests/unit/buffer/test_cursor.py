@@ -8,7 +8,7 @@ may write more), so ``in_flight`` slots are unsafe before the counter says so.
 
 import pytest
 
-from conftest import produce
+from buffer_support import produce
 from stacscope.core.buffer import FrameBuffer, Layout, Overrun
 
 

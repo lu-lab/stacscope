@@ -1,22 +1,16 @@
-"""Shared ground for the real-clock process tests.
+"""Fixtures for the real-clock process tests.
 
-Nothing here ever waits without a deadline. The failures under test are
-processes that will not answer, and a suite that waits for one is no better
-than the hang it is testing for.
+Shared constants and helpers live in ``process_support.py``, not here -- see
+the note at the top of that file for why a bare ``from conftest import ...`` is
+not safe in a suite with more than one ``conftest.py``.
 """
 
 import asyncio
 
 import pytest
 
-from stacscope.core.actors import Actor, ChildExited, HeartbeatPolicy, spawn
+from stacscope.core.actors import Actor, ChildExited, spawn
 from stacscope.core.transport import ProcessHost
-
-FAST_HEARTBEAT = HeartbeatPolicy(interval=0.05, timeout=0.3)
-"""Tens of milliseconds, so a death by silence is found in well under a second."""
-
-PATIENT_HEARTBEAT = HeartbeatPolicy(interval=5.0, timeout=5.0)
-"""Long enough that anything found quickly was not found by heartbeat."""
 
 
 class Parent(Actor):
@@ -47,14 +41,3 @@ async def parent():
     spawn(actor, name="engine")
     await asyncio.sleep(0)
     return actor
-
-
-async def until(predicate, deadline: float = 5.0) -> bool:
-    """Wait for ``predicate``, up to ``deadline``. Never longer."""
-    loop = asyncio.get_running_loop()
-    expires = loop.time() + deadline
-    while loop.time() < expires:
-        if predicate():
-            return True
-        await asyncio.sleep(0.005)
-    return predicate()

@@ -14,7 +14,7 @@ import asyncio
 from functools import partial
 
 import pytest
-from conftest import FAST_HEARTBEAT, PATIENT_HEARTBEAT, until
+from process_support import FAST_HEARTBEAT, PATIENT_HEARTBEAT, until
 
 from stacscope.adapters.simulated import Fail, FaultyDevice, SimulatedDevice, SimulatedTimingSource
 from stacscope.core.actors import Accepted, ask, spawn

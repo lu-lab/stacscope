@@ -16,7 +16,7 @@ import uuid
 from functools import partial
 
 import pytest
-from conftest import FAST_HEARTBEAT, until
+from process_support import FAST_HEARTBEAT, until
 
 from stacscope.adapters.simulated import SimulatedStreamingCamera, SimulatedTimingSource
 from stacscope.core.actors import ask, spawn

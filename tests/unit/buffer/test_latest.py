@@ -9,7 +9,7 @@ acquisition's first frame so a reader joining late still lines up.
 import numpy as np
 import pytest
 
-from conftest import produce
+from buffer_support import produce
 from stacscope.core.buffer import FrameBuffer, Layout
 
 

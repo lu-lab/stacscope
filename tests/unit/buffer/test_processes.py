@@ -11,7 +11,7 @@ import sys
 import textwrap
 import time
 
-from conftest import produce
+from buffer_support import produce
 from stacscope.core.buffer import FrameBuffer, Layout, MetaField, Metadata
 
 TOTAL = 3000

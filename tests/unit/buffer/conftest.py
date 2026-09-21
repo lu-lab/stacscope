@@ -1,3 +1,9 @@
+"""Fixtures for the buffer tests.
+
+The shared ``produce`` helper lives in ``buffer_support.py``, not here -- see
+the note at the top of that file.
+"""
+
 import uuid
 
 import pytest
@@ -25,12 +31,3 @@ def make_writer(name):
     yield make
     for writer in writers:
         writer.close()
-
-
-def produce(writer, n=1):
-    """Write ``n`` frames, each filled with its own global index, and publish
-    them one at a time the way a producer would."""
-    for _ in range(n):
-        index = writer.published()
-        writer.frames[writer.slot_of(index)] = index
-        writer.publish(1)

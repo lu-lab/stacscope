@@ -19,7 +19,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 import pytest
 
-from conftest import produce
+from buffer_support import produce
 from stacscope.core.buffer import FrameBuffer, Layout
 
 LAYOUT = Layout(shape=(2, 2), dtype="<u2", n_slots=3)
@@ -48,7 +48,7 @@ class CrashingProducer:
     def __init__(self, name, setup):
         code = textwrap.dedent(f"""
             import os, struct, sys
-            from conftest import produce
+            from buffer_support import produce
             from stacscope.core.buffer import FrameBuffer, Layout
             writer = FrameBuffer.create({name!r}, capacity_bytes=1 << 16, max_slots=8)
         """) + textwrap.dedent(setup) + textwrap.dedent("""

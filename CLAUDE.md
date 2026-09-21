@@ -165,6 +165,24 @@ These come from the user directly and override default behaviour.
   wedge the DCAM drivers badly enough to require a reboot.
 - **Report before deciding.** When the user asks for an investigation, report
   findings and let them choose. Don't fold conclusions into the plan uninvited.
+- **Write documentation for its audience.** The audience changes with the
+  level, and so should the language.
+  - **Module and script docstrings** are read by *users*, and by engineers
+    with neither the knowledge nor the concern to develop the software. Say
+    what the thing is for and how to use it, in general terms. No design
+    argument. Remember these are often what a `--help` or no-argument run
+    prints, so keep them plain text — no RST markup.
+  - **Function and method docstrings** are read by developers calling this
+    code from *other* code or projects. Say what it does, what to pass, what
+    comes back, and any contract or failure a caller must know. Not why it is
+    built this way.
+  - **Code comments** are read by whoever modifies *this* code, or needs its
+    behaviour at depth. Rationale, tradeoffs, what was tried and failed, and
+    anything non-obvious — beside the line it explains.
+
+  The only rationale that earns a place in a docstring is a short note when
+  behaviour would otherwise surprise a caller ("creates its environment on
+  first use, so the first run takes a moment"). Everything else is a comment.
 
 ## Environment
 

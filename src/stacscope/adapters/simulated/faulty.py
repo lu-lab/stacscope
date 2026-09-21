@@ -23,9 +23,7 @@ class Fail(Enum):
     CRASH = "crash"
     """A real segmentation fault -- the reason a device gets a process of its
     own in the first place. No Python runs afterwards, so nothing in the
-    process can report it, and the parent has only the exit status to go on.
-    Note that ``ctypes.string_at(0)`` would *not* do: ctypes traps the access
-    violation and raises instead."""
+    process can report it, and the parent has only the exit status to go on."""
     RAISE = "raise"
     """An ordinary exception in a handler. The device dies, the process lives
     long enough to say why."""
@@ -92,6 +90,9 @@ def _crash() -> None:
     free-threaded build, where the process carried on and its "death" was
     never reported. An uncatchable kill behaves the same everywhere, and is
     what a caller sees of a segfault anyway: the process is simply gone.
+
+    ``ctypes.string_at(0)`` is not an option either: ctypes traps the access
+    violation and raises instead.
     """
     if sys.platform == "win32":
         import ctypes

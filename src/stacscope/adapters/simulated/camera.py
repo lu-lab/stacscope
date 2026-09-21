@@ -5,8 +5,8 @@ that proves the two meet correctly. Triggers reach it on the simulated wire,
 never through a message, because that is how a real camera works: the DAQ pulls
 its trigger line and the driver DMAs a frame in without asking any actor.
 
-The frames themselves come from ``PatternProducer``, the synthetic camera built
-in Milestone 2, so what a viewer shows is a bar moving across the field.
+The frames themselves come from ``PatternProducer``, so what a viewer shows is
+a bar moving across the field.
 """
 
 from stacscope.adapters.simulated.pattern_producer import PatternProducer

@@ -36,8 +36,45 @@ from stacscope.core.buffer import check_name
 from stacscope.monitor.follower import BufferMonitor
 
 
+HELP = """\
+examples:
+  watch a buffer an engine is already writing
+    python -m stacscope.monitor camera_main
+
+  try it with no hardware and nothing else running: a moving-bar
+  producer starts in its own process, under the same name
+    python -m stacscope.monitor demo_buf --demo --fps 20
+
+first-time setup:
+  The monitor needs pyqtgraph and PySide6, and PySide6 has no
+  free-threaded build, so it runs from an environment of its own:
+
+    uv venv --python 3.14 .venv-monitor
+    uv pip install --python .venv-monitor -e . pyqtgraph PySide6
+
+  then run it with that interpreter:
+    .venv-monitor/Scripts/python -m stacscope.monitor NAME     (Windows)
+    .venv-monitor/bin/python -m stacscope.monitor NAME         (Linux, macOS)
+
+controls:
+  slider        which slot of the ring to watch
+  live follow   move to wherever the newest frame just landed
+  pause         hold the view still while reading the metadata
+  refresh       re-read the slot now: resolves a torn image, or takes a
+                single update while paused
+  contrast      drag the handles on the histogram beside the image
+
+Buffer names are 1-30 characters of [A-Za-z0-9_].
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="stacscope.monitor", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="stacscope.monitor",
+        description="Watch a STACScope frame buffer while it is being written.",
+        epilog=HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("name", help="the frame buffer to watch, by segment name")
     parser.add_argument(
         "--demo",

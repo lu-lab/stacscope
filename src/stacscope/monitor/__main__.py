@@ -39,7 +39,7 @@ examples:
   live in the project's own environment) and then runs this module.
 
   watch a buffer an engine is already writing
-    uv run scripts/monitor.py camera_main
+    uv run scripts/monitor.py camera_buffer
 
   try it with no hardware and nothing else running: a moving-bar
   producer starts in its own process, under the same name

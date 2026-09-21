@@ -1,19 +1,15 @@
-"""Launch the buffer monitor, building its environment if it is not there.
+"""Launch the buffer monitor.
 
     uv run scripts/monitor.py <buffer-name>
-    uv run scripts/monitor.py <buffer-name> --demo
+    uv run scripts/monitor.py <buffer-name> --demo --fps 20
 
-Why a script rather than a documented command. The monitor draws with PySide6,
-which publishes no free-threaded wheel, so it cannot live in this project's
-`3.14t` environment and needs a standard-CPython one of its own. Pointing uv at
-that environment means setting UV_PROJECT_ENVIRONMENT -- and in a shell that
-keeps it, every later `uv run` in that window would quietly use the monitor's
-environment instead of the project's. Setting it for one subprocess, here,
-cannot do that.
+The buffer name is required. Any other arguments are passed straight to the
+monitor, which lists them under --help.
 
-The environment is built from `uv.lock`, so everyone who runs this gets the
-same versions. It is a developer tool for an instrument, not only for people
-who debug Python environments for a living.
+The monitor runs in an environment of its own, .venv-monitor, pinned by
+uv.lock so the versions are the same on every machine. This creates it on
+first use and checks it afterwards, so the first run takes a moment to install
+and later ones do not.
 """
 
 import os
@@ -22,12 +18,21 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The monitor draws with PySide6, which publishes no free-threaded wheel, so it
+# cannot be installed into the project's 3.14t environment and gets one of its
+# own. Nothing is lost by that: it only ever opens a shared-memory segment by
+# name, so which interpreter it runs on does not matter.
 ENV = ROOT / ".venv-monitor"
 PYTHON = ENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def sync() -> None:
-    """Make the environment match the lock. Quick when it already does."""
+    """Make the monitor's environment match the lock, creating it if needed."""
+    # Set for this subprocess only, deliberately. A shell that exported
+    # UV_PROJECT_ENVIRONMENT would keep it, and every later `uv run` in that
+    # window would use the monitor's environment instead of the project's --
+    # which is the main reason this is a script and not a documented command.
     env = {
         **os.environ,
         "UV_PROJECT_ENVIRONMENT": str(ENV),

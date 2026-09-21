@@ -95,7 +95,10 @@ section explains why.
   then run it with no environment variables and no `uv`:
 
       .venv-monitor\Scripts\python -m stacscope.monitor <buffer-name>
-      .venv-monitor\Scripts\python -m stacscope.monitor --demo --fps 20
+      .venv-monitor\Scripts\python -m stacscope.monitor <buffer-name> --demo --fps 20
+
+  The name is always required — it is the only way a consumer finds a segment
+  — and `--demo` starts its moving-bar producer under that same name.
 
   The monitor runs on standard 3.14 beside a `3.14t` engine — which works because it is a pure consumer of shared memory, proven
   by `tests/tools/test_cross_interpreter.py`.

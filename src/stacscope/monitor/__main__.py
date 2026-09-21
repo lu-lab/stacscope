@@ -1,7 +1,12 @@
 """Run the buffer monitor.
 
     python -m stacscope.monitor <buffer-name>
-    python -m stacscope.monitor --demo
+    python -m stacscope.monitor <buffer-name> --demo
+
+The name is always required: it is how a consumer finds a segment, there being
+no other link to the producer. ``--demo`` starts a moving-bar producer under
+that same name rather than inventing one, so the buffer being watched is
+always the one named on the command line.
 
 Needs a Qt: ``pyqtgraph`` and ``PySide6``. Neither is a project dependency,
 and PySide6 has no free-threaded build, so this needs an interpreter of its
@@ -26,18 +31,18 @@ interpreter without touching what it watches.
 import argparse
 import subprocess
 import sys
-import uuid
 
+from stacscope.core.buffer import check_name
 from stacscope.monitor.follower import BufferMonitor
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="stacscope.monitor", description=__doc__)
-    parser.add_argument("name", nargs="?", help="the frame buffer to watch")
+    parser.add_argument("name", help="the frame buffer to watch, by segment name")
     parser.add_argument(
         "--demo",
         action="store_true",
-        help="start a moving-bar producer in its own process and watch that",
+        help="also start a moving-bar producer, in its own process, under NAME",
     )
     parser.add_argument(
         "--fps", type=float, default=20.0, help="demo frame rate (default: 20)"
@@ -47,10 +52,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--slots", type=int, default=16, help="demo ring size")
     args = parser.parse_args(argv)
 
-    if not args.name and not args.demo:
-        parser.error("give a buffer name, or --demo to make one to look at")
+    # Checked here rather than three layers down, so a typo is a sentence
+    # rather than a traceback out of shared memory.
+    try:
+        name = check_name(args.name)
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    name = args.name or f"demo{uuid.uuid4().hex[:12]}"
     producer = _start_demo(name, args) if args.demo else None
     try:
         from stacscope.monitor.window import run  # imported late: needs a Qt

@@ -38,6 +38,13 @@ def sync() -> None:
         "UV_PROJECT_ENVIRONMENT": str(ENV),
         "VIRTUAL_ENV": "",  # an active venv would otherwise win, and warn
     }
+    # If the only 3.14 uv knows about so far is the free-threaded one (e.g. a
+    # fresh clone, where .python-version put only that one on the machine),
+    # `--python 3.14` below resolves to it instead of downloading a standard
+    # build, and PySide6 has no wheel for it. Registering the standard build
+    # first makes uv prefer it, the way it already does on a machine that
+    # happens to have both.
+    subprocess.run(["uv", "python", "install", "3.14"], cwd=ROOT, env=env, check=True)
     subprocess.run(
         ["uv", "sync", "--locked", "--python", "3.14", "--extra", "viewer"],
         cwd=ROOT, env=env, check=True,

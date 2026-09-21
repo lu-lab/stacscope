@@ -34,6 +34,7 @@ class NiSignalOutput:
         self._clock = clock
         self._tasks = tasks
         self._config: OutputConfig | None = None
+        self._written = 0
         self._ao = None
         self._do = None
 
@@ -55,6 +56,38 @@ class NiSignalOutput:
         # terminal, so an edge keeps its phase against the waveform.
         self._configure_timing(self._ao, config, source="")
         self._configure_timing(self._do, config, source=f"/{device}/ao/SampleClock")
+
+    async def arm(self) -> None:
+        self._written = 0
+
+    def space_available(self) -> int:
+        return self._ao.out_stream.space_avail
+
+    async def write(self, ao, do, *, label: str | None = None) -> None:
+        """``label`` is for diagnostics on our side and never reaches the
+        driver, which has no notion of where one segment ends.
+
+        Sample values are passed through untouched. What an analog line drives
+        and what it may safely be driven to are the instrument's business, set
+        up in NI MAX, and opaque from here."""
+        samples = ao.shape[1]
+        if samples > self.space_available():
+            raise ValueError(
+                f"{samples} samples do not fit in {self.space_available()} free"
+            )
+        # Never auto-start: the first write must not be what starts the AO
+        # task, or it would clock out before the digital lines are waiting.
+        self._ao.write(ao, auto_start=False)
+        self._do.write(do, auto_start=False)
+        self._written += samples
+
+    async def go(self) -> None:
+        if not self._written:
+            raise RuntimeError("nothing has been written: there is nothing to play")
+        # The slave first. It takes its clock from the master's output, so it
+        # has to be waiting before the master produces an edge.
+        self._do.start()
+        self._ao.start()
 
     @staticmethod
     def _configure_timing(task, config: "OutputConfig", *, source: str) -> None:

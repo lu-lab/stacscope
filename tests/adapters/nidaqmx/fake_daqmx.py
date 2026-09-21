@@ -47,6 +47,14 @@ class FakeTask:
         self.started = False
         self.closed = False
         self.waited: float | None = None
+        self.written: list = []
+        self.auto_started: list = []
+
+    def write(self, data, auto_start=None, timeout=10.0):
+        self.written.append(data)
+        self.auto_started.append(auto_start)
+        self._daq.log.append(("write", self.name))
+        return len(data[0])
 
     def start(self) -> None:
         self.started = True
@@ -68,12 +76,10 @@ class FakeTask:
 class _AoChannels:
     def __init__(self) -> None:
         self.added: list[str] = []
-        self.limits: list[tuple[float, float]] = []
 
     def add_ao_voltage_chan(self, physical_channel, name_to_assign_to_channel="",
                             min_val=-10.0, max_val=10.0):
         self.added.append(physical_channel)
-        self.limits.append((min_val, max_val))
 
 
 class _DoChannels:

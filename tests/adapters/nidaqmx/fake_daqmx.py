@@ -9,7 +9,9 @@ installed ``nidaqmx`` 1.6.0 rather than recalled, since a double that invents
 API names would pass happily and fail on the bench.
 """
 
-from nidaqmx.constants import AcquisitionType, Edge, LineGrouping, RegenerationMode
+from nidaqmx.constants import AcquisitionType, Edge, LineGrouping, RegenerationMode, TaskMode
+from nidaqmx.error_codes import DAQmxErrors
+from nidaqmx.errors import DaqError
 
 
 class FakeDaq:
@@ -46,6 +48,7 @@ class FakeTask:
         self.out_stream = _OutStream(self)
         self.started = False
         self.closed = False
+        self.committed = False
         self.waited: float | None = None
         self.written: list = []
         self.auto_started: list = []
@@ -55,10 +58,32 @@ class FakeTask:
     def write(self, data, auto_start=None, timeout=10.0):
         if self.fail is not None:
             raise self.fail
+        self._check_channels(data)
         self.written.append(data)
         self.auto_started.append(auto_start)
         self._daq.log.append(("write", self.name))
-        return len(data[0])
+        return data.shape[-1]
+
+    def _check_channels(self, data) -> None:
+        """DAQmx works out the channel count from the array's shape, and
+        refuses a two-dimensional array for a task holding one channel.
+
+        Modelled because it is invisible without a driver: a double that takes
+        any shape passes a single-channel configuration the instrument then
+        rejects, and one channel of analog out with one digital line is the
+        smallest real configuration there is.
+        """
+        channels = len(self.ao_channels.added) + len(self.do_channels.added)
+        given = data.shape[0] if data.ndim == 2 else 1
+        if (data.ndim == 2) != (channels > 1) or given != channels:
+            raise DaqError(
+                f"data has {given} channels and the task has {channels}",
+                DAQmxErrors.WRITE_NUM_CHANS_MISMATCH,
+            )
+
+    def control(self, mode: TaskMode) -> None:
+        self.committed = mode is TaskMode.TASK_COMMIT
+        self._daq.log.append(("control", self.name))
 
     def start(self) -> None:
         self.started = True
@@ -125,10 +150,27 @@ class _OutStream:
         self.regen_mode: RegenerationMode | None = None
         self.output_buf_size: int | None = None
         self.auto_start: bool | None = None
-        self.total_samp_per_chan_generated = 0
+        self.played = 0
+        """Samples the task has generated. Tests advance it by hand: the fake
+        has no clock, and a drain is exactly the wait for this to catch up."""
+        self.fail: Exception | None = None
+        """Set to a DaqError to fail reads of the generated counter. Separate
+        from the task's own switch because the adapter reads this counter
+        *while handling* a failed write, to say when the output ran dry."""
 
     @property
     def space_avail(self) -> int:
         if self._task.fail is not None:
             raise self._task.fail
         return self._task._daq.space
+
+    @property
+    def total_samp_per_chan_generated(self) -> int:
+        self._task._daq.log.append(("generated", self._task.name))  # logged as attempted
+        if self.fail is not None:
+            raise self.fail
+        return self.played
+
+    @total_samp_per_chan_generated.setter
+    def total_samp_per_chan_generated(self, value: int) -> None:
+        self.played = value

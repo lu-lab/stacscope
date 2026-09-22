@@ -133,7 +133,11 @@ the user for a copy if it is missing.
    conversion of the author's `chapter3.tex` (same folder); `ch3.pdf` is the
    typeset original, and section numbers cited throughout the plan refer to it.
 5. **`reference/legacy/`** — the original LabVIEW, Jupyter and µManager tree.
-   Read-only reference, never a build target.
+   Read-only reference, never a build target. It includes
+   `Labview/spimengine supporting files/` — a LabVIEW VI-documentation export
+   of the whole 102-VI hierarchy under the entry point, **block diagrams
+   included** as PNGs. That is the legacy code itself and outranks every
+   description of it; the walkthrough explains how the files are named.
 
 Do not re-derive these. They took full sessions to produce.
 

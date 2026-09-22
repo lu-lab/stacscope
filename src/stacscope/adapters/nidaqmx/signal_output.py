@@ -14,7 +14,7 @@ constraint is why the caller is a refill loop.
 import contextlib
 from typing import TYPE_CHECKING
 
-from nidaqmx.constants import AcquisitionType, LineGrouping, RegenerationMode
+from nidaqmx.constants import AcquisitionType, LineGrouping, RegenerationMode, TaskMode
 from nidaqmx.error_codes import DAQmxErrors
 from nidaqmx.errors import DaqError
 
@@ -35,6 +35,7 @@ DRAIN_MARGIN = 1.0
 drain that hangs would hold the whole shutdown path."""
 
 UNDERFLOW_CODES = frozenset({
+    DAQmxErrors.GEN_STOPPED_TO_PREVENT_REGEN_OF_OLD_SAMPLES,
     DAQmxErrors.OUTPUT_FIFO_UNDERFLOW,
     DAQmxErrors.OUTPUT_FIFO_UNDERFLOW_2,
     DAQmxErrors.DAC_UNDERFLOW,
@@ -42,6 +43,12 @@ UNDERFLOW_CODES = frozenset({
 """The driver's several ways of saying the output ran dry. Nothing else is an
 underflow: reporting another fault as one would send a caller off refilling
 harder at a board that has, say, overheated."""
+# The regeneration one is first because it is the one this rig actually meets.
+# With regeneration disabled the driver stops the generation rather than replay
+# old samples, and reports that -- so it is the ordinary consequence of a late
+# refill, and equally the ordinary way a drained buffer announces it is empty.
+# The other three are the board failing to fetch in time, which is rarer and
+# further down.
 
 
 class NiSignalOutput:
@@ -57,6 +64,8 @@ class NiSignalOutput:
         self._tasks = tasks
         self._config: OutputConfig | None = None
         self._written = 0
+        self._playing = False
+        self._draining = False
         self._ao = None
         self._do = None
 
@@ -78,6 +87,15 @@ class NiSignalOutput:
         # terminal, so an edge keeps its phase against the waveform.
         self._configure_timing(self._ao, config, source="")
         self._configure_timing(self._do, config, source=f"/{device}/ao/SampleClock")
+
+        # Committing reserves and programs the board once, here, rather than
+        # on every start/stop cycle -- which is what the LabVIEW engine does
+        # for this board, and what keeps an arm from paying for it. It is also
+        # what makes the buffer's free space readable at all: an uncommitted
+        # task answers that question with an error, and the refill loop's
+        # first act is to ask it.
+        for task in (self._ao, self._do):
+            task.control(TaskMode.TASK_COMMIT)
 
     async def arm(self) -> None:
         self._written = 0
@@ -103,8 +121,8 @@ class NiSignalOutput:
         # Never auto-start: the first write must not be what starts the AO
         # task, or it would clock out before the digital lines are waiting.
         with self._translated():
-            self._ao.write(ao, auto_start=False)
-            self._do.write(do, auto_start=False)
+            self._ao.write(_for_driver(ao), auto_start=False)
+            self._do.write(_for_driver(do), auto_start=False)
         self._written += samples
 
     async def go(self) -> None:
@@ -129,13 +147,40 @@ class NiSignalOutput:
         we asked for, so an underflow reported during it is not a fault."""
         self._draining = True
         timeout = self._config.buffer_samples / self._config.rate + DRAIN_MARGIN
-        # Each task gets its own attempt. Sharing one guard meant an underflow
-        # swallowed on the AO wait skipped the DO wait altogether, leaving the
-        # digital lines undrained -- which is the half-stopped rig that `stop`
-        # goes to such lengths to avoid.
+        deadline = self._clock.now() + timeout
+        # Each task is waited on separately. They share the AO sample clock,
+        # but one of them running dry says nothing about the other having
+        # finished, and a drain that skips the digital task leaves lines
+        # asserted -- the half-stopped rig that `stop` goes to lengths to
+        # avoid.
         for task in (self._ao, self._do):
-            with self._translated():
-                task.wait_until_done(timeout=timeout)
+            await self._play_out(task, deadline, timeout)
+
+    async def _play_out(self, task, deadline: float, timeout: float) -> None:
+        # Ending means our samples have been generated -- or that the buffer
+        # emptied, which the driver reports as an underflow and which is
+        # exactly what a drain is waiting for.
+        #
+        # `wait_until_done` would also work, and is what the instrument has
+        # always run: on a continuous task it returns by raising the
+        # regeneration-stopped error once the buffer empties. It times out
+        # against a simulated device, which stalls instead of running dry --
+        # that is a property of the simulation, not of the board. Which of the
+        # two this should be is still open.
+        while True:
+            try:
+                played = task.out_stream.total_samp_per_chan_generated
+            except DaqError as exc:
+                if exc.error_code not in UNDERFLOW_CODES:
+                    raise
+                return
+            if played >= self._written:
+                return
+            if self._clock.now() >= deadline:
+                raise TimeoutError(
+                    f"{task.name} played {played} of {self._written} samples in {timeout} s"
+                )
+            await self._clock.sleep(POLL)
 
     async def stop(self) -> None:
         """Safe in any state, any number of times. Both tasks are stopped even
@@ -152,6 +197,28 @@ class NiSignalOutput:
                 failures.append(exc)
         if failures:
             raise ExceptionGroup("the driver refused to stop a task", failures)
+
+    async def close(self) -> None:
+        """Release both tasks and the board. Safe in any state, any number of
+        times, and the adapter is unusable afterwards. Not part of the
+        ``SignalOutput`` port: nothing in the core calls it, so whoever built
+        this adapter is the one who has to."""
+        # It exists because DAQmx refuses a task whose name is already taken,
+        # so an adapter that never closes can be built only once in a process
+        # -- and until that process exits the board stays reserved against
+        # anything else that wants it. Whether the port should grow a `close`
+        # so the core can do this itself is the user's decision, still open.
+        failures = []
+        for task in (self._ao, self._do):
+            if task is None:
+                continue
+            try:
+                task.close()
+            except DaqError as exc:  # noqa: PERF203 - each task gets its own attempt
+                failures.append(exc)
+        self._ao = self._do = None
+        if failures:
+            raise ExceptionGroup("the driver refused to close a task", failures)
 
     @contextlib.contextmanager
     def _translated(self):
@@ -177,3 +244,13 @@ class NiSignalOutput:
         )
         task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
         task.out_stream.output_buf_size = config.buffer_samples
+
+
+def _for_driver(samples):
+    """Drop the channel axis for a one-channel task.
+
+    DAQmx infers the channel count from the array it is handed and refuses a
+    two-dimensional one for a task with a single channel. The port speaks
+    channels x n whatever the count, so the difference is absorbed here.
+    """
+    return samples[0] if samples.shape[0] == 1 else samples

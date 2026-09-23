@@ -112,8 +112,9 @@ section explains why.
   **Step 3's suite is `tests/hardware/nidaqmx/`**, and runs only on the
   device named in `STACSCOPE_HARDWARE`. Claude may run it only with
   `STACSCOPE_HARDWARE=Dev1-sim`, as a rehearsal; the user runs it on `Dev1`.
-  H1–H8 cover running dry, draining, refilling, buffer depth, update
-  latency, stall tolerance, and a queued sequence.
+  H1–H9 cover running dry, draining, refilling, buffer depth, update
+  latency, stall tolerance, a queued sequence, and a long run at
+  `BUFFER_SAMPLES` (`STACSCOPE_SOAK_SECONDS` lengthens it).
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
   for watching a frame buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the

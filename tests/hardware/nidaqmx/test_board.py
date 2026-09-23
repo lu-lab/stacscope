@@ -1,4 +1,4 @@
-"""5a-3 (Step 3, H1-H8) -- the NI adapter on a physical PCI-6733.
+"""5a-3 (Step 3, H1-H9) -- the NI adapter on a physical PCI-6733.
 
 RUN BY THE USER ONLY. This suite starts real analog and digital output on the
 board it is pointed at. Every sample it writes is 0 V on the analog channels
@@ -25,6 +25,8 @@ What it answers, from the architecture plan's Step 3:
       points in the cycle, for a short and a long volume.
   H7  How long a stall of the event loop the output survives, by depth.
   H8  That a queued sequence of MAINs plays in order on the board.
+  H9  That the instrument's buffer depth holds over a long run: how thin
+      the queue got, and whether it ever ran dry.
 
 Most of these are measurements rather than verdicts. Every test adds its
 numbers to a "hardware findings" section at the end of the run; paste that
@@ -43,7 +45,10 @@ board cannot answer (it stalls rather than running dry) skip themselves.
 
     Git Bash:    STACSCOPE_HARDWARE=Dev1 uv run --extra nidaqmx pytest tests/hardware/nidaqmx
 
-Takes about four minutes.
+Takes about six minutes, two of them H9's. For a longer soak, set STACSCOPE_SOAK_SECONDS (per volume):
+
+    PowerShell:  $env:STACSCOPE_SOAK_SECONDS = "1800"
+                 uv run --extra nidaqmx pytest tests/hardware/nidaqmx -k h9
 """
 
 import asyncio
@@ -62,6 +67,7 @@ from nidaqmx.errors import DaqError
 from saved_tasks import PREFIX, saved
 
 from stacscope.adapters.nidaqmx import NiSignalOutput
+from stacscope.adapters.nidaqmx.signal_output import BUFFER_SAMPLES
 from stacscope.core.actors import Accepted, Actor, Priority, Subscribe, ask, spawn
 from stacscope.core.ports import Channel, MonotonicClock, OutputConfig, Underflow
 from stacscope.core.protocol import (
@@ -330,6 +336,140 @@ async def test_h1_what_the_driver_says_after_running_dry(report):
         with contextlib.suppress(Exception):
             await output.stop()
         await output.close()
+
+
+def read_state(ao, do) -> tuple:
+    """(AO space, DO space, AO generated, DO generated), each an error code if
+    reading it raised. Only the cheap reads: none of them is ``is_task_done``,
+    which is the call suspected of changing what the others say."""
+
+    def read(call):
+        try:
+            return call()
+        except DaqError as exc:
+            return f"E{exc.error_code}"
+
+    return (read(lambda: ao.out_stream.space_avail), read(lambda: do.out_stream.space_avail),
+            read(lambda: generated(ao)), read(lambda: generated(do)))
+
+
+def spans(samples: list[tuple[float, tuple]]) -> list[str]:
+    """A timed series of states, compressed to one line per stretch in which
+    each reading kept doing the same thing -- rising, falling, holding, at 0
+    or raising -- judged against the reading 2 ms earlier, so that a count
+    moving in blocks is not a new stretch at every block. Each line gives
+    the readings at the stretch's start and end."""
+
+    def trend(now, before):
+        if isinstance(now, str):
+            return "error"
+        if now == 0:
+            return "zero"
+        if isinstance(before, str) or now == before:
+            return "held"
+        return "rising" if now > before else "falling"
+
+    keys = []
+    for t, state in samples:
+        before = next((s for u, s in reversed(samples) if u <= t - 0.002), samples[0][1])
+        keys.append(tuple(trend(a, b) for a, b in zip(state, before)))
+
+    lines = []
+    i = 0
+    while i < len(samples):
+        j = i
+        while j + 1 < len(samples) and keys[j + 1] == keys[i]:
+            j += 1
+        (t0, first), (t1, last) = samples[i], samples[j]
+        span = " ".join(f"{name} {a}->{b} ({k})" for name, a, b, k in
+                        zip(("AO space", "DO space", "AO generated", "DO generated"), first, last, keys[i]))
+        lines.append(f"{t0 * 1000:+.1f} to {t1 * 1000:+.1f} ms: {span}")
+        i = j + 1
+    return lines
+
+
+WATCH_AFTER = 1.0
+"""How long past the end of output ``space_avail`` is watched: twice as long
+as H1 waited before it read 0."""
+
+
+@physical_only
+@pytest.mark.parametrize("watch", ["polled", "left-alone"])
+@pytest.mark.parametrize("fill", ["written-once", "kept-fed"])
+async def test_h1_how_free_space_reads_as_output_runs_dry(report, fill, watch):
+    """H1, a survey, to reconcile two findings. Written once and read 0.5 s
+    after running dry, the AO task's ``space_avail`` read 0 (the first H1
+    survey). Kept fed at a small buffer and read just after a stall ran it
+    dry, it read the whole buffer free (the stall probe). The adapter reads
+    both ways correctly -- a full buffer free sends the refill to a write
+    that raises, and 0 with a stopped count asks ``is_task_done`` -- but
+    which one the board gives, and when, should be known rather than
+    guessed.
+
+    So this watches the transition itself: from 100 ms before output ends to
+    a second after, with only the cheap reads, then asks ``is_task_done``
+    and reads again. ``fill`` is the two histories -- one long write, or a
+    buffer at the instrument's depth kept fed and then left. ``watch`` is
+    whether anything reads the task while it runs dry, in case reading is
+    what moves it; left alone, the first read comes a second after the end.
+    Times are from the predicted end of output -- the last sample written
+    reaching the outputs, from the analog count at the last write -- so
+    running dry, which the board declares when the host buffer empties,
+    should show about 13 ms before 0.
+    Never fails on the driver's answers; every one is a finding."""
+    buffer = BUFFER if fill == "written-once" else BUFFER_SAMPLES
+    output = NiSignalOutput(MonotonicClock(), ao_task=AO_TASK, do_task=DO_TASK)
+    lines = []
+    written = 0
+    try:
+        await output.configure(config(buffer))
+        await output.arm()
+        ao, do = output._ao, output._do
+        await output.write(*zeros(buffer))
+        await output.go()
+        if fill == "kept-fed":
+            until_left = time.monotonic() + 0.5
+            while time.monotonic() < until_left:
+                await output.wait_for_space(SEGMENT)
+                await output.write(*zeros(SEGMENT))
+        # From here on nothing is written, and the loop blocks: nothing else
+        # runs in this test, and a sleep would blur the times by the Windows
+        # timer's 16 ms.
+        written = output._written
+        end = time.perf_counter() + (written - generated(ao)) / RATE
+
+        samples = []
+        if watch == "polled":
+            start = end - 0.1
+            while time.perf_counter() < start:
+                pass
+            while (now := time.perf_counter()) < end + WATCH_AFTER:
+                samples.append((now - end, read_state(ao, do)))
+                while time.perf_counter() < now + 0.0005:
+                    pass
+        else:
+            while time.perf_counter() < end + WATCH_AFTER:
+                pass
+        samples.append((time.perf_counter() - end, read_state(ao, do)))
+        lines += spans(samples)
+
+        for name, task in (("AO", ao), ("DO", do)):
+            try:
+                lines.append(f"then {name} is_task_done: returned {task.is_task_done()!r}")
+            except DaqError as exc:
+                lines.append(f"then {name} is_task_done: raised {exc.error_code}")
+        lines.append(f"then the reads: {read_state(ao, do)}")
+        time.sleep(0.5)
+        lines.append(f"0.5 s later: {read_state(ao, do)}")
+    finally:
+        with contextlib.suppress(Exception):
+            await output.stop()
+        await output.close()
+
+    report(f"{ms(buffer)} host buffer, {written} samples written; times from the last one "
+           f"reaching the outputs:")
+    for line in lines:
+        report(f"  {line}")
 
 
 # --- H2: where output ends -------------------------------------------------------
@@ -713,3 +853,61 @@ async def test_h8_a_queued_sequence_plays_in_order(report):
     assert [b - a for a, b in zip(starts, starts[1:])] == [n for _, n in steps[:-1]]
     report(f"{len(steps)} queued steps played in order from sample {starts[0]}, no gap; "
            f"event loop held up to {run.lag * 1000:.0f} ms")
+
+
+SOAK_SECONDS = float(os.environ.get("STACSCOPE_SOAK_SECONDS", "60"))
+"""How long H9 runs each volume. A minute by default, so every run of the
+suite gives a number; set STACSCOPE_SOAK_SECONDS for a long soak."""
+
+THIN = 0.020
+"""The thinnest queue the instrument's depth should keep, from the plan's
+conditions for going higher: below it, one more late wake of the loop than a
+short run sees is enough to run dry."""
+
+
+@pytest.mark.timeout(2 * SOAK_SECONDS + 60)
+@pytest.mark.parametrize("main", [MAIN, LONG_MAIN], ids=["50ms-volume", "300ms-volume"])
+async def test_h9_a_long_run_at_the_instruments_depth(report, main):
+    """H9. The depth the instrument uses, ``BUFFER_SAMPLES``, run for long
+    enough to meet the operating system's rare late wakes, which short runs
+    miss. A 60 s soak at the floor had no gap, but its queue dipped to about
+    16 ms where short runs never went below 30. The depth was chosen on the
+    short runs; this is the check that it holds.
+
+    It fails if the output runs dry: at the instrument's own depth, with
+    nothing else in the process, that is a gap in a real acquisition. The
+    thinnest queue is a finding, flagged when it is below ``THIN`` -- one of
+    the plan's conditions for going higher. With it comes how late the loop
+    woke just before that refill, which says whether the dip was the
+    operating system or the refill itself; and how many refills were thin,
+    which says whether it was one event or a habit."""
+    ticks: list[tuple[float, float]] = []
+
+    async def ticker(ref, output):
+        while True:
+            t = time.monotonic()
+            await asyncio.sleep(0.01)
+            ticks.append((time.monotonic(), time.monotonic() - t))
+
+    run = await drive(BUFFER_SAMPLES, main, SOAK_SECONDS, ticker)
+
+    writes = run.output.writes
+    queued = np.array([q for _, _, q, _ in writes]) / RATE
+    dry = f"RAN DRY at t = {run.underflow.at:.3f} s" if run.underflow else "no gap"
+    if len(queued):
+        worst = int(np.argmin(queued))
+        at = writes[worst][0]
+        held = max((lag for t, lag in ticks if at - 0.1 <= t <= at + 0.02), default=0.0)
+        thin = int(np.sum(queued < THIN))
+        flag = f" -- BELOW {THIN * 1000:.0f} ms" if queued.min() < THIN else ""
+        report(f"{ms(BUFFER_SAMPLES)} buffer, {main / RATE * 1000:.0f} ms volume, {SOAK_SECONDS:.0f} s: "
+               f"{dry}; {len(queued)} refills, queued at a refill {queued.min() * 1000:.1f} ms at "
+               f"least{flag}, "
+               f"1st percentile {np.percentile(queued, 1) * 1000:.1f} ms, median "
+               f"{np.median(queued) * 1000:.1f} ms; {thin} refills below {THIN * 1000:.0f} ms; "
+               f"the thinnest came {at - run.output.playing:.1f} s in, after the loop was held "
+               f"{held * 1000:.0f} ms; loop held up to {run.lag * 1000:.0f} ms overall; "
+               f"CPU {run.load:.1%} of one core")
+    else:
+        report(f"{ms(BUFFER_SAMPLES)} buffer, {main / RATE * 1000:.0f} ms volume: {dry}, no refills")
+    assert run.underflow is None, f"the instrument's depth ran dry: {dry}"

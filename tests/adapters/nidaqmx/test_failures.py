@@ -11,6 +11,7 @@ from nidaqmx.error_codes import DAQmxErrors
 from nidaqmx.errors import DaqError
 from test_configure import AO_TASK, BUFFER, CONFIG, DO_TASK, RATE, adapter, rig
 
+from stacscope.adapters.nidaqmx.signal_output import TAIL_PAD
 from stacscope.adapters.simulated import VirtualClock
 from stacscope.core.ports import Underflow
 
@@ -90,8 +91,9 @@ async def test_an_underflow_code_becomes_an_underflow_at_the_time_it_happened(pl
     """N6. The driver reports a gap by error code; the caller wants the one
     exception the port defines, carrying when the output ran dry. Samples
     generated over the rate is not that time: on the physical board the
-    analog task's count reads 0 once it has run dry, which would put every gap
-    at t = 0. With regeneration off the board plays exactly what was written
+    analog task's count stops at the last value read before the error -- 0
+    if nothing had read it -- which would date a gap by when someone last
+    looked. With regeneration off the board plays exactly what was written
     and then stops, so written over the rate is.
 
     Here the driver notices between the adapter asking for space and writing,
@@ -261,7 +263,8 @@ async def test_waiting_on_a_full_buffer_that_never_started_is_an_error(output, d
 
 async def test_draining_ends_when_the_board_reports_running_dry(playing, daq, clock):
     """H2's finding. On the physical board the analog task's sample count
-    stops short of what was written -- 99 985 of 100 000 -- while the digital
+    stops short of what was written -- 99 985 of 100 000, the last value
+    read before the error -- while the digital
     task, on the same clock, counts every sample. So the analog task is done
     when the driver says it ran dry, which it says only once its buffer has
     emptied, and the digital task when its count is complete."""
@@ -338,6 +341,98 @@ async def test_draining_still_reports_a_fault_that_is_not_the_ending(playing, da
 
     with pytest.raises(DaqError):
         await playing.drain()
+
+
+def padding(daq, name):
+    """What a drain wrote after the samples: every write past the first."""
+    return daq.task(name).written[1:]
+
+
+async def test_a_drain_holds_the_last_values_past_the_end(playing, daq, clock):
+    """H10's finding. On the physical PCI-6733, output that has wrapped its
+    host buffer and ends part-way through it never plays its last 64 digital
+    samples, plus the end's offset from a multiple of 4 -- so a line is left
+    wherever it was ~0.64 ms before the end, which on this instrument can be
+    a laser still enabled. Padding of at least that many samples after them
+    brought every one back. So a drain first writes TAIL_PAD more samples,
+    each channel holding its last value, on both tasks: whatever the board
+    drops is padding, and the lines end where the caller's last sample put
+    them. (Chosen by the user, 2026-09-23, over requiring every COOLDOWN to
+    end in a parked stretch.)"""
+    ao, do = ramp(64)
+
+    draining = asyncio.create_task(playing.drain())
+    await clock.advance(0.01)
+
+    [ao_pad], [do_pad] = padding(daq, "ao"), padding(daq, "do")
+    assert ao_pad.shape == (2, TAIL_PAD) and do_pad.shape == (2, TAIL_PAD)
+    assert (ao_pad == ao[:, -1:]).all()
+    assert (do_pad == do[:, -1:]).all()
+    assert TAIL_PAD >= 64 + 3
+    draining.cancel()
+
+
+async def test_a_drain_waits_for_room_for_the_padding(playing, daq, clock):
+    """A drain usually follows the last refill, which filled the buffer. The
+    padding waits for room, as any write does, rather than being refused or
+    skipped: a full buffer frees TAIL_PAD samples in about a millisecond."""
+    daq.space = 0
+    daq.task("ao").out_stream.played = 1  # still playing: the count moves
+    draining = asyncio.create_task(playing.drain())
+    await clock.advance(0.01)
+    assert padding(daq, "ao") == []
+
+    daq.space = TAIL_PAD
+    daq.task("ao").out_stream.played = 2
+    await clock.advance(0.01)
+
+    assert len(padding(daq, "ao")) == len(padding(daq, "do")) == 1
+    draining.cancel()
+
+
+async def test_a_drain_that_never_finds_room_still_gives_up(playing, daq, clock):
+    """The wait for room is bounded by the drain's own deadline: a board that
+    stopped consuming without saying so must end in the drain's TimeoutError,
+    not a wait that holds the shutdown path for ever."""
+    daq.space = 0
+    draining = asyncio.create_task(playing.drain())
+
+    await clock.advance(30.0)
+
+    with pytest.raises(TimeoutError):
+        await draining
+
+
+async def test_a_drain_after_running_dry_pads_nothing(playing, daq):
+    """Output that has already run dry has nothing left to protect, and the
+    driver refuses writes. The drain ends as it did before padding."""
+    daq.ran_dry(REGEN_STOPPED)
+
+    await playing.drain()
+
+    assert padding(daq, "ao") == padding(daq, "do") == []
+
+
+async def test_a_drain_with_nothing_written_pads_nothing(output, daq):
+    """There is no last value to hold, and nothing to protect."""
+    await output.drain()
+
+    assert daq.task("ao").written == daq.task("do").written == []
+
+
+async def test_the_padding_is_not_counted_as_written(playing, daq, clock):
+    """The drain still ends when the caller's samples have played -- the board
+    may never play the padding, which is the point of it -- and a gap is
+    still dated by the caller's samples."""
+    draining = asyncio.create_task(playing.drain())
+    await clock.advance(0.01)
+
+    for name in ("ao", "do"):
+        daq.task(name).out_stream.played = 64
+    await clock.advance(0.01)
+
+    await draining
+    assert playing._written == 64
 
 
 async def test_stop_is_safe_in_any_state_and_any_number_of_times(output, daq):

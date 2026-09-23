@@ -80,8 +80,9 @@ section explains why.
   catches a process that dies, only a heartbeat catches one that is alive and
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
 - **Milestone 5 is in progress** (real adapters). The ordered work list is in
-  the plan under "Milestone 5 → Next steps". 5a-1 and 5a-2 are done:
-  `NiSignalOutput` in `adapters/nidaqmx/`, tested against a fake `Task`
+  the plan under "Milestone 5 → Next steps". **5a, the NI-DAQmx adapter,
+  is done**, through 5a-3 on the physical board. Next is 5b, the camera
+  port. `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`
   and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is
   done: `SignalOutput.close()`, which `WaveformSource.teardown` always calls.
   Step 2 is done: the tasks come from NI MAX by name
@@ -93,7 +94,13 @@ section explains why.
   name: `uv run --extra nidaqmx pytest tests/adapters/nidaqmx`.
   **Some dev machines have the physical board installed as `Dev1`.** The
   simulated suite runs only against a device that is both named `Dev1-sim`
-  and simulated. **Device suites build their own tasks** (user, 2026-09-23):
+  and simulated. **The port contract suite runs against every adapter.** Its
+  tests are in `tests/contract/signal_output_contract.py`. Each adapter's
+  suite imports them with a `rig` of its own (config, clock, slack, and
+  whether it can run dry): the simulated adapter in `tests/contract/`, and
+  the NI adapter on `Dev1-sim` and in
+  `tests/hardware/nidaqmx/test_contract.py`.
+  **Device suites build their own tasks** (user, 2026-09-23):
   `tests/adapters/nidaqmx/saved_tasks.py` saves a pair from an
   `OutputConfig` as `stacscope_test_*`, and deletes them afterwards, so a
   change to the rig's tasks in NI MAX never breaks a test. The production
@@ -117,9 +124,10 @@ section explains why.
   `BUFFER_SAMPLES` (`STACSCOPE_SOAK_SECONDS` lengthens it), and whether
   the last digital samples reach a pin. H10 needs P0.1 wired to a PFI
   line named in `STACSCOPE_FEEDBACK` (PFI9 on this rig), and skips
-  otherwise. Step 3 has been run on `Dev1`. It is done except for one
-  open fix: an output that has wrapped the buffer loses its last 64
-  digital samples (the plan, "The last digital samples (H10)").
+  otherwise. **Step 3 is done**, run on `Dev1`. The board drops the last
+  64 digital samples of output that has wrapped its buffer, so `drain`
+  pads the end with `TAIL_PAD` samples that hold the last values (user's
+  choice; the plan, "The last digital samples (H10)").
   Draining and refilling by polling (decisions A and B) were confirmed on
   the board. If either misbehaves later, start from the H2/H3 records in
   the plan.

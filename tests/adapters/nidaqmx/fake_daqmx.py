@@ -78,7 +78,8 @@ class FakeDaq:
         """Put the pair in the state the physical PCI-6733 reported once its
         output had run dry (Step 3, H1's survey): the analog task reports it
         from ``is_task_done``, from a write, and from the first ``stop`` only;
-        its free space reads 0 and its sample count reads 0, where the
+        its free space reads 0 and its sample count 0 (the last value read
+        before the error, and here nothing had read it), where the
         digital task's count is still right. Nothing reads as an error on the
         digital task.
 

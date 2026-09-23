@@ -71,7 +71,7 @@ from nidaqmx.errors import DaqError
 from saved_tasks import PREFIX, saved
 
 from stacscope.adapters.nidaqmx import NiSignalOutput
-from stacscope.adapters.nidaqmx.signal_output import BUFFER_SAMPLES
+from stacscope.adapters.nidaqmx.signal_output import BUFFER_SAMPLES, TAIL_PAD
 from stacscope.core.actors import Accepted, Actor, Priority, Subscribe, ask, spawn
 from stacscope.core.ports import Channel, MonotonicClock, OutputConfig, Underflow
 from stacscope.core.protocol import (
@@ -485,7 +485,9 @@ async def test_h2_drain_ends_when_output_does(make_output, report):
     15 short and never arrives, so the drain now also ends on the driver's
     ran-dry report. The digital task, on the same clock, must still have
     counted every sample -- that is the evidence the clock ran to the end --
-    and the stop after it must be clean."""
+    and the stop after it must be clean. Its count may go past them into the
+    drain's padding (TAIL_PAD), of which the board drops the last 64 (H10),
+    but no further."""
     output = await make_output()
     await output.write(*zeros(BUFFER))
     started = time.monotonic()
@@ -498,7 +500,7 @@ async def test_h2_drain_ends_when_output_does(make_output, report):
 
     report(f"drain returned after {took:.4f} s (expected {BUFFER / RATE:.4f}), "
            f"generated AO {counts[0]}, DO {counts[1]}")
-    assert counts[1] == BUFFER
+    assert BUFFER <= counts[1] <= BUFFER + TAIL_PAD
     assert took == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
 
 
@@ -989,7 +991,8 @@ async def test_h10_the_last_digital_samples_reach_the_pin(report, buffer, total)
     wrapped and ended part-way lost its last 64 DO samples, plus the end's
     offset from a multiple of 4, at 5000 and at 100 000 samples of buffer.
     One that never wrapped, or ended exactly on a wrap, lost none. Written
-    padding of at least that many samples brought every edge back.
+    padding of at least that many samples brought every edge back, so
+    ``drain`` now pads (TAIL_PAD); with it, every case passed.
 
     Fails if an edge is missing: the port promises everything written is
     played once."""

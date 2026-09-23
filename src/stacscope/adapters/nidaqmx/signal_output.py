@@ -46,6 +46,21 @@ DRAIN_MARGIN = 1.0
 """Seconds added to the buffer's own playing time before a drain gives up. A
 drain that hangs would hold the whole shutdown path."""
 
+TAIL_PAD = 128
+"""Samples a drain writes after the caller's last ones, each channel holding
+its last value, so that the outputs end where the caller's last sample put
+them."""
+# Step 3, H10, on Dev1: output that has wrapped its host buffer and ends
+# part-way through it never generates its last 64 digital samples, plus the
+# end's offset from a multiple of 4 -- up to 67. The lines were left where
+# they stood ~0.64 ms before the end. Output that never wrapped, or ended
+# exactly on a wrap, lost none, and so did any padded by at least the loss
+# (32 of padding still lost edges; 65 and 128 lost none). The analog side
+# could not be measured (its count cannot be trusted after the end), so both
+# tasks are padded. 128 is about twice the loss, and costs ~1.3 ms.
+# The user chose this over requiring every COOLDOWN to end in a parked
+# stretch, which would push this board's quirk into every rig's config.
+
 BUFFER_SAMPLES = 5000
 """The instrument's host buffer depth per channel, used by
 ``read_output_config`` when the caller names none: 50 ms at 100 kS/s. A
@@ -102,6 +117,7 @@ class NiSignalOutput:
         self._system = system
         self._config: OutputConfig | None = None
         self._written = 0
+        self._last: tuple[np.ndarray, np.ndarray] | None = None
         self._playing = False
         self._draining = False
         self._reported = False
@@ -157,6 +173,7 @@ class NiSignalOutput:
     async def arm(self) -> None:
         self._open()
         self._written = 0
+        self._last = None
         self._playing = False
         self._draining = False
         self._reported = False
@@ -181,9 +198,10 @@ class NiSignalOutput:
             # every full poll, it spent most of the ~47 ms a minimum-size
             # buffer holds. So it is asked only when the count has stopped
             # moving since the last full poll: a count still advancing cannot
-            # have run dry. After running dry the analog count reads 0 (H1),
-            # which differs from the last reading once and then stands still,
-            # so the report comes one poll late -- a millisecond.
+            # have run dry. After running dry the analog count stops at the
+            # last value the driver read before the error (H1's second
+            # survey; 0 if nothing read it), so it stands still and the report
+            # comes on the next full poll -- a millisecond.
             #
             # If this ever misses a gap, the alternatives weighed were: asking
             # `is_task_done` from a worker thread, off the event loop (costs
@@ -214,6 +232,7 @@ class NiSignalOutput:
             self._ao.write(_for_driver(ao), auto_start=False)
             self._do.write(_for_driver(do), auto_start=False)
         self._written += samples
+        self._last = (ao[:, -1:].copy(), do[:, -1:].copy())
 
     async def go(self) -> None:
         self._open()
@@ -235,12 +254,14 @@ class NiSignalOutput:
             await self._clock.sleep(POLL)
 
     async def drain(self) -> None:
-        """Everything written plays out. From here running dry is the ending
-        we asked for, so an underflow reported during it is not a fault."""
+        """Everything written plays out, and the outputs are left at the last
+        values written. From here running dry is the ending we asked for, so
+        an underflow reported during it is not a fault."""
         self._open()
         self._draining = True
         timeout = self._config.buffer_samples / self._config.rate + DRAIN_MARGIN
         deadline = self._clock.now() + timeout
+        await self._hold_last_values(deadline)
         # Each task is waited on separately. They share the AO sample clock,
         # but one of them running dry says nothing about the other having
         # finished, and a drain that skips the digital task leaves lines
@@ -249,16 +270,42 @@ class NiSignalOutput:
         for task in (self._ao, self._do):
             await self._play_out(task, deadline, timeout)
 
+    async def _hold_last_values(self, deadline: float) -> None:
+        # See TAIL_PAD. The padding is not counted in `_written`: the drain
+        # still ends when the caller's samples have played, and a gap is
+        # still dated by them. It waits for room like any write -- a drain
+        # usually follows the refill that filled the buffer, and TAIL_PAD
+        # frees in about a millisecond -- but not past the drain's deadline,
+        # and not at all once the output has run dry: nothing is left to
+        # protect, and the driver refuses writes.
+        if not self._written:
+            return
+        while True:
+            space = self.space_available()
+            if space is None:  # ran dry: `_translated` swallows that while draining
+                return
+            if space >= TAIL_PAD:
+                break
+            if not self._playing or self._clock.now() >= deadline:
+                return
+            await self._clock.sleep(POLL)
+        ao, do = (np.repeat(last, TAIL_PAD, axis=1) for last in self._last)
+        with self._translated():
+            self._ao.write(_for_driver(ao), auto_start=False)
+            self._do.write(_for_driver(do), auto_start=False)
+
     async def _play_out(self, task, deadline: float, timeout: float) -> None:
         # Ending means our samples have been generated, or that the driver
         # reports the buffer emptied -- which it does as an underflow, and
         # which is exactly what a drain is waiting for. Either alone falls
         # short (Step 3, H2, on the physical PCI-6733):
-        # - its analog task's count stops short of what was written, at
-        #   99 985 of 100 000, and never gets there; only `is_task_done`
-        #   raising the ran-dry error ends that task. The digital task, on
-        #   the same sample clock, counts every sample, so the clock did
-        #   tick for all of them.
+        # - its analog task's count stops updating when output ends: it
+        #   keeps the last value read before the error (99 985 of 100 000
+        #   in H2), so it may never reach what was written, and only
+        #   `is_task_done` raising the ran-dry error ends that task. The
+        #   digital task's count, of samples moved into its FIFO, stays
+        #   right, and reaches what was written -- given the padding, which
+        #   is what the board drops instead (TAIL_PAD).
         # - its digital task never reports running dry, and a simulated
         #   device stalls rather than run dry; the count ends those.
         # `wait_until_done`, which the legacy engine used and which ended
@@ -348,8 +395,8 @@ class NiSignalOutput:
     def _underflow(self, exc: DaqError) -> Underflow:
         # When it ran dry is what was written over the rate: with
         # regeneration off the board plays exactly that and stops. The sample
-        # count is no use here -- the analog task's reads 0 once it has run
-        # dry (Step 3, H1).
+        # count is no use here -- the analog task's stops at the last value
+        # read before the error, 0 if nothing read it (Step 3, H1).
         self._reported = True
         underflow = Underflow(self._written / self._config.rate)
         underflow.__cause__ = exc

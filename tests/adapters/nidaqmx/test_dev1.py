@@ -39,6 +39,7 @@ from nidaqmx.constants import DataTransferActiveTransferMode, RegenerationMode
 from saved_tasks import PREFIX, saved
 
 from stacscope.adapters.nidaqmx import NiSignalOutput, read_output_config
+from stacscope.adapters.nidaqmx.signal_output import TAIL_PAD
 from stacscope.core.actors import spawn
 from stacscope.core.ports import Channel, MonotonicClock, OutputConfig
 from stacscope.core.timing import WaveformSource
@@ -247,15 +248,18 @@ async def test_the_digital_task_keeps_pace_with_the_analog_one(make_output):
     """The digital lines take their clock from the AO task, so the two must
     generate the same number of samples. A DO task left on its own oscillator
     would still produce plausible output, drifting against the waveform by an
-    amount nothing reports -- so it is asserted, not assumed."""
+    amount nothing reports -- so it is asserted, not assumed.
+
+    The drain's padding (TAIL_PAD) plays too, on a board that loses none of
+    its tail, so both counts end past BUFFER by exactly that."""
     output = await make_output()
     await output.write(*block(BUFFER))
     await output.go()
 
     await output.drain()
+    await until(lambda: generated(output._ao) == BUFFER + TAIL_PAD)
 
-    assert generated(output._ao) == BUFFER
-    assert generated(output._do) == BUFFER
+    assert generated(output._do) == BUFFER + TAIL_PAD
 
 
 async def test_the_stream_continues_across_a_refill(make_output):
@@ -270,13 +274,14 @@ async def test_the_stream_continues_across_a_refill(make_output):
     await output.write(*block(BUFFER // 2))
     await output.drain()
 
-    assert generated(output._ao) == BUFFER + BUFFER // 2
+    await until(lambda: generated(output._ao) == BUFFER + BUFFER // 2 + TAIL_PAD)
 
 
 async def test_drain_returns_when_the_last_sample_has_played(make_output):
     """``drain`` ends when output does, and is not a fixed wait: a continuous
     task is never "done" in the driver's sense, so anything that waits for
-    that will wait forever."""
+    that will wait forever. It returns once the caller's samples have
+    played, before the padding it adds after them has finished."""
     output = await make_output()
     await output.write(*block(BUFFER))
 
@@ -285,7 +290,7 @@ async def test_drain_returns_when_the_last_sample_has_played(make_output):
     await output.drain()
     elapsed = time.monotonic() - started
 
-    assert generated(output._ao) == BUFFER
+    assert BUFFER <= generated(output._ao) <= BUFFER + TAIL_PAD
     assert elapsed == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
 
 

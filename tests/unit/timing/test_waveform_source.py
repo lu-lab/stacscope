@@ -1,4 +1,4 @@
-"""W1–W6 — WaveformSource, the AO timing source, over a simulated SignalOutput.
+"""W1–W13 — WaveformSource, the AO timing source, over a simulated SignalOutput.
 
 The simulated output records what it played, sample by sample, on a virtual
 clock. A "gap" is an underflow: the output running dry before the next
@@ -8,6 +8,7 @@ segment was committed.
 import asyncio
 
 import numpy as np
+import pytest
 
 from stacscope.adapters.simulated import SimulatedSignalOutput, VirtualClock
 from stacscope.core.actors import (
@@ -25,12 +26,16 @@ from stacscope.core.protocol import (
     DeviceReady,
     Finish,
     Go,
+    MainApplied,
+    MainDiscarded,
     Phase,
+    QueueMain,
     Segment,
     SetSegment,
     SourceFinished,
     SourcePhase,
     StartDevice,
+    StopDevice,
 )
 from stacscope.core.timing import WaveformSource
 
@@ -73,12 +78,20 @@ class Boom(Exception):
 
 class RefusingOutput(SimulatedSignalOutput):
     """Logs ``stop`` and ``close``, and fails whichever is named in
-    ``refuse`` -- a driver that will not let go."""
+    ``refuse`` -- a driver that will not let go. Also records how much was
+    still queued each time a write arrived once output had started: the
+    margin the refill left itself."""
 
     def __init__(self, clock):
         super().__init__(clock)
         self.calls = []
         self.refuse = set()
+        self.queued_at_write = []
+
+    async def write(self, ao, do, *, label=None):
+        if self._started_at is not None and not self._draining:
+            self.queued_at_write.append(self.samples_written - self.samples_played())
+        await super().write(ao, do, label=label)
 
     async def stop(self):
         self.calls.append("stop")
@@ -94,11 +107,12 @@ class RefusingOutput(SimulatedSignalOutput):
 
 
 class Rig:
-    def __init__(self, warmup=4, main=8, cooldown=4, buffer=None):
+    def __init__(self, warmup=4, main=8, cooldown=4, buffer=None, queue_limit=None):
         self.clock = VirtualClock()
         self.output = RefusingOutput(self.clock)
         config = CONFIG if buffer is None else OutputConfig(CONFIG.rate, CONFIG.ao, CONFIG.do, buffer)
-        self.source = WaveformSource(self.output, config)
+        limits = {} if queue_limit is None else {"queue_limit": queue_limit}
+        self.source = WaveformSource(self.output, config, **limits)
         self.ref = spawn(self.source, clock=self.clock, name="source")
         self.listener = Listener()
         self.ref.tell(Subscribe(spawn(self.listener)))
@@ -275,6 +289,250 @@ async def test_w6_a_main_update_mid_run_lands_on_a_cycle_boundary():
     sequence = [v.pop() for v in values]
     switch = sequence.index(2.0)
     assert set(sequence[:switch]) == {1.0} and set(sequence[switch:]) == {2.0}
+
+
+# --- W7-W8: backpressure ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(("main", "buffer"), [(8, 12), (20, 12)], ids=["main-fits", "main-longer"])
+async def test_w7_the_refill_keeps_the_buffer_topped_up(main, buffer):
+    """The hardware buffer is small on purpose: it is what holds the refill
+    loop back, and it bounds how stale the queued output can get (W8). The
+    price is a thin margin, so the loop must top it up in small steps as it
+    plays, never let it run down and then refill in one go. Waiting for room
+    for a whole segment -- or, for a segment longer than the buffer, for the
+    buffer to empty -- spends the margin on every cycle, and a refill that is
+    then late by a little is an underflow.
+
+    The legacy engine got this from the driver: one blocking write per
+    segment, which DAQmx feeds in as room appears."""
+    rig = Rig(main=main, buffer=buffer)
+    await rig.go(cycles=4)
+    await rig.clock.advance(30.0)
+
+    assert rig.output.underflow is None
+    assert rig.output.queued_at_write, "nothing was written after output started"
+    assert min(rig.output.queued_at_write) >= buffer // 2
+
+
+async def test_w8_an_update_plays_within_one_buffer_of_being_accepted():
+    """Responsiveness. A MAIN update is taken at the next cycle boundary
+    (W6), and then waits behind only what the hardware buffer already holds:
+    nothing is queued in software ahead of it. So the buffer's depth is the
+    whole of the latency, and a small buffer buys a responsive instrument --
+    the stale-output bound the user relies on when retuning live."""
+    rig = Rig()
+    await rig.go(cycles=-1)
+    await rig.clock.advance(1.25)
+
+    accepted = []
+    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, *waveform(8, 2.0, ueye=True)), timeout=10.0))
+    updating.add_done_callback(lambda _: accepted.append(rig.clock.now()))
+    await rig.clock.advance(6.0)
+    rig.ref.tell(Finish(), Priority.URGENT)
+    await rig.clock.advance(10.0)
+
+    first_new = int(np.flatnonzero(rig.output.ao_played()[0] == 2.0)[0])
+    plays_at = first_new / RATE
+    assert plays_at - accepted[0] <= CONFIG.buffer_samples / RATE
+
+
+# --- W9-W13: a sequence of MAINs ----------------------------------------------------
+
+
+def mains_played(rig):
+    """The ETL value of each MAIN cycle that played, in order. Each cycle
+    must be one value throughout -- a mixed cycle is a torn update."""
+    etl = rig.output.ao_played()[0]
+    cycles = [etl[s : s + n] for label, s, n in rig.played() if label == "main"]
+    assert all(len(np.unique(c)) == 1 for c in cycles), "a MAIN cycle mixed two waveforms"
+    return [float(c[0]) for c in cycles]
+
+
+def applied(rig):
+    return [m for m in rig.listener.heard if isinstance(m, MainApplied)]
+
+
+def discarded(rig):
+    return [m for m in rig.listener.heard if isinstance(m, MainDiscarded)]
+
+
+async def test_w9_queued_mains_play_once_each_in_order_then_the_last_repeats():
+    """The second-class use: a scan-parameter sweep, or a closed loop stepping
+    a parameter. The legacy engine could only take the most recent MAIN, so a
+    sweep had to be sent as one long waveform, known in full beforehand. A
+    queued MAIN plays for exactly one cycle, in the order sent, and the last
+    one stays -- the queue running dry holds the instrument at the final step
+    rather than snapping back to an older waveform. Each plays exactly as
+    sent: shape and values are the sender's business."""
+    rig = Rig()
+    await rig.load(main_value=1.0)
+    for step in (2.0, 3.0, 4.0):
+        assert await rig.ask(QueueMain(f"step{step}", *waveform(8, step, ueye=True))) == Accepted()
+    assert await rig.ask(StartDevice("run-01", 6)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(20.0)
+
+    assert mains_played(rig) == [2.0, 3.0, 4.0, 4.0, 4.0, 4.0]
+    assert rig.output.underflow is None
+
+
+async def test_w9_a_queued_main_may_differ_in_length():
+    """Nothing about a queued MAIN is imposed beyond the channels: its length
+    and content are the generating code's responsibility, not the source's."""
+    rig = Rig()
+    await rig.load()
+    assert await rig.ask(QueueMain("long", *waveform(12, 2.0))) == Accepted()
+    assert await rig.ask(StartDevice("run-01", 2)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(20.0)
+
+    lengths = [n for label, _, n in rig.played() if label == "main"]
+    assert lengths == [12, 12]
+    assert rig.output.underflow is None
+
+
+async def test_w10_set_segment_during_a_sequence_clears_it_and_lands_next():
+    """The first-class use keeps priority. A ``SetSegment`` means "this, now":
+    the user's adjustment must not wait behind a sweep, so it empties the
+    queue and plays at the next cycle boundary, within one buffer (W8). What
+    was dropped is reported by tag, so the sender knows those steps never
+    played -- silently losing them would corrupt a sweep's record."""
+    rig = Rig()
+    await rig.load(main_value=1.0)
+    for step in range(2, 8):
+        assert await rig.ask(QueueMain(f"s{step}", *waveform(8, float(step), ueye=True))) == Accepted()
+    assert await rig.ask(StartDevice("run-01", -1)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(2.25)  # inside the second cycle
+
+    accepted = []
+    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, *waveform(8, 9.0, ueye=True)), timeout=10.0))
+    updating.add_done_callback(lambda _: accepted.append(rig.clock.now()))
+    await rig.clock.advance(4.0)
+    rig.ref.tell(Finish(), Priority.URGENT)
+    await rig.clock.advance(10.0)
+
+    played = mains_played(rig)
+    switch = played.index(9.0)
+    assert played[:switch] == [float(v) for v in range(2, 2 + switch)]
+    assert set(played[switch:]) == {9.0}
+    [dropped] = discarded(rig)
+    assert dropped.tags == tuple(f"s{v}" for v in range(2 + switch, 8))
+    first_new = int(np.flatnonzero(rig.output.ao_played()[0] == 9.0)[0])
+    assert first_new / RATE - accepted[0] <= CONFIG.buffer_samples / RATE
+
+
+async def test_w11_each_new_main_is_reported_with_its_cycle_and_first_sample():
+    """What a closed loop, and the record of an acquisition, both need: which
+    waveform was live on which volume. Published as the source takes it, with
+    the cycle's index in this acquisition and the index of its first sample in
+    the output, from the first sample of warmup -- which, over the rate, is
+    when it plays. A ``SetSegment`` change is reported too, untagged; a
+    repeated MAIN is not reported again."""
+    rig = Rig()
+    await rig.load(main_value=1.0)
+    assert await rig.ask(QueueMain("a", *waveform(8, 2.0, ueye=True))) == Accepted()
+    assert await rig.ask(QueueMain("b", *waveform(8, 3.0, ueye=True))) == Accepted()
+    assert await rig.ask(StartDevice("run-01", 4)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(1.5)
+    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, *waveform(8, 5.0, ueye=True)), timeout=10.0))
+    await rig.clock.advance(20.0)
+    assert await updating == Accepted()
+
+    starts = [s for label, s, _ in rig.played() if label == "main"]
+    values = mains_played(rig)
+    reports = applied(rig)
+    assert [m.tag for m in reports] == ["a", "b", None]
+    assert [m.cycle for m in reports] == sorted({m.cycle for m in reports})
+    for m in reports:
+        assert m.sample == starts[m.cycle]
+        assert values[m.cycle] == {"a": 2.0, "b": 3.0, None: 5.0}[m.tag]
+    assert values[reports[-1].cycle :] == [5.0] * (4 - reports[-1].cycle)
+
+
+async def test_w11_the_first_cycle_is_reported_even_without_a_change():
+    """Every acquisition's record starts from a known waveform, so cycle 0 is
+    always reported, whatever was playing in the last acquisition."""
+    rig = Rig()
+    await rig.go(cycles=2)
+    await rig.clock.advance(20.0)
+    assert await rig.ask(StartDevice("run-02", 1)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(20.0)
+
+    assert [(m.tag, m.cycle, m.sample) for m in applied(rig)] == [(None, 0, 4), (None, 0, 4)]
+
+
+async def test_w12_the_queue_is_bounded_and_a_slot_frees_as_each_plays():
+    """Flow control. An unbounded queue is the stale-output problem again,
+    and unbounded memory: a 300 ms MAIN on the instrument is about 1 MB. Past
+    the limit a ``QueueMain`` is refused, not held; a slot frees as each queued
+    MAIN is taken, and ``MainApplied`` is the sender's cue to send the next."""
+    rig = Rig(queue_limit=2)
+    await rig.load()
+    assert await rig.ask(QueueMain("a", *waveform(8, 2.0))) == Accepted()
+    assert await rig.ask(QueueMain("b", *waveform(8, 3.0))) == Accepted()
+    assert isinstance(await rig.ask(QueueMain("c", *waveform(8, 4.0))), Rejected)
+
+    assert await rig.ask(StartDevice("run-01", -1)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(0.5)  # "a" has been taken
+    queueing = asyncio.create_task(rig.ask(QueueMain("c", *waveform(8, 4.0)), timeout=10.0))
+    await rig.clock.advance(5.0)
+    assert await queueing == Accepted()
+    rig.ref.tell(Finish(), Priority.URGENT)
+    await rig.clock.advance(10.0)
+
+    assert mains_played(rig)[:3] == [2.0, 3.0, 4.0]
+
+
+async def test_w13_what_is_still_queued_when_an_acquisition_ends_is_dropped_and_reported():
+    """Steps meant for one acquisition must not play at the start of the
+    next, maybe minutes later: that is exactly the stale waveform the design
+    exists to prevent. They are dropped when cooldown is committed, and
+    reported by tag."""
+    rig = Rig()
+    await rig.load(main_value=1.0)
+    for tag, value in (("a", 2.0), ("b", 3.0), ("c", 4.0)):
+        assert await rig.ask(QueueMain(tag, *waveform(8, value, ueye=True))) == Accepted()
+    assert await rig.ask(StartDevice("run-01", 1)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(20.0)
+    assert mains_played(rig) == [2.0]
+    assert [d.tags for d in discarded(rig)] == [("b", "c")]
+
+    assert await rig.ask(StartDevice("run-02", 1)) == DeviceReady()
+    rig.ref.tell(Go())
+    await rig.clock.advance(20.0)
+    assert mains_played(rig) == [2.0]  # the last MAIN taken, not a leftover step
+
+
+async def test_w13_an_armed_acquisition_that_is_stopped_drops_the_queue_too():
+    rig = Rig()
+    await rig.load()
+    assert await rig.ask(QueueMain("a", *waveform(8, 2.0))) == Accepted()
+    assert await rig.ask(StartDevice("run-01", 1)) == DeviceReady()
+
+    await rig.ask(StopDevice())
+
+    assert [d.tags for d in discarded(rig)] == [("a",)]
+
+
+async def test_a_queued_main_is_checked_like_a_set_one():
+    rig = Rig()
+    ao, do = waveform(8, 1.0)
+
+    assert isinstance(await rig.ask(QueueMain("x", ao[:1], do)), Rejected)
+    assert isinstance(await rig.ask(QueueMain("x", ao[:, :0], do[:, :0])), Rejected)
+
+
+async def test_a_queued_main_alone_is_enough_to_arm():
+    rig = Rig()
+    assert await rig.ask(QueueMain("x", *waveform(8, 2.0))) == Accepted()
+
+    assert await rig.ask(StartDevice("run-01", 1)) == DeviceReady()
 
 
 # --- validation --------------------------------------------------------------------

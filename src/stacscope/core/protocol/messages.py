@@ -163,3 +163,51 @@ class SetSegment:
     segment: Segment
     ao: np.ndarray
     do: np.ndarray
+
+
+@message
+@dataclass(frozen=True, slots=True, eq=False)
+class QueueMain:
+    """Queue a MAIN to play for exactly one cycle, after any already queued.
+    When the queue runs out, the last MAIN taken keeps playing. ``tag`` is
+    the caller's name for it, echoed in ``MainApplied`` and ``MainDiscarded``.
+    ``ao`` and ``do`` are as for ``SetSegment``; the length need not match
+    the current MAIN's, and the samples are played exactly as given.
+
+    A ``SetSegment`` of MAIN empties the queue. So does the end of an
+    acquisition: nothing queued for one acquisition plays in the next. Either
+    way the dropped tags are published in ``MainDiscarded``.
+
+    Replied ``Accepted``, or ``Rejected`` if the waveform is malformed or the
+    queue is full. A slot frees each time a queued MAIN is taken."""
+
+    tag: str
+    ao: np.ndarray
+    do: np.ndarray
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class MainApplied:
+    """Published by a waveform source when a different MAIN is taken for a
+    cycle, and for the first cycle of every acquisition. ``tag`` is the
+    ``QueueMain`` tag, or ``None`` for a MAIN set by ``SetSegment``.
+    ``cycle`` counts MAIN cycles from 0 in this acquisition; ``sample`` is
+    the index of the cycle's first sample in the acquisition's output,
+    counting from the first sample of warmup, so it plays ``sample / rate``
+    seconds after output starts. Published when the cycle is committed,
+    which is ahead of when it plays."""
+
+    tag: str | None
+    cycle: int
+    sample: int
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class MainDiscarded:
+    """Published by a waveform source when queued MAINs are dropped unplayed,
+    with their tags in queue order and why."""
+
+    tags: tuple[str, ...]
+    reason: str

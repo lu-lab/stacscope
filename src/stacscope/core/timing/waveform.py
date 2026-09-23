@@ -5,14 +5,24 @@ designated seam between the control flow (messages in) and the timing flow
 (samples out); it knows nothing of what the waveforms mean.
 """
 
+from collections import deque
+
 import numpy as np
 
 from stacscope.core.actors import Accepted
 from stacscope.core.ports import OutputConfig, SignalOutput
-from stacscope.core.protocol import Segment, SetSegment
+from stacscope.core.protocol import MainApplied, MainDiscarded, QueueMain, Segment, SetSegment
 from stacscope.core.timing.source import NotReady, TimingSource
 
 type Waveform = tuple[np.ndarray, np.ndarray]  # (ao, do)
+
+REFILL_STEPS = 4
+"""Once output is playing, a refill waits for room for a quarter of the
+hardware buffer (or the rest of the segment, if less), so the buffer never
+falls below three quarters full at a refill."""
+
+QUEUE_LIMIT = 8
+"""How many ``QueueMain`` waveforms may wait at once, by default."""
 
 
 class WaveformSource(TimingSource):
@@ -25,14 +35,24 @@ class WaveformSource(TimingSource):
       or earlier if the buffer fills first. It never starts with nothing
       queued, so empty WARMUP/COOLDOWN are valid no-op phases.
     - Segments longer than the hardware buffer are written in chunks.
+    - Once output is playing, the buffer is topped up a quarter at a time,
+      so it never falls below three quarters full at a refill. Nothing is
+      queued beyond it, so its depth (``OutputConfig.buffer_samples``) is
+      the most an update to MAIN waits behind once it is taken.
+    - ``QueueMain`` queues a MAIN for exactly one cycle, up to
+      ``queue_limit`` at a time; the last one taken keeps playing. A
+      ``SetSegment`` of MAIN empties the queue, and so does the end of an
+      acquisition. Each MAIN taken that differs from the last is published as
+      ``MainApplied``, and every dropped one in a ``MainDiscarded``.
     - An ``Underflow`` is not caught: the source dies, and the Coordinator
       treats it as losing the source.
     """
 
-    def __init__(self, output: SignalOutput, config: OutputConfig) -> None:
+    def __init__(self, output: SignalOutput, config: OutputConfig, *, queue_limit: int = QUEUE_LIMIT) -> None:
         super().__init__()
         self.output = output
         self.config = config
+        self.queue_limit = queue_limit
         empty = (np.zeros((len(config.ao), 0)), np.zeros((len(config.do), 0), dtype=bool))
         self._segments: dict[Segment, Waveform | None] = {
             Segment.WARMUP: empty,
@@ -41,6 +61,15 @@ class WaveformSource(TimingSource):
         }
         self._started = False
         self._queued = 0
+        # The queue holds only what was asked for by QueueMain; the steady MAIN
+        # stays in _segments. Each MAIN gets a new version when it is set or
+        # taken, so a change is told from a repeat by version, never by
+        # comparing arrays.
+        self._pending: deque[tuple[str, Waveform]] = deque()
+        self._main_tag: str | None = None
+        self._main_version = 0
+        self._reported_version: int | None = None
+        self._cycle = 0
 
     async def setup(self) -> None:
         await self.output.configure(self.config)
@@ -69,6 +98,20 @@ class WaveformSource(TimingSource):
                     self._reject(problem)
                     return
                 self._segments[segment] = (np.asarray(ao, dtype=float), np.asarray(do, dtype=bool))
+                if segment is Segment.MAIN:
+                    # "This, now": an adjustment never waits behind a sequence.
+                    self._main_tag = None
+                    self._main_version += 1
+                    self._discard("replaced by SetSegment")
+                self.reply(Accepted())
+            case QueueMain(tag, ao, do):
+                problem = self._validate(Segment.MAIN, ao, do)
+                if problem is None and len(self._pending) >= self.queue_limit:
+                    problem = f"the queue is full ({self.queue_limit} waiting)"
+                if problem is not None:
+                    self._reject(problem)
+                    return
+                self._pending.append((tag, (np.asarray(ao, dtype=float), np.asarray(do, dtype=bool))))
                 self.reply(Accepted())
             case _:
                 await super().handle(msg)
@@ -76,23 +119,34 @@ class WaveformSource(TimingSource):
     # --- phase hooks ----------------------------------------------------------
 
     async def arm(self, root_filename: str, cycles: int) -> None:
-        if self._segments[Segment.MAIN] is None:
+        if self._segments[Segment.MAIN] is None and not self._pending:
             raise NotReady("no MAIN segment has been set")
         await self.output.arm()
         self._started = False
         self._queued = 0
+        self._cycle = 0
+        self._reported_version = None  # every acquisition's record starts with what plays first
 
     async def disarm(self) -> None:
+        self._discard("the acquisition was stopped before it started")
         await self.output.stop()
 
     async def warmup(self) -> None:
         await self._commit("warmup", self._segments[Segment.WARMUP])
 
     async def run_cycle(self) -> None:
+        if self._pending:
+            self._main_tag, self._segments[Segment.MAIN] = self._pending.popleft()
+            self._main_version += 1
+        if self._main_version != self._reported_version:
+            self.publish(MainApplied(self._main_tag, self._cycle, self._queued))
+            self._reported_version = self._main_version
         await self._commit("main", self._segments[Segment.MAIN])
+        self._cycle += 1
         await self._start_if_queued()
 
     async def cooldown(self) -> None:
+        self._discard("the acquisition ended")
         await self._commit("cooldown", self._segments[Segment.COOLDOWN])
         await self._start_if_queued()
 
@@ -106,19 +160,33 @@ class WaveformSource(TimingSource):
     async def _commit(self, label: str, waveform: Waveform) -> None:
         ao, do = waveform  # captured once: a SetSegment cannot change it mid-write
         n = ao.shape[1]
+        # The hardware buffer is kept small on purpose: waiting for room in it
+        # is the backpressure that paces this loop, and its depth is all that
+        # can queue ahead of a MAIN update. So the margin is thin, and is
+        # topped up a step at a time as it plays. Waiting for room for the
+        # rest of the segment instead -- for a segment longer than the buffer,
+        # for the buffer to empty -- spends the margin on every cycle.
+        step = max(1, self.config.buffer_samples // REFILL_STEPS)
         written = 0
         while written < n:
             space = self.output.space_available()
-            if space == 0:
-                if not self._started:
+            if not self._started:
+                if space == 0:
                     await self._go()  # pre-roll already fills the buffer
-                await self.output.wait_for_space(min(n - written, self.config.buffer_samples))
+                    continue
+            elif space < min(n - written, step):
+                await self.output.wait_for_space(min(n - written, step))
                 continue
             k = min(space, n - written)
             chunk = slice(written, written + k)
             await self.output.write(ao[:, chunk], do[:, chunk], label=label if written == 0 else None)
             written += k
             self._queued += k
+
+    def _discard(self, reason: str) -> None:
+        if self._pending:
+            self.publish(MainDiscarded(tuple(tag for tag, _ in self._pending), reason))
+            self._pending.clear()
 
     async def _start_if_queued(self) -> None:
         if not self._started and self._queued:

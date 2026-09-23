@@ -1,4 +1,4 @@
-"""5a-2 -- the adapter against an NI MAX simulated PCI-6733 named Dev1.
+"""5a-2 -- the adapter against an NI MAX simulated PCI-6733 named Dev1-sim.
 
 What this proves that the fake cannot: that the *driver* accepts our call
 sequence. A fake pins our calls against the API as documented; only a real
@@ -10,6 +10,11 @@ What it still cannot prove is underflow. A simulated device that runs dry
 simply stalls -- no error code, and the next write is accepted -- so the
 underflow path stays written but unverified until the instrument says
 otherwise. Nothing here asserts anything about it.
+
+The simulated board is named Dev1-sim so it can sit beside a physical Dev1.
+Create it in NI MAX (Devices and Interfaces > Create New > Simulated NI-DAQmx
+Device > PCI-6733) and rename it Dev1-sim. The module skips unless that device
+exists *and* is simulated, so it never drives a real board.
 
 These run on a real clock, so durations are short and counts are compared
 with tolerance rather than exactly. Run with:
@@ -26,7 +31,7 @@ import pytest
 from stacscope.adapters.nidaqmx import NiSignalOutput
 from stacscope.core.ports import Channel, MonotonicClock, OutputConfig
 
-DEVICE = "Dev1"
+DEVICE = "Dev1-sim"
 RATE = 10_000.0
 BUFFER = 4000
 """0.4 s of output: long enough to measure a rate against, short enough that a
@@ -39,17 +44,26 @@ hundreds of samples; the assertion is that the board is clocking at the rate
 asked for, not that Python woke up on time."""
 
 
-def _dev1() -> bool:
+def _simulated_dev1() -> bool:
+    # The name alone is not enough: a board renamed in MAX, or a physical
+    # device given this name, would have every test below assert real analog
+    # and digital output. Runs against real hardware belong in
+    # tests/hardware/, run by the user -- never here.
     try:
         import nidaqmx.system
 
-        return any(d.name == DEVICE for d in nidaqmx.system.System.local().devices)
+        return any(
+            d.name == DEVICE and d.is_simulated
+            for d in nidaqmx.system.System.local().devices
+        )
     except Exception:
         return False
 
 
 pytestmark = pytest.mark.skipif(
-    not _dev1(), reason=f"no NI-DAQmx driver, or no simulated device named {DEVICE}"
+    not _simulated_dev1(),
+    reason=f"no NI-DAQmx driver, or {DEVICE} is absent or is not simulated "
+    "(this suite never drives a real board)",
 )
 
 

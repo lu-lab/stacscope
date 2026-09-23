@@ -1,0 +1,19 @@
+﻿[DAQmx]	MajorVersion	MinorVersion	
+	20	0	
+
+[DAQmxChannel]	AO.Max	AO.Min	AO.OutputType	AO.TermCfg	AO.Voltage.Units	ChanType	PhysicalChanName	
+SPIM_Analog_Task_sim/ETL	5	0	Voltage	RSE	Volts	Analog Output	Dev1-sim/ao0	
+SPIM_Analog_Task_sim/Scan1	5	0	Voltage	RSE	Volts	Analog Output	Dev1-sim/ao1	
+SPIM_Analog_Task_sim/Scan2	5	0	Voltage	RSE	Volts	Analog Output	Dev1-sim/ao3	
+SPIM_Analog_Task_sim/Scan3	5	0	Voltage	RSE	Volts	Analog Output	Dev1-sim/ao2	
+SPIM_Analog_Task_sim/Scan4	5	0	Voltage	RSE	Volts	Analog Output	Dev1-sim/ao4	
+
+[DAQmxChannel]	ChanType	DO.InvertLines	PhysicalChanName	
+SPIM_Digital_Task_sim/HamamatsuCamTrigger	Digital Output	0	Dev1-sim/port0/line0	
+SPIM_Digital_Task_sim/LaserEnable	Digital Output	0	Dev1-sim/port0/line1	
+SPIM_Digital_Task_sim/ThorCamTrigger	Digital Output	0	Dev1-sim/port0/line2	
+
+[DAQmxTask]	Channels	RegenMode	SampClk.ActiveEdge	SampClk.Rate	SampClk.Src	SampQuant.SampMode	SampQuant.SampPerChan	SampTimingType	
+SPIM_Analog_Task_sim	SPIM_Analog_Task_sim/ETL, SPIM_Analog_Task_sim/Scan1, SPIM_Analog_Task_sim/Scan2, SPIM_Analog_Task_sim/Scan3, SPIM_Analog_Task_sim/Scan4	Do Not Allow Regeneration	Rising	100000		Continuous Samples	1000	Sample Clock	
+SPIM_Digital_Task_sim	SPIM_Digital_Task_sim/HamamatsuCamTrigger, SPIM_Digital_Task_sim/LaserEnable, SPIM_Digital_Task_sim/ThorCamTrigger	Do Not Allow Regeneration	Rising	100000	ao/SampleClock	Continuous Samples	1000	Sample Clock	
+

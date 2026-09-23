@@ -88,15 +88,22 @@ section explains why.
   (`NiSignalOutput(clock, ao_task=..., do_task=...)`), `configure` checks
   them against the `OutputConfig` and sets only DMA and buffer depth, and
   `read_output_config` builds the config from them. Step 3, the instrument, is
-  next and is the user's to run. Device-adapter tests live
+  written and rehearsed on `Dev1-sim`; the user runs it on the board. Device-adapter tests live
   in `tests/adapters/<vendor>/`, which the default run ignores, so run them by
   name: `uv run --extra nidaqmx pytest tests/adapters/nidaqmx`.
   **Some dev machines have the physical board installed as `Dev1`.** The
   simulated suite runs only against a device that is both named `Dev1-sim`
-  and simulated. `tests/adapters/nidaqmx/DAQmxConfiguration_sim.txt` imports
-  the instrument's tasks into NI MAX as `SPIM_*_Task_sim` on `Dev1-sim`; the
-  suite needs them, and skips unless every channel of both is on `Dev1-sim`.
-  Never load the plain `SPIM_*_Task`s from a test: they point at `Dev1`.
+  and simulated. **Device suites build their own tasks** (user, 2026-09-23):
+  `tests/adapters/nidaqmx/saved_tasks.py` saves a pair from an
+  `OutputConfig` as `stacscope_test_*`, and deletes them afterwards, so a
+  change to the rig's tasks in NI MAX never breaks a test. The production
+  adapter still loads the instrument's tasks from MAX by name; that is the
+  deployment mechanism. Never load the instrument's `SPIM_*_Task`s from a
+  test. (`DAQmxConfiguration_sim.txt` still imports a `_sim` copy of them
+  for trying the rig's config by hand; no test uses it.)
+  **Step 3's suite is `tests/hardware/nidaqmx/`**, and runs only on the
+  device named in `STACSCOPE_HARDWARE`. Claude may run it only with
+  `STACSCOPE_HARDWARE=Dev1-sim`, as a rehearsal; the user runs it on `Dev1`.
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
   for watching a frame buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the

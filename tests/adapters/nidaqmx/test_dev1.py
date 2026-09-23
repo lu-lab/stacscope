@@ -1,30 +1,28 @@
 """5a-2 -- the adapter against an NI MAX simulated PCI-6733 named Dev1-sim,
-driving the instrument's own tasks, imported into NI MAX as *_sim copies.
+loading tasks this suite saves to NI MAX itself.
 
 What this proves that the fake cannot: that the *driver* accepts our call
-sequence, and that the tasks saved in MAX are what the instrument needs. A fake
-pins our calls against the API as documented; only a real DAQmx accepts or
-rejects them. The simulated device runs a genuine sample clock, so it also
-proves the board consumes at the configured rate and that the digital task
-really does follow the analog one.
+sequence, from loading a saved task through to closing it. A fake pins our
+calls against the API as documented; only a real DAQmx accepts or rejects
+them. The simulated device runs a genuine sample clock, so it also proves the
+board consumes at the configured rate and that the digital task really does
+follow the analog one.
+
+The tasks are the suite's own (see saved_tasks.py): built from INSTRUMENT
+below, saved as stacscope_test_*, and deleted afterwards. They have the
+instrument's shape -- five analog channels with the transposed Scan2/Scan3
+pair, three digital lines -- but not its tasks, so a change to the rig in NI
+MAX never breaks this suite, and this suite never touches the rig's tasks.
 
 What it still cannot prove is underflow. A simulated device that runs dry
 simply stalls -- no error code, and the next write is accepted -- so the
 underflow path stays written but unverified until the instrument says
 otherwise. Nothing here asserts anything about it.
 
-Setup, once per machine:
-
-1. Create the device in NI MAX (Devices and Interfaces > Create New >
-   Simulated NI-DAQmx Device > PCI-6733) and rename it Dev1-sim, so it can sit
-   beside a physical Dev1.
-2. Import the tasks: in NI MAX, File > Import, and choose
-   tests/adapters/nidaqmx/DAQmxConfiguration_sim.txt. That creates
-   SPIM_Analog_Task_sim and SPIM_Digital_Task_sim on Dev1-sim -- the
-   instrument's SPIM_*_Task pair, moved to the simulated board.
-
-The module skips unless Dev1-sim exists *and* is simulated, and both tasks
-exist with every channel on it, so it never drives a real board.
+Setup, once per machine: create the device in NI MAX (Devices and Interfaces >
+Create New > Simulated NI-DAQmx Device > PCI-6733) and rename it Dev1-sim, so
+it can sit beside a physical Dev1. The module skips unless Dev1-sim exists and
+is simulated, so it never drives a real board.
 
 These run on a real clock, so durations are short and counts are compared
 with tolerance rather than exactly. Run with:
@@ -38,6 +36,7 @@ import time
 import numpy as np
 import pytest
 from nidaqmx.constants import DataTransferActiveTransferMode, RegenerationMode
+from saved_tasks import PREFIX, saved
 
 from stacscope.adapters.nidaqmx import NiSignalOutput, read_output_config
 from stacscope.core.actors import spawn
@@ -45,8 +44,8 @@ from stacscope.core.ports import Channel, MonotonicClock, OutputConfig
 from stacscope.core.timing import WaveformSource
 
 DEVICE = "Dev1-sim"
-AO_TASK = "SPIM_Analog_Task_sim"
-DO_TASK = "SPIM_Digital_Task_sim"
+AO_TASK = f"{PREFIX}sim_ao"
+DO_TASK = f"{PREFIX}sim_do"
 RATE = 100_000.0
 BUFFER = 40_000
 """0.4 s of output: long enough to measure a rate against, short enough that a
@@ -74,39 +73,22 @@ INSTRUMENT = OutputConfig(
     ),
     buffer_samples=BUFFER,
 )
-"""What the instrument's tasks hold, written out rather than read from MAX.
-Every test configures with this, so the adapter's own check refuses a *_sim
-task edited to reach any other device before anything is committed."""
+"""The instrument's shape, on the simulated board. The suite's tasks are saved
+from this, and every test configures with it."""
 
 
 def _unsafe() -> str | None:
     """Why this suite must not run here, or None if it may."""
     # The device name alone is not enough: a board renamed in MAX, or a
     # physical device given this name, would have every test below assert real
-    # analog and digital output. And the tasks are checked as well as the
-    # device, since a *_sim task can be edited to point at the physical Dev1.
-    # Runs against real hardware belong in tests/hardware/, run by the user --
-    # never here.
+    # analog and digital output. Runs against real hardware belong in
+    # tests/hardware/, run by the user -- never here.
     try:
         import nidaqmx.system
 
         system = nidaqmx.system.System.local()
         if not any(d.name == DEVICE and d.is_simulated for d in system.devices):
             return f"{DEVICE} is absent or is not simulated (this suite never drives a real board)"
-        missing = [name for name in (AO_TASK, DO_TASK) if name not in system.tasks]
-        if missing:
-            return (
-                f"NI MAX has no {' or '.join(missing)}: import "
-                "tests/adapters/nidaqmx/DAQmxConfiguration_sim.txt with File > Import in NI MAX"
-            )
-        for name in (AO_TASK, DO_TASK):
-            task = system.tasks[name].load()  # loading neither commits nor outputs
-            try:
-                devices = {d.name for d in task.devices}
-            finally:
-                task.close()
-            if devices != {DEVICE}:
-                return f"{name} uses {sorted(devices)}, not only {DEVICE}: re-import it"
     except Exception as exc:
         return f"no usable NI-DAQmx driver: {exc!r}"
     return None
@@ -125,6 +107,13 @@ def block(n: int, value: float = 1.0):
 
 def adapter() -> NiSignalOutput:
     return NiSignalOutput(MonotonicClock(), ao_task=AO_TASK, do_task=DO_TASK)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def tasks():
+    """The suite's own pair, saved once for the module and deleted after it."""
+    with saved(INSTRUMENT, ao=AO_TASK, do=DO_TASK):
+        yield
 
 
 @pytest.fixture
@@ -162,23 +151,52 @@ async def until(predicate, timeout: float = 5.0) -> None:
         await asyncio.sleep(0.005)
 
 
-def test_the_saved_tasks_are_the_instruments():
-    """N18. The imported tasks hold the instrument's channel map, read back
-    through the driver: five analog channels in MAX's order -- with Scan2 on
-    ao3 and Scan3 on ao2, the transposition the rig is wired with -- three
-    digital lines, and 100 kS/s. If ``read_output_config`` reordered,
-    relabelled or misread anything, a rig config built from it would drive
-    the wrong mirror."""
+def saved_names() -> list[str]:
+    import nidaqmx.system
+
+    return nidaqmx.system.System.local().tasks.task_names
+
+
+def test_the_suites_tasks_leave_nothing_behind():
+    """Tasks a test saves are deleted when it ends, pass or fail -- or every
+    run would add to NI MAX's task list, on every developer's machine."""
+    ao, do = f"{PREFIX}cleanup_ao", f"{PREFIX}cleanup_do"
+
+    with pytest.raises(ZeroDivisionError), saved(INSTRUMENT, ao=ao, do=do):
+        assert {ao, do} <= set(saved_names())
+        1 / 0
+
+    assert not {ao, do} & set(saved_names())
+
+
+def test_the_suite_saves_only_tasks_named_as_its_own():
+    """The helper overwrites whatever it saves over, so it refuses any name
+    without the test prefix: a slip in a test must not be able to replace the
+    instrument's own tasks. The name here is one no MAX should have."""
+    name = "stacscope_prefixless_probe"
+
+    with pytest.raises(AssertionError, match=PREFIX), saved(INSTRUMENT, ao=name, do=f"{PREFIX}probe_do"):
+        pass
+
+    assert name not in saved_names()
+
+
+def test_the_saved_tasks_read_back_as_saved():
+    """N17 and N18, through the driver. What was saved comes back exactly:
+    five analog channels in MAX's order -- with Scan2 on ao3 and Scan3 on
+    ao2, the transposition the rig is wired with -- three digital lines, and
+    100 kS/s. If ``read_output_config`` reordered, relabelled or misread
+    anything, a rig config built from it would drive the wrong mirror."""
     assert read_output_config(AO_TASK, DO_TASK, buffer_samples=BUFFER) == INSTRUMENT
 
 
 async def test_the_driver_accepts_the_configuration(make_output):
     """N18, and N15 against a real driver. The settings the refill design
-    rests on arrive from MAX intact -- the digital task clocked off the analog
+    rests on survive a save and a load -- the digital task clocked off the analog
     task's sample clock, regeneration refused on both -- and the two settings
     ``configure`` makes are accepted for this board: DMA transfer and a buffer
-    of the depth asked for. The analog task comes out of MAX polled, so the DMA
-    assertion is not vacuous."""
+    of the depth asked for. A saved analog task loads polled, so the DMA assertion
+    is not vacuous."""
     output = await make_output()
     ao, do = output._ao, output._do
 

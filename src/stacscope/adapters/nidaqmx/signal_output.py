@@ -4,27 +4,38 @@ Everything NI-specific lives here: which task is master, where the digital
 lines get their clock, and which driver error codes mean the output gapped.
 The port itself knows none of it.
 
-The board is the rig's sole timing authority, so the AO task runs on its own
-onboard clock and the DO task is slaved to it. Regeneration is disabled,
-which is what makes a sample play exactly once: fall behind and the driver
-reports a gap rather than silently replaying the last block. That single
-constraint is why the caller is a refill loop.
+The output tasks are the instrument's, saved in NI MAX: one analog output task
+and one digital output task, named when the adapter is built. MAX owns their
+channels, rate and clock routing. The adapter loads them, checks them against
+the configuration it is given, and refuses to run if they disagree -- so a
+change to the rig is made in one place, NI MAX, and a stale configuration is
+caught at setup rather than mid-acquisition. read_output_config reads the
+configuration straight from the saved tasks, so it need not be written twice.
+
+The saved tasks must be set up the way this adapter needs, and it checks that
+too. The board is the rig's sole timing authority, so the analog task runs on
+the board's own clock and the digital task takes its clock from
+ao/SampleClock. Both run continuously with regeneration disabled, which is
+what makes a sample play exactly once: fall behind and the driver reports a
+gap rather than silently replaying the last block.
 """
 
 import contextlib
 from typing import TYPE_CHECKING
 
-from nidaqmx.constants import AcquisitionType, LineGrouping, RegenerationMode, TaskMode
+from nidaqmx.constants import (
+    AcquisitionType,
+    DataTransferActiveTransferMode,
+    RegenerationMode,
+    TaskMode,
+)
 from nidaqmx.error_codes import DAQmxErrors
 from nidaqmx.errors import DaqError
 
-from stacscope.core.ports import Underflow
+from stacscope.core.ports import Channel, OutputConfig, Underflow
 
 if TYPE_CHECKING:
-    from stacscope.core.ports import Clock, OutputConfig
-
-AO_TASK = "stacscope_ao"
-DO_TASK = "stacscope_do"
+    from stacscope.core.ports import Clock
 
 POLL = 0.001
 """How often to ask the driver for space. Through the injected clock, so a test
@@ -52,16 +63,15 @@ harder at a board that has, say, overheated."""
 
 
 class NiSignalOutput:
-    def __init__(self, clock: "Clock", *, tasks=None) -> None:
-        """``tasks`` is the task factory, ``nidaqmx.Task`` unless a test
-        supplies a stand-in. Imported lazily so this module can be read
-        without a driver present."""
-        if tasks is None:
-            import nidaqmx
-
-            tasks = nidaqmx.Task
+    def __init__(self, clock: "Clock", *, ao_task: str, do_task: str, system=None) -> None:
+        """``ao_task`` and ``do_task`` name the analog and digital output tasks
+        saved in NI MAX. Nothing is loaded, and the board is not reserved,
+        until ``configure``. ``system`` is ``nidaqmx.system.System.local()``
+        unless a test supplies a stand-in."""
         self._clock = clock
-        self._tasks = tasks
+        self._ao_task = ao_task
+        self._do_task = do_task
+        self._system = system
         self._config: OutputConfig | None = None
         self._written = 0
         self._playing = False
@@ -70,25 +80,40 @@ class NiSignalOutput:
         self._do = None
         self._closed = False
 
-    async def configure(self, config: "OutputConfig") -> None:
+    async def configure(self, config: OutputConfig) -> None:
+        """Load both tasks from NI MAX, check them against ``config``, and
+        reserve the board.
+
+        Raises ``LookupError`` naming a task NI MAX does not have, before
+        anything is loaded, and ``ValueError`` listing every way the saved
+        tasks differ from ``config``. After a ``ValueError`` the tasks stay
+        loaded until ``close``, which is safe to call whatever happened here."""
         self._open()
         self._config = config
-        device = config.ao[0].physical.split("/")[0]
+        system = self._system or _local_system()
+        _require(system, self._ao_task, self._do_task)
+        self._ao = system.tasks[self._ao_task].load()
+        self._do = system.tasks[self._do_task].load()
 
-        self._ao = self._tasks(new_task_name=AO_TASK)
-        for channel in config.ao:
-            self._ao.ao_channels.add_ao_voltage_chan(channel.physical)
-
-        self._do = self._tasks(new_task_name=DO_TASK)
-        for channel in config.do:
-            self._do.do_channels.add_do_chan(
-                channel.physical, line_grouping=LineGrouping.CHAN_PER_LINE
+        # Checked, never imposed: overriding MAX here would have the rig's
+        # owner edit one thing and get another, and quietly "fixing" a
+        # transposed pair of scanners is worse than refusing to run.
+        problems = _differences(self._ao, self._do, config)
+        if problems:
+            raise ValueError(
+                "the tasks saved in NI MAX do not match the configuration:\n  "
+                + "\n  ".join(problems)
             )
 
-        # The AO task owns the clock; the DO task follows it off the same
-        # terminal, so an edge keeps its phase against the waveform.
-        self._configure_timing(self._ao, config, source="")
-        self._configure_timing(self._do, config, source=f"/{device}/ao/SampleClock")
+        # The two things MAX does not own. DMA because a saved analog output
+        # task comes back POLLED (read off the instrument's own task, where the
+        # digital one comes back DMA), and a refill loop at 100 kS/s is what
+        # DMA exists for. Whether it changes anything measurable on the board
+        # is H4.
+        self._ao.ao_channels.all.ao_data_xfer_mech = DataTransferActiveTransferMode.DMA
+        self._do.do_channels.all.do_data_xfer_mech = DataTransferActiveTransferMode.DMA
+        for task in (self._ao, self._do):
+            task.out_stream.output_buf_size = config.buffer_samples
 
         # Committing reserves and programs the board once, here, rather than
         # on every start/stop cycle -- which is what the LabVIEW engine does
@@ -245,16 +270,87 @@ class NiSignalOutput:
             raise Underflow(self._ao.out_stream.total_samp_per_chan_generated
                             / self._config.rate) from exc
 
-    @staticmethod
-    def _configure_timing(task, config: "OutputConfig", *, source: str) -> None:
-        task.timing.cfg_samp_clk_timing(
-            config.rate,
-            source=source,
-            sample_mode=AcquisitionType.CONTINUOUS,
-            samps_per_chan=config.buffer_samples,
-        )
-        task.out_stream.regen_mode = RegenerationMode.DONT_ALLOW_REGENERATION
-        task.out_stream.output_buf_size = config.buffer_samples
+
+def read_output_config(
+    ao_task: str, do_task: str, *, buffer_samples: int, system=None
+) -> OutputConfig:
+    """The ``OutputConfig`` that the tasks saved in NI MAX describe: their
+    channels in MAX's order, labelled with MAX's channel names, at the analog
+    task's rate. ``buffer_samples`` is the caller's, since MAX does not hold
+    it. Both tasks are released again before this returns. Raises
+    ``LookupError`` naming a task NI MAX does not have."""
+    system = system or _local_system()
+    _require(system, ao_task, do_task)
+    with contextlib.ExitStack() as held:
+        ao = system.tasks[ao_task].load()
+        held.callback(ao.close)
+        do = system.tasks[do_task].load()
+        held.callback(do.close)
+        return _read(ao, do, buffer_samples)
+
+
+def _local_system():
+    # Imported here so this module can be read without a driver present.
+    import nidaqmx.system
+
+    return nidaqmx.system.System.local()
+
+
+def _require(system, *names: str) -> None:
+    # Asked before loading anything. The driver's own answer comes only from
+    # `load`, as a bare code -- indexing the saved tasks by an unknown name
+    # succeeds -- and by then the other task may already be holding the board.
+    for name in names:
+        if name not in system.tasks:
+            raise LookupError(
+                f"NI MAX has no task named {name!r}. Create or import it in NI MAX, "
+                "under Data Neighborhood > NI-DAQmx Tasks."
+            )
+
+
+def _read(ao, do, buffer_samples: int) -> OutputConfig:
+    # MAX's order is kept exactly: it is the order of the caller's array rows,
+    # and it is not the order of the physical lines (on the instrument Scan2
+    # is ao3 and Scan3 is ao2), so sorting anywhere swaps two scanners.
+    return OutputConfig(
+        rate=ao.timing.samp_clk_rate,
+        ao=tuple(Channel(c.physical_channel.name, c.name) for c in ao.ao_channels),
+        do=tuple(Channel(c.physical_channel.name, c.name) for c in do.do_channels),
+        buffer_samples=buffer_samples,
+    )
+
+
+def _differences(ao, do, config: OutputConfig) -> list[str]:
+    """Every way the loaded tasks disagree with ``config``, or with what the
+    refill design needs of them, as lines naming the task."""
+    found = _read(ao, do, config.buffer_samples)
+    problems = [
+        f"{task.name} has channels {_listing(have)}; configured {_listing(wanted)}"
+        for task, have, wanted in ((ao, found.ao, config.ao), (do, found.do, config.do))
+        if have != wanted
+    ]
+    for task in (ao, do):
+        if task.timing.samp_clk_rate != config.rate:
+            problems.append(
+                f"{task.name} runs at {task.timing.samp_clk_rate} S/s; configured {config.rate}"
+            )
+        if task.timing.samp_quant_samp_mode is not AcquisitionType.CONTINUOUS:
+            problems.append(f"{task.name} is not set to continuous samples")
+        if task.out_stream.regen_mode is not RegenerationMode.DONT_ALLOW_REGENERATION:
+            problems.append(f"{task.name} allows regeneration")
+    # The source reads back fully qualified whatever form it was saved in
+    # ("ao/SampleClock" in the export file). The device is the one the analog
+    # task is actually on, so a rig moved to another board is reported once,
+    # as channels, rather than again here.
+    if found.ao:
+        clock = f"/{found.ao[0].physical.split('/')[0]}/ao/SampleClock"
+        if do.timing.samp_clk_src != clock:
+            problems.append(f"{do.name} is clocked from {do.timing.samp_clk_src!r}, not {clock!r}")
+    return problems
+
+
+def _listing(channels: tuple[Channel, ...]) -> str:
+    return "[" + ", ".join(f"{c.label}={c.physical}" for c in channels) + "]"
 
 
 def _for_driver(samples):
@@ -265,3 +361,4 @@ def _for_driver(samples):
     channels x n whatever the count, so the difference is absorbed here.
     """
     return samples[0] if samples.shape[0] == 1 else samples
+

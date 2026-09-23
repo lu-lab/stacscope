@@ -1,4 +1,5 @@
-"""A stand-in for ``nidaqmx.Task``, recording what the adapter did to it.
+"""A stand-in for ``nidaqmx.system.System``: tasks saved in NI MAX, loaded by
+name, recording what the adapter did to them.
 
 What this can and cannot prove, stated plainly because it is easy to forget:
 it pins *our* call sequence against the API as it is documented. It cannot
@@ -6,46 +7,136 @@ prove the driver accepts that sequence -- that is 5a-2, against an NI MAX
 simulated device -- and it cannot prove the hardware behaves, which only the
 instrument can. Every attribute and method here was checked against the
 installed ``nidaqmx`` 1.6.0 rather than recalled, since a double that invents
-API names would pass happily and fail on the bench.
+API names would pass happily and fail on the bench. What a *loaded* task
+reports back (channel names without the task prefix, physical names without a
+leading slash, a fully qualified clock source) was read off real persisted
+tasks on Dev1-sim, not the documentation.
+
+A loaded task deliberately has no way to add channels or configure timing:
+since step 2 those belong to NI MAX, and an adapter that tried would fail here
+with an AttributeError rather than pass.
 """
 
-from nidaqmx.constants import AcquisitionType, Edge, LineGrouping, RegenerationMode, TaskMode
+from dataclasses import dataclass
+from types import SimpleNamespace
+
+from nidaqmx.constants import AcquisitionType, RegenerationMode, TaskMode
 from nidaqmx.error_codes import DAQmxErrors
 from nidaqmx.errors import DaqError
 
 
+@dataclass
+class Saved:
+    """A task as saved in NI MAX. Tests edit one before loading it to make the
+    rig disagree with the configuration."""
+
+    kind: str  # "ao" or "do"
+    channels: list[tuple[str, str]]  # (MAX channel name, physical channel), in MAX's order
+    rate: float
+    source: str
+    mode: AcquisitionType = AcquisitionType.CONTINUOUS
+    regen: RegenerationMode = RegenerationMode.DONT_ALLOW_REGENERATION
+
+
 class FakeDaq:
-    """Hands out tasks and keeps them, with one log ordering events across all
-    of them -- which is how start order between master and slave is checked."""
+    """The system: what is saved, what has been loaded, and one log ordering
+    events across every task -- which is how start order between master and
+    slave is checked."""
 
     def __init__(self, *, space=0):
-        self.tasks: list[FakeTask] = []
+        self.saved: dict[str, Saved] = {}
+        self.loaded: list[FakeTask] = []
         self.log: list[tuple[str, str]] = []
         self.space = space
+        self.tasks = _PersistedTasks(self)
 
-    def __call__(self, new_task_name: str = "") -> "FakeTask":
-        task = FakeTask(new_task_name, self)
-        self.tasks.append(task)
-        return task
+    def saving(self, config, *, ao: str, do: str) -> "FakeDaq":
+        """Save an AO and a DO task in MAX exactly as ``config`` describes
+        them, set up the way the instrument's are."""
+        device = config.ao[0].physical.split("/")[0]
+        self.saved[ao] = Saved("ao", [(c.label, c.physical) for c in config.ao],
+                               config.rate, f"/{device}/ao/SampleClockTimebase")
+        self.saved[do] = Saved("do", [(c.label, c.physical) for c in config.do],
+                               config.rate, f"/{device}/ao/SampleClock")
+        return self
 
     def task(self, name: str) -> "FakeTask":
-        for task in self.tasks:
+        for task in self.loaded:
             if task.name.endswith(name):
                 return task
-        raise AssertionError(f"no task named {name!r} in {[t.name for t in self.tasks]}")
+        raise AssertionError(f"no task named {name!r} in {[t.name for t in self.loaded]}")
 
     def starts(self) -> list[str]:
         return [name for event, name in self.log if event == "start"]
 
 
-class FakeTask:
+class _PersistedTasks:
+    """``System.tasks``. As in the real collection, indexing by a name that
+    was never saved does not fail -- only loading it does."""
+
+    def __init__(self, daq: FakeDaq) -> None:
+        self._daq = daq
+
+    @property
+    def task_names(self) -> list[str]:
+        return list(self._daq.saved)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._daq.saved
+
+    def __getitem__(self, name: str) -> "_PersistedTask":
+        return _PersistedTask(name, self._daq)
+
+
+class _PersistedTask:
     def __init__(self, name: str, daq: FakeDaq) -> None:
         self.name = name
         self._daq = daq
-        self.ao_channels = _AoChannels()
-        self.do_channels = _DoChannels()
-        self.timing = _Timing()
-        self.out_stream = _OutStream(self)
+
+    def load(self) -> "FakeTask":
+        saved = self._daq.saved.get(self.name)
+        if saved is None:
+            raise DaqError("Task specified is invalid or does not exist.",
+                           DAQmxErrors.INVALID_TASK)
+        if any(t.name == self.name and not t.closed for t in self._daq.loaded):
+            raise DaqError("Specified task name is already in use.",
+                           DAQmxErrors.DUPLICATE_TASK)
+        task = FakeTask(self.name, saved, self._daq)
+        self._daq.loaded.append(task)
+        self._daq.log.append(("load", self.name))
+        return task
+
+
+class _Recorded:
+    """Part of a task whose attribute writes are recorded on the task, so a
+    test can see every setting the adapter changed and nothing else."""
+
+    def __init__(self, task: "FakeTask", **values) -> None:
+        object.__setattr__(self, "_task", task)
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, name, value):
+        self._task.changed[name] = value
+        object.__setattr__(self, name, value)
+
+
+class FakeTask:
+    def __init__(self, name: str, saved: Saved, daq: FakeDaq) -> None:
+        self.name = name
+        self._daq = daq
+        self.changed: dict[str, object] = {}
+        """Every driver setting written since loading, by attribute name."""
+        channels = [
+            SimpleNamespace(name=label, physical_channel=SimpleNamespace(name=physical))
+            for label, physical in saved.channels
+        ]
+        self.ao_channels = _Channels(self, channels if saved.kind == "ao" else [], "ao")
+        self.do_channels = _Channels(self, channels if saved.kind == "do" else [], "do")
+        self.channel_names = [c.name for c in channels]
+        self.timing = _Recorded(self, samp_clk_rate=saved.rate, samp_clk_src=saved.source,
+                                samp_quant_samp_mode=saved.mode)
+        self.out_stream = _OutStream(self, saved)
         self.started = False
         self.closed = False
         self.committed = False
@@ -73,7 +164,7 @@ class FakeTask:
         rejects, and one channel of analog out with one digital line is the
         smallest real configuration there is.
         """
-        channels = len(self.ao_channels.added) + len(self.do_channels.added)
+        channels = len(self.channel_names)
         given = data.shape[0] if data.ndim == 2 else 1
         if (data.ndim == 2) != (channels > 1) or given != channels:
             raise DaqError(
@@ -106,57 +197,34 @@ class FakeTask:
             raise self.fail
 
 
-class _AoChannels:
-    def __init__(self) -> None:
-        self.added: list[str] = []
+class _Channels:
+    """``task.ao_channels`` / ``task.do_channels``: iterable in MAX's order,
+    and ``all`` for a property set on every channel at once."""
 
-    def add_ao_voltage_chan(self, physical_channel, name_to_assign_to_channel="",
-                            min_val=-10.0, max_val=10.0):
-        self.added.append(physical_channel)
+    def __init__(self, task: FakeTask, channels: list, kind: str) -> None:
+        self._channels = channels
+        self.all = _Recorded(task, **{f"{kind}_data_xfer_mech": None})
 
+    def __iter__(self):
+        return iter(self._channels)
 
-class _DoChannels:
-    def __init__(self) -> None:
-        self.added: list[str] = []
-        self.grouping: LineGrouping | None = None
-
-    def add_do_chan(self, lines, name_to_assign_to_lines="",
-                    line_grouping=LineGrouping.CHAN_FOR_ALL_LINES):
-        self.added.append(lines)
-        self.grouping = line_grouping
+    def __len__(self) -> int:
+        return len(self._channels)
 
 
-class _Timing:
-    def __init__(self) -> None:
-        self.rate: float | None = None
-        self.source: str | None = None
-        self.sample_mode: AcquisitionType | None = None
-        self.samps_per_chan: int | None = None
+class _OutStream(_Recorded):
+    """Enough of ``task.out_stream`` for the adapter: the settings the refill
+    design rests on, plus the counters it reads back."""
 
-    def cfg_samp_clk_timing(self, rate, source="", active_edge=Edge.RISING,
-                            sample_mode=AcquisitionType.FINITE, samps_per_chan=1000):
-        self.rate = rate
-        self.source = source
-        self.sample_mode = sample_mode
-        self.samps_per_chan = samps_per_chan
-
-
-class _OutStream:
-    """Enough of ``task.out_stream`` for the adapter: the two settings the
-    refill design rests on, plus the counters it reads back."""
-
-    def __init__(self, task: "FakeTask") -> None:
-        self._task = task
-        self.regen_mode: RegenerationMode | None = None
-        self.output_buf_size: int | None = None
-        self.auto_start: bool | None = None
-        self.played = 0
-        """Samples the task has generated. Tests advance it by hand: the fake
-        has no clock, and a drain is exactly the wait for this to catch up."""
-        self.fail: Exception | None = None
-        """Set to a DaqError to fail reads of the generated counter. Separate
-        from the task's own switch because the adapter reads this counter
-        *while handling* a failed write, to say when the output ran dry."""
+    def __init__(self, task: FakeTask, saved: Saved) -> None:
+        super().__init__(task, regen_mode=saved.regen, output_buf_size=0, played=0, fail=None)
+        # `played`: samples the task has generated. Tests advance it by hand:
+        # the fake has no clock, and a drain is exactly the wait for this to
+        # catch up.
+        # `fail`: set to a DaqError to fail reads of the generated counter.
+        # Separate from the task's own switch because the adapter reads this
+        # counter *while handling* a failed write, to say when the output ran
+        # dry.
 
     @property
     def space_avail(self) -> int:
@@ -173,4 +241,4 @@ class _OutStream:
 
     @total_samp_per_chan_generated.setter
     def total_samp_per_chan_generated(self, value: int) -> None:
-        self.played = value
+        object.__setattr__(self, "played", value)

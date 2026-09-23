@@ -5,10 +5,8 @@ Run with:  uv run --extra nidaqmx pytest tests/adapters/nidaqmx
 
 import numpy as np
 import pytest
-from fake_daqmx import FakeDaq
-from test_configure import BUFFER, CONFIG
+from test_configure import AO_TASK, BUFFER, CONFIG, DO_TASK, adapter, rig
 
-from stacscope.adapters.nidaqmx import NiSignalOutput
 from stacscope.adapters.simulated import VirtualClock
 
 
@@ -18,12 +16,12 @@ def block(n, value=1.0):
 
 @pytest.fixture
 def daq():
-    return FakeDaq(space=BUFFER)
+    return rig(space=BUFFER)
 
 
 @pytest.fixture
 async def output(daq):
-    output = NiSignalOutput(VirtualClock(), tasks=daq)
+    output = adapter(VirtualClock(), daq)
     await output.configure(CONFIG)
     await output.arm()
     return output
@@ -37,7 +35,7 @@ async def test_the_slave_starts_before_the_master(output, daq):
     await output.write(*block(64))
     await output.go()
 
-    assert daq.starts() == ["stacscope_do", "stacscope_ao"]
+    assert daq.starts() == [DO_TASK, AO_TASK]
     # and nothing started itself on the way: an auto-starting write would have
     # started the master at the first block, before the slave existed.
     assert daq.task("ao").auto_started == [False]

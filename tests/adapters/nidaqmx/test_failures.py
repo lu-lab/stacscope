@@ -7,12 +7,10 @@ import asyncio
 
 import numpy as np
 import pytest
-from fake_daqmx import FakeDaq
 from nidaqmx.error_codes import DAQmxErrors
 from nidaqmx.errors import DaqError
-from test_configure import BUFFER, CONFIG, RATE
+from test_configure import AO_TASK, BUFFER, CONFIG, DO_TASK, RATE, adapter, rig
 
-from stacscope.adapters.nidaqmx import NiSignalOutput
 from stacscope.adapters.simulated import VirtualClock
 from stacscope.core.ports import Underflow
 
@@ -35,7 +33,7 @@ def ramp(n):
 
 @pytest.fixture
 def daq():
-    return FakeDaq(space=BUFFER)
+    return rig(space=BUFFER)
 
 
 @pytest.fixture
@@ -45,7 +43,7 @@ def clock():
 
 @pytest.fixture
 async def output(daq, clock):
-    output = NiSignalOutput(clock, tasks=daq)
+    output = adapter(clock, daq)
     await output.configure(CONFIG)
     await output.arm()
     return output
@@ -184,7 +182,7 @@ async def test_running_dry_while_draining_is_the_expected_end(playing, daq):
 
     # and the digital task was drained too. Both share the AO sample clock, so
     # one of them running dry says nothing about the other having finished.
-    assert ("generated", "stacscope_do") in daq.log
+    assert ("generated", DO_TASK) in daq.log
 
 
 async def test_draining_gives_up_rather_than_waiting_for_ever(playing, daq, clock):
@@ -242,7 +240,7 @@ async def test_close_releases_both_tasks_and_may_be_repeated(output, daq, clock)
     """N13. ``close`` is the port's now, called by the source's teardown, so
     it meets the contract's terms: safe before anything was configured, safe
     twice, and both tasks released."""
-    await NiSignalOutput(clock, tasks=FakeDaq()).close()  # never configured
+    await adapter(clock, rig()).close()  # never configured
 
     await output.close()
     await output.close()
@@ -269,13 +267,13 @@ async def test_a_closed_adapter_refuses_to_be_used(output, daq, use):
     reserves the board again after its owner released it."""
     await output.write(*ramp(4))
     await output.close()
-    tasks = len(daq.tasks)
+    tasks = len(daq.loaded)
 
     with pytest.raises(RuntimeError):
         await use(output)
     with pytest.raises(RuntimeError):
         output.space_available()
-    assert len(daq.tasks) == tasks, "a closed adapter created a task"
+    assert len(daq.loaded) == tasks, "a closed adapter loaded a task"
 
 
 async def test_stop_after_close_is_still_safe(output):

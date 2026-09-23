@@ -1,4 +1,9 @@
-"""N1, N2 -- what `configure` builds, and the two settings everything rests on.
+"""N14-N17 -- the tasks come from NI MAX; `configure` loads, checks and commits.
+
+Since step 2 the channel map, rate, clock routing and regeneration mode are
+the instrument's, owned by NI MAX -- which is where the legacy engine kept
+them too. `configure` sets only the two things MAX does not own, and refuses a
+rig that disagrees with what the caller believes it has.
 
 These run only when asked for by name: the directory is ignored by the default
 suite, because it needs the `nidaqmx` extra installed. See pyproject.
@@ -6,16 +11,20 @@ suite, because it needs the `nidaqmx` extra installed. See pyproject.
     uv run --extra nidaqmx pytest tests/adapters/nidaqmx
 """
 
+import dataclasses
+
 import pytest
 from fake_daqmx import FakeDaq
-from nidaqmx.constants import AcquisitionType, LineGrouping, RegenerationMode
+from nidaqmx.constants import AcquisitionType, DataTransferActiveTransferMode, RegenerationMode
 
-from stacscope.adapters.nidaqmx import NiSignalOutput
+from stacscope.adapters.nidaqmx import NiSignalOutput, read_output_config
 from stacscope.adapters.simulated import VirtualClock
 from stacscope.core.ports import Channel, OutputConfig
 
 RATE = 100_000.0
 BUFFER = 8192
+AO_TASK = "test_ao"
+DO_TASK = "test_do"
 
 CONFIG = OutputConfig(
     rate=RATE,
@@ -25,48 +34,179 @@ CONFIG = OutputConfig(
 )
 
 
+def rig(space: int = 0) -> FakeDaq:
+    """A system whose NI MAX holds the two tasks exactly as CONFIG says."""
+    return FakeDaq(space=space).saving(CONFIG, ao=AO_TASK, do=DO_TASK)
+
+
+def adapter(clock, daq: FakeDaq) -> NiSignalOutput:
+    return NiSignalOutput(clock, ao_task=AO_TASK, do_task=DO_TASK, system=daq)
+
+
 @pytest.fixture
 def daq():
-    return FakeDaq()
+    return rig()
 
 
 @pytest.fixture
 async def configured(daq):
-    output = NiSignalOutput(VirtualClock(), tasks=daq)
+    output = adapter(VirtualClock(), daq)
     await output.configure(CONFIG)
     return output
 
 
-async def test_configure_builds_an_ao_task_and_a_do_task(configured, daq):
-    """N1. One channel per configured Channel, in the order given: the labels
-    are for humans, but the order is what the caller's array columns mean."""
-    ao, do = daq.task("ao"), daq.task("do")
+async def test_both_tasks_are_loaded_from_max_by_name_at_configure(daq):
+    """N14. The tasks are the instrument's, saved in NI MAX, and loaded rather
+    than built -- so the channel map lives in one place, the place the rig's
+    owner already edits. Loading waits for ``configure``: building an adapter
+    must not reserve the board."""
+    output = adapter(VirtualClock(), daq)
+    assert daq.loaded == []
 
-    assert ao.ao_channels.added == ["Dev1/ao0", "Dev1/ao1"]
-    assert do.do_channels.added == ["Dev1/port0/line0", "Dev1/port0/line1"]
-    assert do.do_channels.grouping is LineGrouping.CHAN_PER_LINE
+    await output.configure(CONFIG)
 
-    assert ao.timing.rate == RATE
-    assert do.timing.rate == RATE
-    assert ao.timing.sample_mode is AcquisitionType.CONTINUOUS
-    assert do.timing.sample_mode is AcquisitionType.CONTINUOUS
-    assert ao.out_stream.output_buf_size == BUFFER
-    assert do.out_stream.output_buf_size == BUFFER
+    assert [t.name for t in daq.loaded] == [AO_TASK, DO_TASK]
 
 
-async def test_the_do_task_is_clocked_by_the_ao_task_and_neither_regenerates(configured, daq):
-    """N2. The whole refill design rests on these two settings.
+@pytest.mark.parametrize("missing", [AO_TASK, DO_TASK])
+async def test_a_missing_task_fails_configure_and_names_the_task(daq, missing):
+    """N14. A task that was never saved (or saved on another machine) is a
+    setup error, reported at ``configure`` by name. The driver itself would
+    not say which one: indexing the saved tasks by an unknown name succeeds,
+    and only a later load fails, with a code. Nothing is loaded either --
+    half a rig reserved is worse than none."""
+    del daq.saved[missing]
+    output = adapter(VirtualClock(), daq)
 
-    Regeneration disabled is what makes a sample play exactly once, so falling
-    behind is an error rather than a silently repeated block -- see the port.
-    And the digital lines take their clock from the AO task's, so a trigger
-    edge keeps its phase against the waveform instead of drifting on a second
-    oscillator. Getting either wrong produces output that looks plausible and
-    is wrong, which is why they are asserted rather than assumed."""
-    ao, do = daq.task("ao"), daq.task("do")
+    with pytest.raises(LookupError, match=missing):
+        await output.configure(CONFIG)
 
-    assert ao.out_stream.regen_mode is RegenerationMode.DONT_ALLOW_REGENERATION
-    assert do.out_stream.regen_mode is RegenerationMode.DONT_ALLOW_REGENERATION
+    assert daq.loaded == []
 
-    assert ao.timing.source == ""  # its own onboard clock: the timing authority
-    assert do.timing.source == "/Dev1/ao/SampleClock"
+
+async def test_configure_changes_only_the_transfer_and_the_buffer(configured, daq):
+    """N15. MAX owns everything about the tasks except two things: the output
+    buffer's depth, which is the refill loop's business, and DMA transfer,
+    which NI MAX leaves at POLLED for an analog output task (read off the
+    instrument's own saved task on Dev1-sim). Anything else set here would
+    silently override the rig's owner."""
+    ao, do = daq.task(AO_TASK), daq.task(DO_TASK)
+
+    assert ao.changed == {
+        "ao_data_xfer_mech": DataTransferActiveTransferMode.DMA,
+        "output_buf_size": BUFFER,
+    }
+    assert do.changed == {
+        "do_data_xfer_mech": DataTransferActiveTransferMode.DMA,
+        "output_buf_size": BUFFER,
+    }
+    assert ao.committed
+    assert do.committed
+
+
+def _swap_ao_physical(daq):
+    (a, pa), (b, pb) = daq.saved[AO_TASK].channels
+    daq.saved[AO_TASK].channels = [(a, pb), (b, pa)]
+
+
+def _relabel_do(daq):
+    daq.saved[DO_TASK].channels[1] = ("shutter", "Dev1/port0/line1")
+
+
+def _extra_ao(daq):
+    daq.saved[AO_TASK].channels.append(("scan2", "Dev1/ao2"))
+
+
+def _ao_rate(daq):
+    daq.saved[AO_TASK].rate = RATE / 2
+
+
+def _do_rate(daq):
+    daq.saved[DO_TASK].rate = RATE / 2
+
+
+def _do_own_clock(daq):
+    daq.saved[DO_TASK].source = "/Dev1/do/SampleClockTimebase"
+
+
+def _regenerates(daq):
+    daq.saved[AO_TASK].regen = RegenerationMode.ALLOW_REGENERATION
+
+
+def _finite(daq):
+    daq.saved[DO_TASK].mode = AcquisitionType.FINITE
+
+
+@pytest.mark.parametrize(
+    ("break_rig", "named"),
+    [
+        (_swap_ao_physical, AO_TASK),
+        (_relabel_do, DO_TASK),
+        (_extra_ao, AO_TASK),
+        (_ao_rate, AO_TASK),
+        (_do_rate, DO_TASK),
+        (_do_own_clock, DO_TASK),
+        (_regenerates, AO_TASK),
+        (_finite, DO_TASK),
+    ],
+    ids=["physical", "label", "count", "ao-rate", "do-rate", "do-clock", "regeneration",
+         "sample-mode"],
+)
+async def test_a_rig_that_disagrees_with_the_configuration_fails_configure(
+    daq, break_rig, named
+):
+    """N16. The configuration is checked against MAX, never imposed on it. A
+    mismatch -- a transposed pair of scanners, a relabelled line, a rate typed
+    into one task and not the other -- is a setup-time failure naming the task,
+    not an override and not something found mid-acquisition.
+
+    Clock routing, regeneration and sample mode are checked too though no
+    caller states them: they are what the refill design rests on (see the
+    module docstring of the adapter), and since MAX owns them, a rig edited in
+    MAX is the only way they can now go wrong."""
+    break_rig(daq)
+    output = adapter(VirtualClock(), daq)
+
+    with pytest.raises(ValueError, match=named):
+        await output.configure(CONFIG)
+
+    assert not any(t.committed for t in daq.loaded)
+
+
+async def test_a_mismatch_leaves_the_tasks_for_close_to_release(daq):
+    """N16. A refused ``configure`` still holds what it loaded, and ``close``
+    gives it back -- the source's teardown calls it whether or not setup
+    succeeded, so a misconfigured rig does not keep the board reserved."""
+    _ao_rate(daq)
+    output = adapter(VirtualClock(), daq)
+    with pytest.raises(ValueError):
+        await output.configure(CONFIG)
+
+    await output.close()
+
+    assert daq.loaded and all(t.closed for t in daq.loaded)
+
+
+async def test_the_configuration_can_be_read_from_max(daq):
+    """N17. A rig config need not restate the channel map: it is read from the
+    same tasks ``configure`` will check against, so the two cannot disagree.
+    ``buffer_samples`` is the caller's -- MAX does not own it. The tasks are
+    released afterwards, or the adapter's own load would be refused."""
+    config = read_output_config(AO_TASK, DO_TASK, buffer_samples=BUFFER, system=daq)
+
+    assert config == CONFIG
+    assert all(t.closed for t in daq.loaded)
+
+    await adapter(VirtualClock(), daq).configure(config)
+
+
+async def test_a_configuration_read_from_max_keeps_max_order(daq):
+    """N17. MAX's order is the order of the caller's array rows, and it is
+    not the order of the physical lines -- on the instrument Scan2 is ao3 and
+    Scan3 is ao2. Sorting anywhere would swap two scanners' waveforms."""
+    daq.saved[AO_TASK].channels = [("scan2", "Dev1/ao3"), ("scan3", "Dev1/ao2")]
+
+    config = read_output_config(AO_TASK, DO_TASK, buffer_samples=BUFFER, system=daq)
+
+    assert config.ao == (Channel("Dev1/ao3", "scan2"), Channel("Dev1/ao2", "scan3"))
+    assert dataclasses.replace(config, ao=CONFIG.ao) == CONFIG

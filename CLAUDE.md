@@ -84,13 +84,19 @@ section explains why.
   `NiSignalOutput` in `adapters/nidaqmx/`, tested against a fake `Task`
   and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is
   done: `SignalOutput.close()`, which `WaveformSource.teardown` always calls.
-  Step 2 (importing the tasks from NI MAX) is next. Device-adapter tests live
+  Step 2 is done: the tasks come from NI MAX by name
+  (`NiSignalOutput(clock, ao_task=..., do_task=...)`), `configure` checks
+  them against the `OutputConfig` and sets only DMA and buffer depth, and
+  `read_output_config` builds the config from them. Step 3, the instrument, is
+  next and is the user's to run. Device-adapter tests live
   in `tests/adapters/<vendor>/`, which the default run ignores, so run them by
   name: `uv run --extra nidaqmx pytest tests/adapters/nidaqmx`.
   **Some dev machines have the physical board installed as `Dev1`.** The
   simulated suite runs only against a device that is both named `Dev1-sim`
   and simulated. `tests/adapters/nidaqmx/DAQmxConfiguration_sim.txt` imports
-  the instrument's tasks into NI MAX as `SPIM_*_Task_sim` on `Dev1-sim`.
+  the instrument's tasks into NI MAX as `SPIM_*_Task_sim` on `Dev1-sim`; the
+  suite needs them, and skips unless every channel of both is on `Dev1-sim`.
+  Never load the plain `SPIM_*_Task`s from a test: they point at `Dev1`.
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
   for watching a frame buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the

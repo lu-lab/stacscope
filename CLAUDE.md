@@ -87,8 +87,8 @@ section explains why.
   Step 2 is done: the tasks come from NI MAX by name
   (`NiSignalOutput(clock, ao_task=..., do_task=...)`), `configure` checks
   them against the `OutputConfig` and sets only DMA and buffer depth, and
-  `read_output_config` builds the config from them. Step 3, the instrument, is
-  written and rehearsed on `Dev1-sim`; the user runs it on the board. Device-adapter tests live
+  `read_output_config` builds the config from them. Step 3, the instrument, has
+  been run on the board (see below). Device-adapter tests live
   in `tests/adapters/<vendor>/`, which the default run ignores, so run them by
   name: `uv run --extra nidaqmx pytest tests/adapters/nidaqmx`.
   **Some dev machines have the physical board installed as `Dev1`.** The
@@ -112,9 +112,17 @@ section explains why.
   **Step 3's suite is `tests/hardware/nidaqmx/`**, and runs only on the
   device named in `STACSCOPE_HARDWARE`. Claude may run it only with
   `STACSCOPE_HARDWARE=Dev1-sim`, as a rehearsal; the user runs it on `Dev1`.
-  H1–H9 cover running dry, draining, refilling, buffer depth, update
-  latency, stall tolerance, a queued sequence, and a long run at
-  `BUFFER_SAMPLES` (`STACSCOPE_SOAK_SECONDS` lengthens it).
+  H1–H10 cover running dry, draining, refilling, buffer depth, update
+  latency, stall tolerance, a queued sequence, a long run at
+  `BUFFER_SAMPLES` (`STACSCOPE_SOAK_SECONDS` lengthens it), and whether
+  the last digital samples reach a pin. H10 needs P0.1 wired to a PFI
+  line named in `STACSCOPE_FEEDBACK` (PFI9 on this rig), and skips
+  otherwise. Step 3 has been run on `Dev1`. It is done except for one
+  open fix: an output that has wrapped the buffer loses its last 64
+  digital samples (the plan, "The last digital samples (H10)").
+  Draining and refilling by polling (decisions A and B) were confirmed on
+  the board. If either misbehaves later, start from the H2/H3 records in
+  the plan.
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
   for watching a frame buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the

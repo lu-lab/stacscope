@@ -1,4 +1,4 @@
-"""5a-3 (Step 3, H1-H9) -- the NI adapter on a physical PCI-6733.
+"""5a-3 (Step 3, H1-H10) -- the NI adapter on a physical PCI-6733.
 
 RUN BY THE USER ONLY. This suite starts real analog and digital output on the
 board it is pointed at. Every sample it writes is 0 V on the analog channels
@@ -27,6 +27,8 @@ What it answers, from the architecture plan's Step 3:
   H8  That a queued sequence of MAINs plays in order on the board.
   H9  That the instrument's buffer depth holds over a long run: how thin
       the queue got, and whether it ever ran dry.
+  H10 That the last digital samples reach the pin when output ends. Needs
+      P0.1 wired to a PFI line, named in STACSCOPE_FEEDBACK; skips without.
 
 Most of these are measurements rather than verdicts. Every test adds its
 numbers to a "hardware findings" section at the end of the run; paste that
@@ -44,6 +46,8 @@ board cannot answer (it stalls rather than running dry) skip themselves.
                  Remove-Item Env:STACSCOPE_HARDWARE
 
     Git Bash:    STACSCOPE_HARDWARE=Dev1 uv run --extra nidaqmx pytest tests/hardware/nidaqmx
+
+With P0.1 wired to PFI9, also set STACSCOPE_FEEDBACK=PFI9 to run H10.
 
 Takes about six minutes, two of them H9's. For a longer soak, set STACSCOPE_SOAK_SECONDS (per volume):
 
@@ -911,3 +915,116 @@ async def test_h9_a_long_run_at_the_instruments_depth(report, main):
     else:
         report(f"{ms(BUFFER_SAMPLES)} buffer, {main / RATE * 1000:.0f} ms volume: {dry}, no refills")
     assert run.underflow is None, f"the instrument's depth ran dry: {dry}"
+
+
+# --- H10: the last digital samples, seen at a pin ------------------------------------
+
+FEEDBACK = os.environ.get("STACSCOPE_FEEDBACK", "")
+"""The PFI line P0.1 is wired to, for H10 (on this rig, PFI9). Unset, H10
+skips: without the wire it would count nothing and report that as lost."""
+
+PULSE = 4
+"""High for PULSE samples, low for PULSE: one rising edge every 2 * PULSE."""
+
+TAIL = 256
+"""The pulses fill only the last TAIL samples, so a count short by k means
+the last k * 2 * PULSE samples never reached the pin."""
+
+
+def tail_pulses(n: int):
+    """``n`` samples, all 0 V and low, except P0.1 (DO index 1), which pulses
+    through the last ``TAIL`` and ends low."""
+    ao, do = zeros(n)
+    phase = np.arange(TAIL) % (2 * PULSE)
+    do[1, n - TAIL:] = phase < PULSE
+    return ao, do
+
+
+def edge_counter(counter: str, edge):
+    import nidaqmx
+    from nidaqmx.constants import Edge
+
+    task = nidaqmx.Task()
+    channel = task.ci_channels.add_ci_count_edges_chan(
+        f"{DEVICE}/{counter}", edge=Edge.RISING if edge == "rising" else Edge.FALLING)
+    channel.ci_count_edges_term = f"/{DEVICE}/{FEEDBACK}"
+    return task
+
+
+def park_p01_low() -> None:
+    """Drive P0.1 low on demand, whatever the test left it at."""
+    import nidaqmx
+
+    with nidaqmx.Task() as task:
+        task.do_channels.add_do_chan(f"{DEVICE}/port0/line1")
+        task.write(False)
+
+
+@physical_only
+@pytest.mark.skipif(not FEEDBACK, reason="set STACSCOPE_FEEDBACK to the PFI line P0.1 is wired to")
+@pytest.mark.parametrize(
+    ("buffer", "total"),
+    [(BUFFER, BUFFER), (BUFFER, 57_000), (5_000, 57_000), (5_000, 57_037), (5_000, 60_000),
+     (BUFFER, 150_000)],
+    ids=["never-wraps", "never-wraps-partial", "wraps", "wraps-odd-length",
+         "wraps-ends-on-a-wrap", "wraps-long-buffer"],
+)
+async def test_h10_the_last_digital_samples_reach_the_pin(report, buffer, total):
+    """H10. Whether the digital task plays its last samples when output ends,
+    which H1's survey left open: kept fed and then left, the DO task's free
+    space stopped 64 short of its whole buffer and its count 64 short of what
+    was written, and it raised before the analog task. If the tail of
+    COOLDOWN does not play, a trigger or laser line is left at whatever it
+    held before -- a safety question, not only a timing one.
+
+    P0.1 pulses through the last TAIL samples and ends low. Two counters on
+    the wired PFI line count its rising and falling edges. All of them
+    counted means every sample played; a shortfall says how many did not; a
+    rising count above the falling one means the line was left high. The
+    output ends the way an acquisition does, by ``drain``.
+
+    The cases are an output that fits the host buffer, and one that
+    wraps it -- ending part-way through the buffer, at an odd length, and
+    exactly on a wrap. First run on Dev1 (2026-09-23): an output that
+    wrapped and ended part-way lost its last 64 DO samples, plus the end's
+    offset from a multiple of 4, at 5000 and at 100 000 samples of buffer.
+    One that never wrapped, or ended exactly on a wrap, lost none. Written
+    padding of at least that many samples brought every edge back.
+
+    Fails if an edge is missing: the port promises everything written is
+    played once."""
+    expected = TAIL // (2 * PULSE)
+    output = NiSignalOutput(MonotonicClock(), ao_task=AO_TASK, do_task=DO_TASK)
+    rising, falling = edge_counter("ctr0", "rising"), edge_counter("ctr1", "falling")
+    ao, do = tail_pulses(total)
+    try:
+        rising.start()
+        falling.start()
+        await output.configure(config(buffer))
+        await output.arm()
+        at = min(buffer, total)
+        await output.write(ao[:, :at], do[:, :at])
+        await output.go()
+        while at < total:
+            n = min(SEGMENT, total - at)
+            await output.wait_for_space(n)
+            await output.write(ao[:, at:at + n], do[:, at:at + n])
+            at += n
+        await output.drain()
+        await asyncio.sleep(0.05)
+        counts = int(rising.read()), int(falling.read())
+        do_generated = generated(output._do)
+    finally:
+        with contextlib.suppress(Exception):
+            await output.stop()
+        await output.close()
+        rising.close()
+        falling.close()
+        park_p01_low()
+
+    report(f"{buffer} buffer, {total} samples: {counts[0]} rising and {counts[1]} falling edges of "
+           f"{expected}; DO generated {do_generated}")
+    assert counts == (expected, expected), (
+        f"the last samples did not all reach the pin: {counts[0]} rising, {counts[1]} falling "
+        f"of {expected} -- about {(expected - counts[1]) * 2 * PULSE} samples short"
+        + ("; P0.1 was left high" if counts[0] > counts[1] else ""))

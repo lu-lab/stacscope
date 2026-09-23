@@ -14,10 +14,10 @@ instrument's shape -- five analog channels with the transposed Scan2/Scan3
 pair, three digital lines -- but not its tasks, so a change to the rig in NI
 MAX never breaks this suite, and this suite never touches the rig's tasks.
 
-What it still cannot prove is underflow. A simulated device that runs dry
-simply stalls -- no error code, and the next write is accepted -- so the
-underflow path stays written but unverified until the instrument says
-otherwise. Nothing here asserts anything about it.
+What it cannot prove is underflow. A simulated device that runs dry simply
+stalls -- no error code, and the next write is accepted -- so nothing here
+asserts anything about it. The physical board suite does
+(tests/hardware/nidaqmx, H1).
 
 Setup, once per machine: create the device in NI MAX (Devices and Interfaces >
 Create New > Simulated NI-DAQmx Device > PCI-6733) and rename it Dev1-sim, so

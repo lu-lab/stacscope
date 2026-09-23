@@ -21,6 +21,8 @@ class SimulatedSignalOutput:
         self.bus = bus
         """An optional ``TriggerBus``: the wire a triggered device listens on.
         Real hardware has no equivalent, so nothing here depends on it."""
+        self.closed = False
+        """Whether ``close`` has been called. There is nothing to release."""
         self._reset()
 
     def _reset(self) -> None:
@@ -40,15 +42,18 @@ class SimulatedSignalOutput:
     # --- SignalOutput --------------------------------------------------------
 
     async def configure(self, config: OutputConfig) -> None:
+        self._open()
         self.config = config
         self._reset()
         if self.bus is not None:
             self.bus.configured(config)
 
     async def arm(self) -> None:
+        self._open()
         self._reset()  # the bus is reset by stop(), which always precedes this
 
     def space_available(self) -> int:
+        self._open()
         self._check()
         return self.config.buffer_samples - (self.samples_written - self.samples_played())
 
@@ -70,6 +75,7 @@ class SimulatedSignalOutput:
         self.samples_written += n
 
     async def go(self) -> None:
+        self._open()
         if self.samples_written == 0:
             raise RuntimeError("cannot start output with nothing written")
         self._started_at = self.clock.now()
@@ -88,6 +94,7 @@ class SimulatedSignalOutput:
         self._check()
 
     async def drain(self) -> None:
+        self._open()
         self._check()
         self._draining = True
         if self._started_at is not None:
@@ -99,6 +106,9 @@ class SimulatedSignalOutput:
             self.stopped = True
         if self.bus is not None:
             self.bus.stopped()
+
+    async def close(self) -> None:
+        self.closed = True
 
     # --- simulation controls and inspection -------------------------------------
 
@@ -123,6 +133,10 @@ class SimulatedSignalOutput:
 
     def _elapsed_samples(self) -> int:
         return math.floor((self.clock.now() - self._started_at) * self.config.rate + _EPS)
+
+    def _open(self) -> None:
+        if self.closed:
+            raise RuntimeError("the output has been closed")
 
     def _check(self) -> None:
         if self.underflow is not None:

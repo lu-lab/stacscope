@@ -68,8 +68,10 @@ class NiSignalOutput:
         self._draining = False
         self._ao = None
         self._do = None
+        self._closed = False
 
     async def configure(self, config: "OutputConfig") -> None:
+        self._open()
         self._config = config
         device = config.ao[0].physical.split("/")[0]
 
@@ -98,11 +100,13 @@ class NiSignalOutput:
             task.control(TaskMode.TASK_COMMIT)
 
     async def arm(self) -> None:
+        self._open()
         self._written = 0
         self._playing = False
         self._draining = False
 
     def space_available(self) -> int:
+        self._open()
         with self._translated():
             return self._ao.out_stream.space_avail
 
@@ -126,6 +130,7 @@ class NiSignalOutput:
         self._written += samples
 
     async def go(self) -> None:
+        self._open()
         if not self._written:
             raise RuntimeError("nothing has been written: there is nothing to play")
         # The slave first. It takes its clock from the master's output, so it
@@ -145,6 +150,7 @@ class NiSignalOutput:
     async def drain(self) -> None:
         """Everything written plays out. From here running dry is the ending
         we asked for, so an underflow reported during it is not a fault."""
+        self._open()
         self._draining = True
         timeout = self._config.buffer_samples / self._config.rate + DRAIN_MARGIN
         deadline = self._clock.now() + timeout
@@ -200,14 +206,15 @@ class NiSignalOutput:
 
     async def close(self) -> None:
         """Release both tasks and the board. Safe in any state, any number of
-        times, and the adapter is unusable afterwards. Not part of the
-        ``SignalOutput`` port: nothing in the core calls it, so whoever built
-        this adapter is the one who has to."""
-        # It exists because DAQmx refuses a task whose name is already taken,
-        # so an adapter that never closes can be built only once in a process
-        # -- and until that process exits the board stays reserved against
-        # anything else that wants it. Whether the port should grow a `close`
-        # so the core can do this itself is the user's decision, still open.
+        times, and the adapter is unusable afterwards. Raises an
+        ``ExceptionGroup`` of the driver's refusals if either task would not
+        close; both are attempted regardless."""
+        # Until this runs the board is reserved against anything else wanting
+        # it, and DAQmx refuses a second task under a name still taken, so an
+        # adapter never closed can be built only once per process. The legacy
+        # Stop Core.vi cleared both tasks on every exit path; the core's
+        # teardown does the same by calling this.
+        self._closed = True
         failures = []
         for task in (self._ao, self._do):
             if task is None:
@@ -219,6 +226,10 @@ class NiSignalOutput:
         self._ao = self._do = None
         if failures:
             raise ExceptionGroup("the driver refused to close a task", failures)
+
+    def _open(self) -> None:
+        if self._closed:
+            raise RuntimeError("the output has been closed")
 
     @contextlib.contextmanager
     def _translated(self):

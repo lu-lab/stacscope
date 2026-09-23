@@ -29,7 +29,9 @@ import numpy as np
 import pytest
 
 from stacscope.adapters.nidaqmx import NiSignalOutput
+from stacscope.core.actors import spawn
 from stacscope.core.ports import Channel, MonotonicClock, OutputConfig
+from stacscope.core.timing import WaveformSource
 
 DEVICE = "Dev1-sim"
 RATE = 10_000.0
@@ -250,3 +252,20 @@ async def test_a_closed_adapter_frees_its_task_names(make_output):
     second = await make_output(config())
 
     assert second.space_available() == BUFFER
+
+
+async def test_the_timing_source_releases_the_board_when_it_ends(make_output):
+    """N13. Nobody closes this adapter but the core: a ``WaveformSource`` is
+    started and stopped, and its teardown alone must give both tasks back. If
+    it did not, the board would stay reserved until the process exited, and
+    the next adapter would be refused the task names."""
+    source = WaveformSource(NiSignalOutput(MonotonicClock()), config())
+    spawn(source)
+    await asyncio.wait_for(source.started.wait(), timeout=5.0)
+
+    source.stop()
+    await asyncio.wait_for(source.stopped.wait(), timeout=5.0)
+    assert source.exit_error is None
+
+    after = await make_output(config())
+    assert after.space_available() == BUFFER

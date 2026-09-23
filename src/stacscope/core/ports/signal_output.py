@@ -77,3 +77,10 @@ class SignalOutput(Protocol):
     async def stop(self) -> None:
         """Stop output. Safe in any state, any number of times."""
         ...
+
+    async def close(self) -> None:
+        """Release the hardware. Safe in any state, including before
+        ``configure``, and any number of times. Afterwards every other call
+        except ``stop`` raises ``RuntimeError``. Call ``stop`` first: closing
+        is not guaranteed to stop output cleanly."""
+        ...

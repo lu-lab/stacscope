@@ -79,6 +79,18 @@ section explains why.
   **A heartbeat is mandatory for a process child**, by decision: the link
   catches a process that dies, only a heartbeat catches one that is alive and
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
+- **Milestone 5 is in progress** (real adapters). The ordered work list is in
+  the plan under "Milestone 5 → Next steps". 5a-1 and 5a-2 are done:
+  `NiSignalOutput` in `adapters/nidaqmx/`, tested against a fake `Task`
+  and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is
+  done: `SignalOutput.close()`, which `WaveformSource.teardown` always calls.
+  Step 2 (importing the tasks from NI MAX) is next. Device-adapter tests live
+  in `tests/adapters/<vendor>/`, which the default run ignores, so run them by
+  name: `uv run --extra nidaqmx pytest tests/adapters/nidaqmx`.
+  **Some dev machines have the physical board installed as `Dev1`.** The
+  simulated suite runs only against a device that is both named `Dev1-sim`
+  and simulated. `tests/adapters/nidaqmx/DAQmxConfiguration_sim.txt` imports
+  the instrument's tasks into NI MAX as `SPIM_*_Task_sim` on `Dev1-sim`.
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
   for watching a frame buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the
@@ -195,7 +207,8 @@ These come from the user directly and override default behaviour.
 
 ## Environment
 
-- This is the development box, not the control PC. **uv** is installed, with
+- This is a development box, not the control PC. Some dev boxes do have a
+  physical PCI-6733 installed (see Milestone 5 above). **uv** is installed, with
   both CPython 3.14 and 3.14 free-threaded; `.python-version` pins
   `3.14+freethreaded`. Run everything through `uv run` (e.g. `uv run pytest`).
 - A `VIRTUAL_ENV` pointing at miniconda makes uv print a mismatch warning. It is

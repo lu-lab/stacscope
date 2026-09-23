@@ -127,3 +127,66 @@ async def test_stop_is_safe_whatever_the_state(rig):
     output, _ = await _configured(rig)
     await output.stop()
     await output.stop()
+
+
+# --- N10: close ------------------------------------------------------------------
+
+
+async def test_close_is_safe_before_anything_was_configured(rig):
+    """``teardown`` runs even when ``setup`` failed, so the release it performs
+    must cope with an output that never reserved anything."""
+    output, _ = rig
+    await output.close()
+
+
+async def test_close_is_safe_mid_stream_and_after_stop(rig):
+    """The two ways an acquisition reaches ``teardown``: cut off while
+    playing, or stopped first. Neither may make the release itself fail."""
+    output, clock = await _configured(rig)
+    await output.write(*block(8))
+    await output.go()
+    await clock.advance(0.25)
+
+    await output.stop()
+    await output.close()
+
+
+async def test_close_may_be_repeated(rig):
+    """Both an owner and a fixture may release the same output; the second
+    must not fail over the first."""
+    output, _ = await _configured(rig)
+    await output.close()
+    await output.close()
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        lambda output: output.configure(CONFIG),
+        lambda output: output.arm(),
+        lambda output: output.write(*block(1)),
+        lambda output: output.go(),
+        lambda output: output.wait_for_space(1),
+        lambda output: output.drain(),
+    ],
+    ids=["configure", "arm", "write", "go", "wait_for_space", "drain"],
+)
+async def test_a_closed_output_refuses_to_be_used(rig, use):
+    """Closing gives the hardware back. An output that quietly went on working
+    afterwards -- or reserved the board again -- would be holding hardware
+    that its owner believes it released."""
+    output, _ = await _configured(rig)
+    await output.write(*block(4))
+    await output.close()
+
+    with pytest.raises(RuntimeError):
+        await use(output)
+    with pytest.raises(RuntimeError):
+        output.space_available()
+
+
+async def test_stop_stays_safe_after_close(rig):
+    """``stop`` is safe in any state, and closed is a state."""
+    output, _ = await _configured(rig)
+    await output.close()
+    await output.stop()

@@ -10,7 +10,16 @@ import asyncio
 import numpy as np
 
 from stacscope.adapters.simulated import SimulatedSignalOutput, VirtualClock
-from stacscope.core.actors import Accepted, Actor, Priority, Rejected, Subscribe, ask, spawn
+from stacscope.core.actors import (
+    Accepted,
+    Actor,
+    Priority,
+    Rejected,
+    Subscribe,
+    ask,
+    describe,
+    spawn,
+)
 from stacscope.core.ports import Channel, OutputConfig, Underflow
 from stacscope.core.protocol import (
     DeviceReady,
@@ -58,10 +67,36 @@ class Listener(Actor):
         self.heard.append(msg)
 
 
+class Boom(Exception):
+    pass
+
+
+class RefusingOutput(SimulatedSignalOutput):
+    """Logs ``stop`` and ``close``, and fails whichever is named in
+    ``refuse`` -- a driver that will not let go."""
+
+    def __init__(self, clock):
+        super().__init__(clock)
+        self.calls = []
+        self.refuse = set()
+
+    async def stop(self):
+        self.calls.append("stop")
+        await super().stop()
+        if "stop" in self.refuse:
+            raise Boom("the driver refused to stop")
+
+    async def close(self):
+        self.calls.append("close")
+        await super().close()
+        if "close" in self.refuse:
+            raise Boom("the driver refused to close")
+
+
 class Rig:
     def __init__(self, warmup=4, main=8, cooldown=4, buffer=None):
         self.clock = VirtualClock()
-        self.output = SimulatedSignalOutput(self.clock)
+        self.output = RefusingOutput(self.clock)
         config = CONFIG if buffer is None else OutputConfig(CONFIG.rate, CONFIG.ao, CONFIG.do, buffer)
         self.source = WaveformSource(self.output, config)
         self.ref = spawn(self.source, clock=self.clock, name="source")
@@ -269,3 +304,82 @@ async def test_a_segment_longer_than_the_buffer_is_written_in_chunks():
     assert [label for label, _, _ in rig.played()] == ["warmup", "main", "main", "cooldown"]
     assert_contiguous(rig.played(), rig.lengths)
     assert rig.output.underflow is None
+
+
+# --- N11-N12: teardown releases the output --------------------------------------
+
+
+async def ended(rig):
+    """Stop the source from outside, as its supervisor would, and let it end."""
+    rig.source.stop()
+    await rig.clock.advance(0)
+    assert rig.source.stopped.is_set()
+
+
+async def test_n11_teardown_stops_then_closes_the_output():
+    """Invariant 3: teardown gives the hardware back. Stop comes first, because
+    closing a task that is still generating is not guaranteed to leave the
+    lines where a stop would."""
+    rig = Rig()
+    await rig.go(cycles=1)
+    await rig.clock.advance(5.0)
+
+    await ended(rig)
+
+    assert rig.output.calls[-2:] == ["stop", "close"]
+    assert rig.output.closed
+    assert rig.source.exit_error is None
+
+
+async def test_n11_an_acquisition_that_died_still_closes_the_output():
+    """The case the invariant exists for: an underflow kills the source, and
+    the board must still be released rather than held until the process
+    exits."""
+    rig = Rig()
+    await rig.go(cycles=-1)
+    await rig.clock.advance(2.0)
+    rig.output.stall_next_write(3.0)
+    await rig.clock.advance(5.0)
+
+    assert isinstance(rig.source.exit_error, Underflow)
+    assert rig.output.closed
+
+
+async def test_n11_the_output_is_closed_even_when_stop_fails():
+    """A driver that will not stop is exactly when the release matters most.
+    Giving up at the first refusal would leave the board reserved."""
+    rig = Rig()
+    rig.output.refuse.add("stop")
+
+    await ended(rig)
+
+    assert rig.output.closed
+
+
+async def test_n12_a_failed_close_is_reported_not_raised_over_the_cause():
+    """Invariant 6. The underflow is why the acquisition ended and must stay
+    the reported cause; the close that failed afterwards is reported beside
+    it, not in place of it and not instead of nothing."""
+    rig = Rig()
+    rig.output.refuse.add("close")
+    await rig.go(cycles=-1)
+    await rig.clock.advance(2.0)
+    rig.output.stall_next_write(3.0)
+    await rig.clock.advance(5.0)
+
+    assert isinstance(rig.source.exit_error, Underflow)
+    assert "refused to close" in describe(rig.source.exit_error)
+
+
+async def test_n12_when_stop_and_close_both_fail_neither_is_lost():
+    """Two refusals, one report. Raising the second out of a ``finally`` would
+    hide the first behind it -- and a stop that failed is the one that says
+    the lines may still be asserted."""
+    rig = Rig()
+    rig.output.refuse.update({"stop", "close"})
+
+    await ended(rig)
+
+    report = describe(rig.source.exit_error)
+    assert "refused to stop" in report
+    assert "refused to close" in report

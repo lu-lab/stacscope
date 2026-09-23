@@ -46,7 +46,20 @@ class WaveformSource(TimingSource):
         await self.output.configure(self.config)
 
     async def teardown(self) -> None:
-        await self.output.stop()
+        # Close is attempted whatever stop did: a driver that will not stop is
+        # when holding the board matters most. Failures are gathered rather
+        # than raised in turn, because raising close's out of a `finally` would
+        # hide stop's -- and a failed stop is the one saying lines may still be
+        # asserted. The runtime reports what this raises beside whatever ended
+        # the acquisition, never in place of it.
+        failures = []
+        for release in (self.output.stop, self.output.close):
+            try:
+                await release()
+            except Exception as exc:  # noqa: PERF203 - each step gets its own attempt
+                failures.append(exc)
+        if failures:
+            raise ExceptionGroup("the output was not released cleanly", failures)
 
     async def handle(self, msg: object) -> None:
         match msg:

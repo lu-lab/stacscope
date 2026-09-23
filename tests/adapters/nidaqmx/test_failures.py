@@ -236,3 +236,49 @@ async def test_stopping_a_task_the_driver_is_unhappy_about_still_stops_the_other
 
     assert not daq.task("do").started  # attempted anyway, and it worked
     assert [type(e) for e in caught.value.exceptions] == [DaqError]
+
+
+async def test_close_releases_both_tasks_and_may_be_repeated(output, daq, clock):
+    """N13. ``close`` is the port's now, called by the source's teardown, so
+    it meets the contract's terms: safe before anything was configured, safe
+    twice, and both tasks released."""
+    await NiSignalOutput(clock, tasks=FakeDaq()).close()  # never configured
+
+    await output.close()
+    await output.close()
+
+    assert daq.task("ao").closed
+    assert daq.task("do").closed
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        lambda output: output.configure(CONFIG),
+        lambda output: output.arm(),
+        lambda output: output.write(*ramp(1)),
+        lambda output: output.go(),
+        lambda output: output.wait_for_space(1),
+        lambda output: output.drain(),
+    ],
+    ids=["configure", "arm", "write", "go", "wait_for_space", "drain"],
+)
+async def test_a_closed_adapter_refuses_to_be_used(output, daq, use):
+    """N13, the contract's other half. Without it a closed adapter fails with
+    whatever a missing task happens to raise -- or, for ``configure``, quietly
+    reserves the board again after its owner released it."""
+    await output.write(*ramp(4))
+    await output.close()
+    tasks = len(daq.tasks)
+
+    with pytest.raises(RuntimeError):
+        await use(output)
+    with pytest.raises(RuntimeError):
+        output.space_available()
+    assert len(daq.tasks) == tasks, "a closed adapter created a task"
+
+
+async def test_stop_after_close_is_still_safe(output):
+    """N13. ``stop`` is safe in any state, and closed is one."""
+    await output.close()
+    await output.stop()

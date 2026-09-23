@@ -38,6 +38,7 @@ Takes about a minute.
 """
 
 import asyncio
+import contextlib
 import inspect
 import os
 import time
@@ -126,9 +127,18 @@ async def make_output():
         return output
 
     yield make
+    # Every adapter is closed even if stopping it failed: a task left loaded
+    # makes every later test fail to load it, hiding what they would measure.
+    # Failures are re-raised once everything is released.
+    failures = []
     for output in outputs:
-        await output.stop()
-        await output.close()
+        for release in (output.stop, output.close):
+            try:
+                await release()
+            except Exception as exc:  # noqa: BLE001, PERF203 - release everything, then report
+                failures.append(exc)
+    if failures:
+        raise ExceptionGroup("releasing the board failed", failures)
 
 
 def zeros(n: int):
@@ -250,6 +260,64 @@ async def test_h1_a_late_write_reports_running_dry(make_output, report):
     underflow = await underflow_from(lambda: output.write(*zeros(SEGMENT)), report)
 
     assert underflow.at == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
+
+
+@physical_only
+async def test_h1_what_the_driver_says_after_running_dry(report):
+    """H1, as a survey rather than a verdict. The first physical run showed
+    ``space_avail`` returning 0 after running dry, rather than raising, and
+    ``stop`` raising -200290. Before the adapter is changed, this records
+    what every call it might use instead does in that state, in order, on
+    the raw tasks: which report the gap, whether any clears it, whether a
+    stop takes, and whether the pair can play again without reloading --
+    which is what a second acquisition would need. Never fails on the
+    driver's answers; every one is a finding.
+
+    It holds its own adapter rather than using the fixture, whose release
+    step would report the survey's deliberate stops as failures."""
+    output = NiSignalOutput(MonotonicClock(), ao_task=AO_TASK, do_task=DO_TASK)
+    try:
+        await output.configure(config())
+        await output.arm()
+        await ran_dry(output)
+        ao, do = output._ao, output._do
+
+        def probe(what, call):
+            try:
+                result = call()
+            except DaqError as exc:
+                report(f"{what}: raised {exc.error_code} ({exc.error_type.name})")
+            else:
+                report(f"{what}: returned {result!r}")
+
+        probe("AO space_avail", lambda: ao.out_stream.space_avail)
+        probe("AO total generated", lambda: ao.out_stream.total_samp_per_chan_generated)
+        probe("DO total generated", lambda: do.out_stream.total_samp_per_chan_generated)
+        probe("AO is_task_done", ao.is_task_done)
+        probe("DO is_task_done", do.is_task_done)
+        probe("AO space_avail again", lambda: ao.out_stream.space_avail)
+        probe("AO write while stopped by the driver",
+              lambda: ao.write(np.zeros((5, SEGMENT)), auto_start=False))
+        probe("AO stop", ao.stop)
+        probe("AO stop again", ao.stop)
+        probe("DO stop", do.stop)
+        probe("DO stop again", do.stop)
+        probe("AO space_avail after stop", lambda: ao.out_stream.space_avail)
+        probe("DO write after stop",
+              lambda: do.write(np.zeros((3, SEGMENT), dtype=bool), auto_start=False))
+        probe("AO write after stop",
+              lambda: ao.write(np.zeros((5, SEGMENT)), auto_start=False))
+        probe("DO start again", do.start)
+        probe("AO start again", ao.start)
+        await asyncio.sleep(0.1)
+        probe("AO total generated after restart",
+              lambda: ao.out_stream.total_samp_per_chan_generated)
+        probe("AO stop after restart", ao.stop)
+        probe("DO stop after restart", do.stop)
+    finally:
+        with contextlib.suppress(Exception):
+            await output.stop()
+        await output.close()
 
 
 # --- H2: where output ends -------------------------------------------------------

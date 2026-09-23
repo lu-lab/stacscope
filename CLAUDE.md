@@ -81,8 +81,11 @@ section explains why.
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
 - **Milestone 5 is in progress** (real adapters). The ordered work list is in
   the plan under "Milestone 5 → Next steps". **5a, the NI-DAQmx adapter,
-  is done**, through 5a-3 on the physical board. Next is 5b, the camera
-  port. `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`
+  is done**, through 5a-3 on the physical board. **Next is 5b, the camera
+  port.** It is a design task: the plan's "Milestone 5" opens with a status
+  block that says what to read first. Propose the port's shape to the user
+  before writing code. What 5a leaves open is in the plan's "Open items".
+  `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`
   and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is
   done: `SignalOutput.close()`, which `WaveformSource.teardown` always calls.
   Step 2 is done: the tasks come from NI MAX by name

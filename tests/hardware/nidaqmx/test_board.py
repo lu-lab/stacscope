@@ -1,4 +1,4 @@
-"""5a-3 (Step 3, H1-H4) -- the NI adapter on a physical PCI-6733.
+"""5a-3 (Step 3, H1-H8) -- the NI adapter on a physical PCI-6733.
 
 RUN BY THE USER ONLY. This suite starts real analog and digital output on the
 board it is pointed at. Every sample it writes is 0 V on the analog channels
@@ -7,15 +7,24 @@ only where that is safe -- on the development box, with nothing wired.
 
 What it answers, from the architecture plan's Step 3:
 
-  H1  Whether the board reports running dry the way the adapter expects, and
-      whether the adapter can still read how far output got while handling it.
-  H2  Draining by polling the sample count (the adapter) against the driver's
-      wait_until_done (the legacy engine): where each thinks output ended.
+  H1  That the adapter reports running dry as an Underflow, wherever the
+      refill loop meets it.
+  H2  That a drain ends when output does. (The legacy engine's
+      wait_until_done was compared here too, and never returns on this
+      board; see the plan.)
   H3  Refilling by polling for space (the adapter) against one blocking write
-      per segment (the legacy engine): margin to running dry at 100 kS/s, and
-      what each costs in CPU.
+      per segment (the legacy engine): what each costs in CPU.
   H4  What the saved tasks load with for data transfer, and whether setting
       DMA changes anything measurable.
+  H5  How small the hardware buffer can be. The real WaveformSource drives
+      the board at several buffer depths; for each, how thin the margin got,
+      how much was queued at worst, and how long a MAIN update took to reach
+      the output. A small buffer is what keeps updates prompt; running dry is
+      its price. Fails if the refill holds the event loop.
+  H6  How long a MAIN update takes to reach the outputs, sent at random
+      points in the cycle, for a short and a long volume.
+  H7  How long a stall of the event loop the output survives, by depth.
+  H8  That a queued sequence of MAINs plays in order on the board.
 
 Most of these are measurements rather than verdicts. Every test adds its
 numbers to a "hardware findings" section at the end of the run; paste that
@@ -34,14 +43,17 @@ board cannot answer (it stalls rather than running dry) skip themselves.
 
     Git Bash:    STACSCOPE_HARDWARE=Dev1 uv run --extra nidaqmx pytest tests/hardware/nidaqmx
 
-Takes about a minute.
+Takes about four minutes.
 """
 
 import asyncio
 import contextlib
 import inspect
 import os
+import random
+import statistics
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -50,8 +62,20 @@ from nidaqmx.errors import DaqError
 from saved_tasks import PREFIX, saved
 
 from stacscope.adapters.nidaqmx import NiSignalOutput
-from stacscope.adapters.nidaqmx.signal_output import UNDERFLOW_CODES
+from stacscope.core.actors import Accepted, Actor, Priority, Subscribe, ask, spawn
 from stacscope.core.ports import Channel, MonotonicClock, OutputConfig, Underflow
+from stacscope.core.protocol import (
+    DeviceReady,
+    Finish,
+    Go,
+    MainApplied,
+    Phase,
+    QueueMain,
+    Segment,
+    SetSegment,
+    StartDevice,
+)
+from stacscope.core.timing import WaveformSource
 
 DEVICE = os.environ.get("STACSCOPE_HARDWARE", "")
 AO_TASK = f"{PREFIX}hw_ao"
@@ -166,18 +190,6 @@ def loaded():
     finally:
         ao.close()
         do.close()
-
-
-def driver_end(task) -> float:
-    """Seconds until ``wait_until_done`` returns on ``task`` -- by raising the
-    ran-dry error, on a continuous task that has emptied its buffer."""
-    started = time.monotonic()
-    try:
-        task.wait_until_done(timeout=BUFFER / RATE + 2.0)
-    except DaqError as exc:
-        if exc.error_code not in UNDERFLOW_CODES:
-            raise
-    return time.monotonic() - started
 
 
 def ms(samples: float) -> str:
@@ -323,66 +335,43 @@ async def test_h1_what_the_driver_says_after_running_dry(report):
 # --- H2: where output ends -------------------------------------------------------
 
 
-async def test_h2_drain_by_polling(make_output, report):
-    """H2, the adapter's way. ``drain`` polls the sample count, so it can
-    only be as late as one poll -- but it may return before the board is
-    truly finished. On a physical board, how much later ``wait_until_done``
-    then returns on each task is the gap between the two notions of "done"."""
+async def test_h2_drain_ends_when_output_does(make_output, report):
+    """H2. ``drain`` returns once the board has played everything written,
+    and no sooner. The first physical run found the analog task's count stops
+    15 short and never arrives, so the drain now also ends on the driver's
+    ran-dry report. The digital task, on the same clock, must still have
+    counted every sample -- that is the evidence the clock ran to the end --
+    and the stop after it must be clean."""
     output = await make_output()
     await output.write(*zeros(BUFFER))
     started = time.monotonic()
     await output.go()
 
     await output.drain()
-    polled = time.monotonic() - started
+    took = time.monotonic() - started
     counts = generated(output._ao), generated(output._do)
+    await output.stop()
 
-    report(f"drain returned after {polled:.4f} s (expected {BUFFER / RATE:.4f}), "
+    report(f"drain returned after {took:.4f} s (expected {BUFFER / RATE:.4f}), "
            f"generated AO {counts[0]}, DO {counts[1]}")
-    if not SIMULATED:
-        report(f"wait_until_done then took a further AO {driver_end(output._ao) * 1000:.1f} ms, "
-               f"DO {driver_end(output._do) * 1000:.1f} ms")
-    assert counts == (BUFFER, BUFFER)
-    assert polled == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
-
-
-@physical_only
-async def test_h2_drain_by_waiting(make_output, report):
-    """H2, the legacy engine's way: ``wait_until_done`` on each task, which
-    on a continuous task ends by raising the ran-dry error. Compare the
-    elapsed time with the polling drain's. The sample counts are read after
-    that error, which is also H1's question."""
-    output = await make_output()
-    await output.write(*zeros(BUFFER))
-    started = time.monotonic()
-    await output.go()
-
-    ends = driver_end(output._ao), driver_end(output._do)
-    waited = time.monotonic() - started
-    counts = generated(output._ao), generated(output._do)
-
-    report(f"wait_until_done returned after {waited:.4f} s (expected {BUFFER / RATE:.4f}; "
-           f"AO {ends[0]:.4f} s, then DO {ends[1] * 1000:.1f} ms more), "
-           f"generated AO {counts[0]}, DO {counts[1]}")
-    assert counts == (BUFFER, BUFFER)
-    assert waited == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
+    assert counts[1] == BUFFER
+    assert took == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
 
 
 # --- H3 and H4: keeping it fed ---------------------------------------------------
 
 
-async def stream(output, refill: str) -> tuple[int, float, int]:
+async def stream(output, refill: str) -> tuple[float, int]:
     """Pre-fill, start, and feed ``STREAM_SECONDS`` of zeros a segment at a
-    time. Returns the lowest buffer fill seen just after a refill (samples),
-    the process's CPU time as a fraction of wall time while streaming, and
-    the number of refills."""
-    written = 0
+    time. Returns the process's CPU time as a fraction of wall time while
+    streaming, and the number of refills. Running dry raises."""
+    # (The first run also reported the fill just after each refill. That is
+    # full by construction, so it measured nothing; H5 measures the margin,
+    # just before each refill.)
     while output.space_available() >= SEGMENT:
         await output.write(*zeros(SEGMENT))
-        written += SEGMENT
     await output.go()
 
-    lowest = written
     refills = int(STREAM_SECONDS * RATE / SEGMENT)
     wall, cpu = time.monotonic(), time.process_time()
     for _ in range(refills):
@@ -395,10 +384,9 @@ async def stream(output, refill: str) -> tuple[int, float, int]:
             ao, do = zeros(SEGMENT)
             output._ao.write(ao, auto_start=False, timeout=10.0)
             output._do.write(do, auto_start=False, timeout=10.0)
-        written += SEGMENT
-        lowest = min(lowest, written - generated(output._ao))
+    output.space_available()  # raises Underflow if it ran dry on the way
     load = (time.process_time() - cpu) / (time.monotonic() - wall)
-    return lowest, load, refills
+    return load, refills
 
 
 @pytest.mark.parametrize("buffer", [BUFFER, TIGHT], ids=["1s-buffer", "100ms-buffer"])
@@ -406,15 +394,13 @@ async def stream(output, refill: str) -> tuple[int, float, int]:
 async def test_h3_refill(make_output, report, refill, buffer):
     """H3. The adapter polls ``space_avail`` every millisecond; the legacy
     engine blocked in one write per segment. Both must keep the board fed at
-    100 kS/s without running dry. The lowest fill after a refill is the
-    margin that was left; CPU time is what the refill cost, driver included."""
+    100 kS/s without running dry. CPU time is what the refill cost, driver
+    included."""
     output = await make_output(buffer)
 
-    lowest, load, refills = await stream(output, refill)
+    load, refills = await stream(output, refill)
 
-    report(f"{refills} refills of {SEGMENT}: lowest fill {lowest} samples "
-           f"({ms(lowest)} from running dry), CPU {load:.1%} of one core")
-    assert lowest > 0
+    report(f"{refills} refills of {SEGMENT}, no gap, CPU {load:.1%} of one core")
 
 
 @pytest.mark.parametrize("mechanism", ["as-loaded", "DMA"])
@@ -439,7 +425,7 @@ async def test_h4_data_transfer(make_output, report, mechanism):
             output._do.do_channels.all.do_data_xfer_mech = found["do_mech"]
             for task in (output._ao, output._do):
                 task.control(TaskMode.TASK_COMMIT)
-        lowest, load, refills = await stream(output, "polled")
+        load, refills = await stream(output, "polled")
     except (DaqError, Underflow) as exc:
         if mechanism == "DMA":
             raise
@@ -448,9 +434,282 @@ async def test_h4_data_transfer(make_output, report, mechanism):
         report(f"AO {names[0]} / DO {names[1]}: refused -- {why}")
         return
 
-    report(f"AO {names[0]} / DO {names[1]}: lowest fill {lowest} samples ({ms(lowest)}), "
-           f"CPU {load:.1%} of one core")
-    assert lowest > 0
+    report(f"AO {names[0]} / DO {names[1]}: {refills} refills, no gap, CPU {load:.1%} of one core")
     if mechanism == "DMA":
         assert (output._ao.ao_channels.all.ao_data_xfer_mech,
                 output._do.do_channels.all.do_data_xfer_mech) == (DataTransferActiveTransferMode.DMA,) * 2
+
+
+# --- H5-H8: the real source on the board -------------------------------------------
+
+MAIN = 5_000
+"""50 ms, a frame at 20 fps. Longer than the smaller buffers in the sweep, so
+the chunked refill of a long segment is exercised too."""
+
+LONG_MAIN = 30_000
+"""300 ms, the longest volume the instrument has used."""
+
+FLOOR = 3_276
+"""The smallest host buffer the adapter accepts with five analog channels: the
+analog task's onboard FIFO. Below it the board failed with nothing on our side
+late (the refill experiments, in the plan)."""
+
+SWEEP = [10_000, 5_000, FLOOR]
+
+LOOP_LAG_LIMIT = 0.1
+"""How long a 10 ms sleep elsewhere on the event loop may take while the
+source runs. The Windows timer alone makes it up to ~16 ms, and a busy refill
+a little more; before the adapter asked both tasks for space, a write that
+blocked inside the driver made it take whole cycles -- 150 ms at a 50 ms MAIN,
+900 ms at 300 ms -- and every other actor starved with it."""
+
+
+class Watched:
+    """The adapter, observed. At each write once output is playing: when it
+    came, how many samples had been written before it, how much was still
+    queued ahead of the outputs, and the first analog value it carries.
+    Everything else passes straight through.
+
+    Queued is written less the analog task's generated count, which the refill
+    experiments checked against a counter on ao/SampleClock: it follows the
+    clock to within a few samples, so it is what is really still to play --
+    the host buffer plus the board's FIFO. The digital task's count is not
+    used: it runs up to its FIFO's depth ahead of the clock."""
+
+    def __init__(self, output: NiSignalOutput) -> None:
+        self.output = output
+        self.playing = None
+        self.written = 0
+        self.writes: list[tuple[float, int, int, float]] = []
+
+    def __getattr__(self, name):
+        return getattr(self.output, name)
+
+    async def go(self) -> None:
+        await self.output.go()
+        self.playing = time.monotonic()
+
+    async def write(self, ao, do, *, label=None) -> None:
+        if self.playing is not None:
+            queued = self.written - generated(self.output._ao)
+            self.writes.append((time.monotonic(), self.written, queued, float(ao[0, 0])))
+        await self.output.write(ao, do, label=label)
+        self.written += ao.shape[1]
+
+    def plays_at(self, sample: int) -> float:
+        """When ``sample`` reached the outputs, from the write that queued it."""
+        for t, start, queued, _ in reversed(self.writes):
+            if start <= sample:
+                return t + (queued + sample - start) / RATE
+        raise AssertionError(f"sample {sample} was written before output started")
+
+
+class Heard(Actor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.heard: list = []
+
+    async def handle(self, msg) -> None:
+        self.heard.append(msg)
+
+
+async def until(predicate, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "the source never got there"
+        await asyncio.sleep(0.01)
+
+
+async def drive(buffer: int, main: int, seconds: float, during=None, *, queue=()):
+    """Run the real ``WaveformSource`` on the board for ``seconds``, with
+    ``during(ref, output)`` alongside and ``queue`` -- (tag, samples) pairs --
+    queued before it starts. Returns what it saw: the observed adapter, how
+    long a 10 ms sleep elsewhere on the loop took at worst, the process's CPU
+    share, everything the source published, and the Underflow it died of, if
+    it did. Any other error is raised."""
+    output = Watched(NiSignalOutput(MonotonicClock(), ao_task=AO_TASK, do_task=DO_TASK))
+    source = WaveformSource(output, config(buffer))
+    ref = spawn(source)
+    heard = Heard()
+    ref.tell(Subscribe(spawn(heard)))
+    lags = [0.0]
+
+    async def ticker():
+        while True:
+            t = time.monotonic()
+            await asyncio.sleep(0.01)
+            lags.append(time.monotonic() - t)
+
+    beside = []
+    try:
+        await asyncio.wait_for(source.started.wait(), timeout=5.0)
+        for segment, n in ((Segment.WARMUP, main), (Segment.MAIN, main), (Segment.COOLDOWN, SEGMENT)):
+            assert await ask(ref, SetSegment(segment, *zeros(n)), timeout=5.0) == Accepted()
+        for tag, n in queue:
+            assert await ask(ref, QueueMain(tag, *zeros(n)), timeout=5.0) == Accepted()
+        assert await ask(ref, StartDevice("board", -1), timeout=5.0) == DeviceReady()
+        wall, cpu = time.monotonic(), time.process_time()
+        ref.tell(Go())
+        await until(lambda: output.playing is not None or source.stopped.is_set(), timeout=5.0)
+        beside.append(asyncio.ensure_future(ticker()))
+        if during is not None:
+            beside.append(asyncio.ensure_future(during(ref, output)))
+        end = time.monotonic() + seconds
+        while time.monotonic() < end and not source.stopped.is_set():
+            await asyncio.sleep(0.02)
+        for task in beside:
+            task.cancel()
+        if beside[1:] and beside[1].done() and not beside[1].cancelled() and beside[1].exception():
+            raise beside[1].exception()
+        if not source.stopped.is_set():
+            ref.tell(Finish(), Priority.URGENT)
+            await until(lambda: source.phase is Phase.IDLE or source.stopped.is_set(), timeout=5.0)
+        load = (time.process_time() - cpu) / (time.monotonic() - wall)
+    finally:
+        for task in beside:
+            task.cancel()
+        source.stop()
+        await asyncio.wait_for(source.stopped.wait(), timeout=5.0)
+
+    error = source.exit_error
+    if error is not None and not isinstance(error, Underflow):
+        raise error
+    return SimpleNamespace(output=output, lag=max(lags), load=load, heard=heard.heard, underflow=error)
+
+
+@pytest.mark.parametrize("buffer", SWEEP, ids=[f"{b // 100}ms-buffer" for b in SWEEP])
+async def test_h5_how_small_the_buffer_can_be(report, buffer):
+    """H5. The hardware buffer is small on purpose: waiting for room in it
+    paces the refill loop, and its depth is all that can queue ahead of a
+    MAIN update, so it sets how stale the output can be. Too small and the
+    loop, woken late by the operating system, lets it run dry.
+
+    This runs the real ``WaveformSource`` -- the actor, its refill loop and
+    the adapter -- for a few seconds at each depth down to the floor the
+    adapter accepts, sends a MAIN update halfway, and reports, for the choice
+    of ``buffer_samples``:
+    - whether it ran dry, which is a finding, not a failure;
+    - the thinnest margin at a refill, and the most ever queued -- which,
+      above the buffer's own depth, is what the board holds on board;
+    - the longest gap between refills: how late the loop really woke;
+    - how long the update took from being sent to reaching the outputs.
+    The update is MAIN again, as -0.0: the same 0 V, told apart by its sign
+    bit.
+
+    It fails if the refill held the event loop: that starves every other
+    actor in the process, and is the adapter's fault, not the depth's."""
+    sent = []
+
+    async def update(ref, output):
+        await asyncio.sleep(STREAM_SECONDS / 2)
+        ao, do = zeros(MAIN)
+        ao[:] = -0.0
+        sent.append(time.monotonic())
+        assert await ask(ref, SetSegment(Segment.MAIN, ao, do), timeout=5.0) == Accepted()
+
+    run = await drive(buffer, MAIN, STREAM_SECONDS, update)
+
+    writes = run.output.writes
+    times = [t for t, _, _, _ in writes]
+    queued = [q for _, _, q, _ in writes]
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    update = next((start for _, start, _, v in writes if np.signbit(v)), None)
+    reached = (f"the update reached the outputs {(run.output.plays_at(update) - sent[0]) * 1000:.0f} ms "
+               f"after it was sent" if update is not None and sent else "no update was played")
+    dry = f"RAN DRY at t = {run.underflow.at:.3f} s" if run.underflow else "no gap"
+    report(f"{ms(buffer)} buffer: {dry}; {len(times)} refills, margin at a refill "
+           f"{ms(min(queued, default=0))} at least, queued {ms(max(queued, default=0))} at most; "
+           f"refills up to {max(gaps, default=0) * 1000:.1f} ms apart; {reached}; "
+           f"event loop held up to {run.lag * 1000:.0f} ms; CPU {run.load:.1%} of one core")
+    # Not on a simulated device: its driver paces writes its own way, and
+    # held the loop 140-160 ms in rehearsal whatever the adapter did.
+    if not SIMULATED:
+        assert run.lag < LOOP_LAG_LIMIT, f"the refill held the event loop for {run.lag * 1000:.0f} ms"
+
+
+@physical_only
+@pytest.mark.parametrize("main", [MAIN, LONG_MAIN], ids=["50ms-volume", "300ms-volume"])
+async def test_h6_update_latency_across_the_cycle(report, main):
+    """H6. The first-class behaviour, on the board. A MAIN update lands at the
+    first cycle boundary not yet committed, and the writer commits a boundary
+    one lead ahead of the outputs -- the host buffer plus the board's FIFO. So
+    an update sent at a random moment reaches the outputs somewhere between
+    one lead and one volume plus one lead later, and never later than that:
+    nothing else queues ahead of it. Updates are sent at random phases and
+    told apart by the index of the first sample of the MAIN they start, which
+    ``MainApplied`` reports; the output stays at 0 V throughout."""
+    updates = 12
+    sent: list[float] = []
+
+    async def send(ref, output):
+        for _ in range(updates):
+            await asyncio.sleep(main / RATE * random.uniform(1.6, 2.6))
+            sent.append(time.monotonic())
+            assert await ask(ref, SetSegment(Segment.MAIN, *zeros(main)), timeout=5.0) == Accepted()
+
+    seconds = updates * (main / RATE * 2.6 + 0.05) + 0.5
+    run = await drive(FLOOR, main, seconds, send)
+
+    assert run.underflow is None
+    applied = [m for m in run.heard if isinstance(m, MainApplied)][1:]  # [0] is cycle 0
+    assert len(applied) == len(sent) == updates, "an update never reached the outputs"
+    latency = [run.output.plays_at(m.sample) - t for m, t in zip(applied, sent)]
+    lead = (FLOOR + 2 * 2048) / RATE  # host buffer, the digital FIFO, and a refill block of slack
+    report(f"{main / RATE * 1000:.0f} ms volume at {ms(FLOOR)} buffer: {updates} updates reached the "
+           f"outputs {min(latency) * 1000:.0f}-{max(latency) * 1000:.0f} ms after being sent, "
+           f"mean {statistics.mean(latency) * 1000:.0f} ms")
+    assert max(latency) <= main / RATE + lead
+
+
+STALLS = [0.010, 0.020, 0.030, 0.040, 0.050, 0.060, 0.080]
+
+
+@physical_only
+@pytest.mark.parametrize("buffer", [FLOOR, 5_000], ids=["floor-buffer", "50ms-buffer"])
+async def test_h7_how_long_a_stall_the_output_survives(report, buffer):
+    """H7. What the depth buys: a stall of the whole event loop -- a GC pause,
+    a slow disk, another actor's long handler -- that the output rides out.
+    Each run blocks the loop eight times at random phases, for a longer time
+    each run, until the output runs dry. The refill experiments found a stall
+    survived exactly when it is shorter than what was queued as it began, so
+    this reports that too. A measurement: it never fails on the depth."""
+    survived = None
+    for stall in STALLS:
+        margins = []
+
+        async def stalls(ref, output):
+            await asyncio.sleep(0.5)
+            for _ in range(8):
+                await asyncio.sleep(random.uniform(0.15, 0.35))
+                margins.append(output.written - generated(output.output._ao))
+                time.sleep(stall)  # blocks the event loop, and the refill with it
+
+        run = await drive(buffer, MAIN, 4.0, stalls)
+        if run.underflow:
+            report(f"{ms(buffer)} buffer: survived {survived * 1000:.0f} ms stalls; ran dry on a "
+                   f"{stall * 1000:.0f} ms one, with {ms(min(margins))} queued at the thinnest"
+                   if survived else f"{ms(buffer)} buffer: ran dry on a {stall * 1000:.0f} ms stall")
+            return
+        survived = stall
+    report(f"{ms(buffer)} buffer: survived every stall up to {survived * 1000:.0f} ms")
+
+
+async def test_h8_a_queued_sequence_plays_in_order(report):
+    """H8. The second-class behaviour, on the board: queued MAINs play once
+    each, in order, back to back, and the last one stays. Every step is 0 V,
+    so the steps are told apart by length -- which a queued MAIN may choose --
+    and ``MainApplied`` must report each one at the sample where the previous
+    one ended."""
+    steps = [(f"step{i}", MAIN + 100 * i) for i in range(1, 7)]
+
+    run = await drive(FLOOR, MAIN, 2.0, queue=steps)
+
+    assert run.underflow is None
+    applied = [m for m in run.heard if isinstance(m, MainApplied)]
+    assert [m.tag for m in applied] == [tag for tag, _ in steps]
+    assert [m.cycle for m in applied] == list(range(len(steps)))
+    starts = [m.sample for m in applied]
+    assert starts[0] == MAIN  # right after warmup
+    assert [b - a for a, b in zip(starts, starts[1:])] == [n for _, n in steps[:-1]]
+    report(f"{len(steps)} queued steps played in order from sample {starts[0]}, no gap; "
+           f"event loop held up to {run.lag * 1000:.0f} ms")

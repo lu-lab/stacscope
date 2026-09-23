@@ -65,6 +65,19 @@ async def test_the_samples_reach_the_driver_exactly_as_given(output, daq):
     np.testing.assert_array_equal(daq.task("do").written[0], do)
 
 
+async def test_a_chunk_cut_from_a_longer_segment_reaches_the_driver(output, daq):
+    """A refill writes a segment a piece at a time, as columns sliced out of
+    it, and such a slice is not contiguous in memory. The port takes any
+    array; the driver's ctypes layer refuses that one. Found on Dev1-sim,
+    the first time the real ``WaveformSource`` drove the adapter."""
+    ao, do = ramp(32)
+
+    await output.write(ao[:, 8:24], do[:, 8:24])
+
+    np.testing.assert_array_equal(daq.task("ao").written[0], ao[:, 8:24])
+    np.testing.assert_array_equal(daq.task("do").written[0], do[:, 8:24])
+
+
 async def test_the_segment_label_never_reaches_the_driver(output, daq):
     """N5, second half. The label is ours, for diagnostics; DAQmx has no
     notion of where one segment ends and the next begins."""
@@ -76,14 +89,19 @@ async def test_the_segment_label_never_reaches_the_driver(output, daq):
 async def test_an_underflow_code_becomes_an_underflow_at_the_time_it_happened(playing, daq):
     """N6. The driver reports a gap by error code; the caller wants the one
     exception the port defines, carrying when the output ran dry. Samples
-    generated over the rate is that time, and it is the only clock on offer."""
-    daq.task("ao").out_stream.total_samp_per_chan_generated = 50_000
-    daq.task("ao").fail = UNDERFLOW
+    generated over the rate is not that time: on the physical board the
+    analog task's count reads 0 once it has run dry, which would put every gap
+    at t = 0. With regeneration off the board plays exactly what was written
+    and then stops, so written over the rate is.
+
+    Here the driver notices between the adapter asking for space and writing,
+    so it is the write that reports it."""
+    daq.ran_dry(UNDERFLOW, space=BUFFER)
 
     with pytest.raises(Underflow) as caught:
         await playing.write(*ramp(8))
 
-    assert caught.value.at == 50_000 / RATE
+    assert caught.value.at == 64 / RATE
 
 
 async def test_the_regeneration_guard_firing_is_an_underflow_like_any_other(playing, daq):
@@ -94,13 +112,98 @@ async def test_the_regeneration_guard_firing_is_an_underflow_like_any_other(play
     instrument that is the ordinary way of running dry. Missing it would report
     a fatal driver fault at the end of every acquisition that ended by running
     the buffer down, which is how one normally ends."""
-    daq.task("ao").out_stream.total_samp_per_chan_generated = 50_000
-    daq.task("ao").fail = REGEN_STOPPED
+    daq.ran_dry(REGEN_STOPPED, space=BUFFER)
 
     with pytest.raises(Underflow) as caught:
         await playing.write(*ramp(8))
 
-    assert caught.value.at == 50_000 / RATE
+    assert caught.value.at == 64 / RATE
+
+
+async def test_a_board_that_ran_dry_says_so_when_asked_for_space(playing, daq):
+    """H1's finding. Once the physical board has run dry its free space reads
+    0 -- no error -- so a refill loop that only asked for space would see a
+    full buffer and wait for room that never comes. The adapter asks the
+    driver why there is no room; only ``is_task_done`` says."""
+    daq.ran_dry(REGEN_STOPPED)
+
+    with pytest.raises(Underflow) as caught:
+        playing.space_available()
+
+    assert caught.value.at == 64 / RATE
+
+
+async def test_a_late_write_to_a_board_that_ran_dry_is_an_underflow(playing, daq):
+    """H1. The write that arrives too late must say the output gapped, not
+    that its samples do not fit: the second is a caller's mistake, and would
+    send whoever reads it looking for one."""
+    daq.ran_dry(REGEN_STOPPED)
+
+    with pytest.raises(Underflow):
+        await playing.write(*ramp(8))
+
+
+async def test_a_full_buffer_is_not_mistaken_for_one_that_ran_dry(playing, daq):
+    """H1, the other side. No room is the ordinary state of a well-fed buffer,
+    many times a second; only the driver's own report makes it a gap."""
+    daq.space = 0
+
+    assert playing.space_available() == 0
+
+
+async def test_a_full_buffer_that_is_still_playing_costs_no_is_task_done(playing, daq):
+    """Found on Dev1: ``is_task_done`` takes 16 ms at the median and up to 37,
+    where the generated count takes 0.03 -- and a well-fed buffer reads no
+    room on most polls. At the smallest buffer the board allows there is about
+    47 ms queued, so asking on every full poll spent most of the stall
+    tolerance on the question. A count still moving is proof enough that the
+    output has not run dry."""
+    daq.space = 0
+    ao = daq.task("ao").out_stream
+    for played in (100, 200, 300):
+        ao.played = played
+        assert playing.space_available() == 0
+
+    assert ("done?", daq.task("ao").name) not in daq.log
+
+
+async def test_a_count_that_stops_moving_is_asked_why(playing, daq):
+    """The other side: a board whose count stands still with no room may have
+    run dry, and only ``is_task_done`` says so. Not every driver resets the
+    count to 0 on running dry, so a count that merely stops must be enough."""
+    daq.space = 0
+    ao = daq.task("ao").out_stream
+    ao.played = 100
+    playing.space_available()
+    daq.task("ao").dry = REGEN_STOPPED  # count left where it was
+
+    with pytest.raises(Underflow):
+        playing.space_available()
+
+
+async def test_a_full_buffer_before_go_costs_no_is_task_done(output, daq):
+    """Filling the buffer before ``go`` is the normal start, and leaves no
+    room. Nothing is playing, so nothing can have run dry."""
+    await output.write(*ramp(64))
+    daq.space = 0
+
+    assert output.space_available() == 0
+    assert ("done?", daq.task("ao").name) not in daq.log
+
+
+async def test_a_wait_for_space_ends_when_the_board_runs_dry(playing, daq, clock):
+    """H1. On the physical board the space never comes back, so a wait that
+    did not notice would hang the refill loop -- and with it the actor, which
+    could then not even be told to stop between cycles."""
+    daq.space = 0
+    waiting = asyncio.create_task(playing.wait_for_space(128))
+    await clock.advance(0.01)
+
+    daq.ran_dry(REGEN_STOPPED)
+    await clock.advance(0.01)
+
+    with pytest.raises(Underflow):
+        await waiting
 
 
 async def test_the_regeneration_guard_firing_during_a_drain_is_the_expected_end(playing, daq):
@@ -154,6 +257,39 @@ async def test_waiting_on_a_full_buffer_that_never_started_is_an_error(output, d
 
     with pytest.raises(RuntimeError):
         await output.wait_for_space(1)
+
+
+async def test_draining_ends_when_the_board_reports_running_dry(playing, daq, clock):
+    """H2's finding. On the physical board the analog task's sample count
+    stops short of what was written -- 99 985 of 100 000 -- while the digital
+    task, on the same clock, counts every sample. So the analog task is done
+    when the driver says it ran dry, which it says only once its buffer has
+    emptied, and the digital task when its count is complete."""
+    draining = asyncio.create_task(playing.drain())
+    await clock.advance(0.01)
+    assert not draining.done()
+
+    daq.ran_dry(REGEN_STOPPED)
+    daq.task("ao").out_stream.played = 49  # short, and not what ends it
+    await clock.advance(0.01)
+
+    await draining
+
+
+async def test_draining_waits_for_the_digital_task_too(playing, daq, clock):
+    """The analog task reporting that it ran dry says nothing of the digital
+    task's last samples; a drain that stopped there would leave a line
+    asserted."""
+    draining = asyncio.create_task(playing.drain())
+    daq.ran_dry(REGEN_STOPPED)
+    daq.task("do").out_stream.played = 63
+    await clock.advance(0.01)
+    assert not draining.done()
+
+    daq.task("do").out_stream.played = 64
+    await clock.advance(0.01)
+
+    await draining
 
 
 async def test_draining_waits_for_what_was_written_to_play(playing, daq, clock):
@@ -217,6 +353,68 @@ async def test_stop_is_safe_in_any_state_and_any_number_of_times(output, daq):
 
     assert not daq.task("ao").started
     assert not daq.task("do").started
+
+
+async def test_stopping_after_a_drain_accepts_the_ran_dry_report(playing, daq):
+    """H1's finding: the physical board reports running dry once more, from
+    the first ``stop``. After a drain that is the ending asked for, and a
+    teardown that reported it would call every clean acquisition a failed
+    release."""
+    daq.ran_dry(REGEN_STOPPED)
+    await playing.drain()
+
+    await playing.stop()
+
+    assert not daq.task("ao").started
+    assert not daq.task("do").started
+
+
+async def test_a_gap_nobody_was_told_about_is_reported_by_stop(playing, daq):
+    """The legacy engine suppressed this code only on its STOP path:
+    "Unexpected stops still propagate the error." If output ran dry and
+    nothing has said so -- a stop from outside, mid-stream -- then stop is
+    the last chance to, and silence would hide a gap in the acquisition.
+    Both tasks are still stopped, and it is said once."""
+    daq.ran_dry(REGEN_STOPPED)
+
+    with pytest.raises(ExceptionGroup) as caught:
+        await playing.stop()
+
+    assert [type(e) for e in caught.value.exceptions] == [Underflow]
+    assert caught.value.exceptions[0].at == 64 / RATE
+    assert not daq.task("ao").started
+    assert not daq.task("do").started
+    await playing.stop()
+
+
+async def test_a_gap_already_reported_is_not_reported_again_by_stop(playing, daq):
+    """An ``Underflow`` kills the source, whose teardown then stops the
+    output. Reporting the same gap again there would add "the output was not
+    released cleanly" to the cause -- when the release was fine."""
+    daq.ran_dry(REGEN_STOPPED)
+    with pytest.raises(Underflow):
+        playing.space_available()
+
+    await playing.stop()
+
+
+async def test_a_gap_reported_in_one_acquisition_does_not_silence_the_next(playing, daq):
+    """The tasks play again after a stop without being reloaded (Step 3, H1),
+    so one adapter serves many acquisitions, and what was said about the last
+    one's gap says nothing about this one's."""
+    daq.ran_dry(REGEN_STOPPED)
+    with pytest.raises(Underflow):
+        playing.space_available()
+    await playing.stop()
+
+    await playing.arm()
+    daq.space = BUFFER
+    await playing.write(*ramp(64))
+    await playing.go()
+    daq.ran_dry(REGEN_STOPPED)
+
+    with pytest.raises(ExceptionGroup):
+        await playing.stop()
 
 
 async def test_stopping_a_task_the_driver_is_unhappy_about_still_stops_the_other(output, daq):

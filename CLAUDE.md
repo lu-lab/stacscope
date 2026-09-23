@@ -101,9 +101,19 @@ section explains why.
   deployment mechanism. Never load the instrument's `SPIM_*_Task`s from a
   test. (`DAQmxConfiguration_sim.txt` still imports a `_sim` copy of them
   for trying the rig's config by hand; no test uses it.)
+  `WaveformSource` also takes a bounded queue of MAINs (`QueueMain`,
+  W9–W13) for sweeps and closed loops. It publishes `MainApplied(tag, cycle,
+  sample)` and `MainDiscarded`, and `SetSegment` still means "this, now"
+  and clears the queue. On the board, `buffer_samples` may not go below
+  the AO onboard FIFO (3276 with five channels), and `space_available` is
+  the smaller of the two tasks' free space. The plan's "Refill experiments"
+  says why. The instrument uses 5000 (`BUFFER_SAMPLES`, the user's choice).
+  The plan lists the measurements that would call for going higher.
   **Step 3's suite is `tests/hardware/nidaqmx/`**, and runs only on the
   device named in `STACSCOPE_HARDWARE`. Claude may run it only with
   `STACSCOPE_HARDWARE=Dev1-sim`, as a rehearsal; the user runs it on `Dev1`.
+  H1–H8 cover running dry, draining, refilling, buffer depth, update
+  latency, stall tolerance, and a queued sequence.
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
   for watching a frame buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the

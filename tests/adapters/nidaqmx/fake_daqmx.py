@@ -17,6 +17,7 @@ since step 2 those belong to NI MAX, and an adapter that tried would fail here
 with an AttributeError rather than pass.
 """
 
+import ctypes
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -48,6 +49,10 @@ class FakeDaq:
         self.loaded: list[FakeTask] = []
         self.log: list[tuple[str, str]] = []
         self.space = space
+        self.do_space: int | None = None
+        """The digital task's free space, when it differs from the analog
+        task's. On the physical board it often does, and is the smaller (Step 3,
+        refill experiments): its onboard FIFO is shallower."""
         self.tasks = _PersistedTasks(self)
 
     def saving(self, config, *, ao: str, do: str) -> "FakeDaq":
@@ -68,6 +73,22 @@ class FakeDaq:
 
     def starts(self) -> list[str]:
         return [name for event, name in self.log if event == "start"]
+
+    def ran_dry(self, error: DaqError, *, space: int = 0) -> None:
+        """Put the pair in the state the physical PCI-6733 reported once its
+        output had run dry (Step 3, H1's survey): the analog task reports it
+        from ``is_task_done``, from a write, and from the first ``stop`` only;
+        its free space reads 0 and its sample count reads 0, where the
+        digital task's count is still right. Nothing reads as an error on the
+        digital task.
+
+        ``space`` is for the other order of events -- the driver noticing
+        between the adapter asking for space and writing."""
+        ao, do = self.task("ao"), self.task("do")
+        ao.dry = error
+        self.space = space
+        do.out_stream.played = sum(data.shape[-1] for data in do.written)
+        ao.out_stream.played = 0
 
 
 class _PersistedTasks:
@@ -145,11 +166,25 @@ class FakeTask:
         self.auto_started: list = []
         self.fail: Exception | None = None
         """Set to a DaqError to make this task fail the way the driver would."""
+        self.dry: DaqError | None = None
+        """The driver's report that this task stopped generating because it
+        ran out of samples. See ``FakeDaq.ran_dry``."""
 
     def write(self, data, auto_start=None, timeout=10.0):
         if self.fail is not None:
             raise self.fail
+        if self.dry is not None:
+            raise self.dry
         self._check_channels(data)
+        if data.shape[-1] > self.out_stream.space_avail:
+            # The real driver does not refuse this: it waits inside the call,
+            # holding the event loop, until the board has played enough to make
+            # room (Step 3, refill experiments). A fake cannot block, so it
+            # fails the test instead.
+            raise AssertionError(
+                f"{self.name}: wrote {data.shape[-1]} samples into {self.out_stream.space_avail} "
+                "free -- the driver would block the event loop here"
+            )
         self.written.append(data)
         self.auto_started.append(auto_start)
         self._daq.log.append(("write", self.name))
@@ -164,6 +199,11 @@ class FakeTask:
         rejects, and one channel of analog out with one digital line is the
         smallest real configuration there is.
         """
+        # And, found on Dev1-sim, the ctypes layer refuses an array that is not
+        # C-contiguous -- such as a slice of a segment's columns, which is
+        # what a chunked write hands over -- before the driver sees it.
+        if not data.flags.c_contiguous:
+            raise ctypes.ArgumentError("argument 6: TypeError: array must have flags ['C_CONTIGUOUS']")
         channels = len(self.channel_names)
         given = data.shape[0] if data.ndim == 2 else 1
         if (data.ndim == 2) != (channels > 1) or given != channels:
@@ -185,6 +225,19 @@ class FakeTask:
             raise self.fail  # the driver refused; this task's state is anyone's guess
         self.started = False
         self._daq.log.append(("stop", self.name))
+        if self.dry is not None:
+            # As on the board: the stop takes, and reports the gap on its way
+            # out. A second stop returns quietly.
+            dry, self.dry = self.dry, None
+            raise dry
+
+    def is_task_done(self) -> bool:
+        self._daq.log.append(("done?", self.name))
+        if self.fail is not None:
+            raise self.fail
+        if self.dry is not None:
+            raise self.dry
+        return not self.started
 
     def close(self) -> None:
         self.closed = True
@@ -217,7 +270,11 @@ class _OutStream(_Recorded):
     design rests on, plus the counters it reads back."""
 
     def __init__(self, task: FakeTask, saved: Saved) -> None:
-        super().__init__(task, regen_mode=saved.regen, output_buf_size=0, played=0, fail=None)
+        # The onboard FIFOs are the physical PCI-6733's, read off Dev1 with its
+        # five analog channels and three lines (Step 3, refill experiments).
+        onboard = 3276 if saved.kind == "ao" else 2047
+        super().__init__(task, regen_mode=saved.regen, output_buf_size=0, played=0, fail=None,
+                         output_onbrd_buf_size=onboard)
         # `played`: samples the task has generated. Tests advance it by hand:
         # the fake has no clock, and a drain is exactly the wait for this to
         # catch up.
@@ -230,7 +287,10 @@ class _OutStream(_Recorded):
     def space_avail(self) -> int:
         if self._task.fail is not None:
             raise self._task.fail
-        return self._task._daq.space
+        daq = self._task._daq
+        if daq.do_space is not None and self._task.do_channels:
+            return daq.do_space
+        return daq.space
 
     @property
     def total_samp_per_chan_generated(self) -> int:

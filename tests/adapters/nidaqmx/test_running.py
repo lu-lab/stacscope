@@ -60,6 +60,35 @@ async def test_space_is_what_the_driver_says_it_is(output, daq):
     assert output.space_available() == 129
 
 
+async def test_space_is_the_smaller_of_the_two_tasks(output, daq):
+    """N4b. Each task has its own buffer, and on the physical board the
+    digital task's is often fuller: its onboard FIFO holds 2047 samples to the
+    analog task's 3276, so less of its buffer has drained into the board.
+    Reporting only the analog task's space let the refill loop write into a
+    full digital buffer, and the driver then waited inside the write for room
+    -- 5-12 ms a time, with the event loop held, so every other actor starved
+    for whole cycles and a MAIN update waited a cycle to be handled at all."""
+    daq.do_space = 7
+
+    assert output.space_available() == 7
+
+    daq.space, daq.do_space = 7, BUFFER
+    assert output.space_available() == 7
+
+
+async def test_a_write_never_waits_in_the_driver(output, daq):
+    """N4b, second half: what is written fits in *both* tasks, so the driver
+    never has to wait for room. A write that would wait is refused before
+    either task sees it, as N4 does for the analog task alone."""
+    daq.do_space = 10
+
+    with pytest.raises(ValueError):
+        await output.write(*block(11))
+
+    assert daq.task("ao").written == []
+    assert daq.task("do").written == []
+
+
 async def test_a_write_larger_than_the_space_never_reaches_the_driver(output, daq):
     """N4, second half. Refusing here keeps the failure ours and legible,
     rather than a driver error that has to be read back through error codes."""

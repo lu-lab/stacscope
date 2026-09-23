@@ -1,4 +1,4 @@
-"""N14-N17 -- the tasks come from NI MAX; `configure` loads, checks and commits.
+"""N14-N17, N19 -- the tasks come from NI MAX; `configure` loads, checks and commits.
 
 Since step 2 the channel map, rate, clock routing and regeneration mode are
 the instrument's, owned by NI MAX -- which is where the legacy engine kept
@@ -187,6 +187,35 @@ async def test_a_mismatch_leaves_the_tasks_for_close_to_release(daq):
     assert daq.loaded and all(t.closed for t in daq.loaded)
 
 
+@pytest.mark.parametrize("buffer", [3275, 1000])
+async def test_a_buffer_smaller_than_the_board_holds_fails_configure(daq, buffer):
+    """N19. On the physical PCI-6733 a host buffer smaller than the analog
+    task's onboard FIFO (3276 samples with five channels) is not safe, with
+    nothing on our side falling behind. At 1000 samples every run failed within
+    a few seconds -- the driver raised -50410 ("no more space in the buffer")
+    with 15 ms still queued, or ran dry; at 2000 one run in four ran dry. From
+    3000 up, 20 runs of 8 s were clean. The driver refills the board in blocks
+    of about 2050 samples, and a host buffer that cannot hold one is where it
+    breaks. Refused at setup, naming the floor, rather than found as a gap
+    mid-acquisition."""
+    config = dataclasses.replace(CONFIG, buffer_samples=buffer)
+    output = adapter(VirtualClock(), daq)
+
+    with pytest.raises(ValueError, match="3276"):
+        await output.configure(config)
+
+    assert not any(t.committed for t in daq.loaded)
+
+
+async def test_a_buffer_as_large_as_the_board_holds_is_accepted(daq):
+    """N19, the boundary: the floor is the onboard FIFO itself."""
+    output = adapter(VirtualClock(), daq)
+
+    await output.configure(dataclasses.replace(CONFIG, buffer_samples=3276))
+
+    assert all(t.committed for t in daq.loaded)
+
+
 async def test_the_configuration_can_be_read_from_max(daq):
     """N17. A rig config need not restate the channel map: it is read from the
     same tasks ``configure`` will check against, so the two cannot disagree.
@@ -198,6 +227,18 @@ async def test_the_configuration_can_be_read_from_max(daq):
     assert all(t.closed for t in daq.loaded)
 
     await adapter(VirtualClock(), daq).configure(config)
+
+
+def test_a_configuration_read_from_max_defaults_to_the_chosen_buffer(daq):
+    """The instrument's ``buffer_samples``, chosen by the user on 2026-09-23:
+    5000 (50 ms at 100 kS/s). On Dev1 it rode out 50 ms stalls of the event
+    loop and ran dry on a 60 ms one, where the 3276 floor survived only 30 ms;
+    an update reaches the pins about 17 ms later than at the floor. A caller
+    that passes nothing gets this, not the floor -- the floor is the least the
+    board accepts, not a safe depth."""
+    config = read_output_config(AO_TASK, DO_TASK, system=daq)
+
+    assert config.buffer_samples == 5000
 
 
 async def test_a_configuration_read_from_max_keeps_max_order(daq):

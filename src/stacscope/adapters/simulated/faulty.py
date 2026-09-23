@@ -42,7 +42,12 @@ class FaultyDevice(Actor):
     """Speaks the device protocol until the named message, then misbehaves."""
 
     def __init__(
-        self, fail: Fail = Fail.NOTHING, *, on: str = "StartDevice", note: str = ""
+        self,
+        fail: Fail = Fail.NOTHING,
+        *,
+        on: str = "StartDevice",
+        note: str = "",
+        release_fails: bool = False,
     ) -> None:
         super().__init__()
         self.fail = fail
@@ -51,10 +56,14 @@ class FaultyDevice(Actor):
         """A path to write in ``teardown``, standing in for releasing hardware.
         A file is the only evidence of an orderly shutdown that survives the
         process it happened in."""
+        self.release_fails = release_fails
+        """Whether ``teardown`` raises, as a driver that refuses to close does."""
 
     async def teardown(self) -> None:
         if self.note:
             pathlib.Path(self.note).write_text("released", encoding="utf-8")
+        if self.release_fails:
+            raise OSError("the driver would not release the device")
 
     async def handle(self, msg: object) -> None:
         if type(msg).__name__ == self.on:

@@ -74,6 +74,27 @@ async def test_clean_child_exit_is_reported_without_error():
     assert exited.error is None
 
 
+async def test_a_failed_teardown_reaches_the_parent_beside_what_caused_it():
+    """Invariant 6: a failure to release hardware is reported, never raised
+    over the fault that started the shutdown -- and never dropped either.
+
+    The runtime keeps the first error and notes the teardown failure on it,
+    but the parent only ever sees a string. If that string is built by
+    ``repr``, which leaves notes out, the failed release is lost on the way:
+    the operator learns the device died, and not that it may still hold the
+    board."""
+
+    class LeavesHardwareHeld(Doomed):
+        async def teardown(self):
+            raise OSError("handle would not close")
+
+    parent = Parent(LeavesHardwareHeld())
+    [exited] = await _run(parent)
+
+    assert "device lost" in exited.error
+    assert "handle would not close" in exited.error
+
+
 async def test_child_exited_jumps_the_parents_low_priority_queue():
     parent = Parent(Doomed(), ticks=10)
     await _run(parent)

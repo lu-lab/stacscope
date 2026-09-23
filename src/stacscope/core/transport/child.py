@@ -17,7 +17,7 @@ import sys
 
 import msgpack
 
-from stacscope.core.actors import Actor, ActorDied, Priority, spawn
+from stacscope.core.actors import Actor, ActorDied, Priority, describe, spawn
 from stacscope.core.protocol import MESSAGES
 from stacscope.core.transport.codec import Codec
 from stacscope.core.transport.stream import (
@@ -68,9 +68,8 @@ async def serve(endpoint: str, token: str, address: str) -> int:
     # as a death at home. Pointless if the link is what went, and impossible if
     # the process is what went -- which is why an exit status is still a death.
     if not connection.closed.is_set():
-        error = actor.exit_error
         connection.peer.ref_to(runtime_address(address)).tell(
-            ActorDied(None if error is None else repr(error)), Priority.URGENT
+            ActorDied(describe(actor.exit_error)), Priority.URGENT
         )
     serving.cancel()
     await connection.close()
@@ -96,7 +95,7 @@ async def _build(factory: bytes, address: str) -> Actor | str:
         return repr(exc)
     await _either(actor.started.wait(), actor.stopped.wait())
     if not actor.started.is_set():
-        return repr(actor.exit_error)
+        return describe(actor.exit_error)
     return actor
 
 

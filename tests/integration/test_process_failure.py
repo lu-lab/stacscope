@@ -93,6 +93,26 @@ async def test_a_device_that_raises_says_why_across_the_boundary(host, parent):
     assert "unrecoverable error" in exited.error
 
 
+async def test_a_failed_release_crosses_the_boundary_beside_its_cause(host, parent):
+    """The same guarantee as in-process: a device whose teardown could not
+    release its hardware says so, alongside what killed it. The child reports
+    its death as a string, so this is where a failed release is most easily
+    reduced to the first error alone."""
+    device = await host.launch(
+        parent,
+        name="camera",
+        factory=partial(FaultyDevice, Fail.RAISE, release_fails=True),
+        heartbeat=PATIENT_HEARTBEAT,
+    )
+
+    device.tell(StartDevice("", 1))
+
+    assert await until(lambda: parent.exits, deadline=3.0)
+    [exited] = parent.exits
+    assert "unrecoverable error" in exited.error
+    assert "would not release" in exited.error
+
+
 async def test_a_process_alive_but_no_longer_answering_is_found_by_heartbeat(host, parent):
     """X8. A blocking call into a driver that never returns: the process is up,
     its link is open, and nothing is running to notice. Only the heartbeat can

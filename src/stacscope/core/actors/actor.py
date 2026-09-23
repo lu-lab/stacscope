@@ -157,6 +157,17 @@ class Actor:
                 self.stopped.set()
 
 
+def describe(error: BaseException | None) -> str | None:
+    """How an actor's ``exit_error`` is reported to whoever supervises it:
+    its ``repr`` followed by any notes, or ``None`` for a clean stop."""
+    # Not plain repr: notes are how a failed teardown rides along on the error
+    # that caused the shutdown (see `_lifecycle`), and repr leaves them out.
+    # Everything past this point is a string, so a note not copied here is gone.
+    if error is None:
+        return None
+    return "; ".join([repr(error), *getattr(error, "__notes__", ())])
+
+
 def adopt(
     parent: Actor,
     child: ActorRef,
@@ -229,8 +240,7 @@ def spawn(
                 if cancelled:
                     watch.report("cancelled")
                 else:
-                    error = actor.exit_error
-                    watch.report(None if error is None else repr(error))
+                    watch.report(describe(actor.exit_error))
 
     actor._task = asyncio.create_task(lifecycle())
     return ref

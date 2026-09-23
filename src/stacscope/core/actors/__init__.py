@@ -1,6 +1,6 @@
 """The actor runtime: priority mailbox, lifecycle, addressing. No hardware."""
 
-from stacscope.core.actors.actor import Actor, adopt, spawn
+from stacscope.core.actors.actor import Actor, adopt, describe, spawn
 from stacscope.core.actors.ask import REPLY_MARK, AskTimeout, ask
 from stacscope.core.actors.mailbox import Mailbox, Priority
 from stacscope.core.actors.messages import (
@@ -40,5 +40,6 @@ __all__ = [
     "Unsubscribe",
     "adopt",
     "ask",
+    "describe",
     "spawn",
 ]

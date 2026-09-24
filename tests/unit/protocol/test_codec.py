@@ -136,7 +136,7 @@ class Waveform:
         np.array([True, False, True]),
         np.arange(12, dtype=">i4").reshape(3, 4),  # non-native byte order
         np.arange(12.0).reshape(3, 4).T,  # non-contiguous
-        np.zeros((5, 0)),  # an empty segment
+        np.zeros((5, 0)),  # an empty waveform
     ],
     ids=["ao", "digital", "bool", "big-endian", "transposed", "empty"],
 )

@@ -73,7 +73,7 @@ class TimingSource(Actor):
         """Undo ``arm`` without ever having produced output."""
 
     async def warmup(self) -> None:
-        """Start output. The AO source commits its WARMUP segment here."""
+        """Start output. The AO source commits its WARMUP waveform here."""
 
     async def run_cycle(self) -> None:
         """Produce one cycle; return when the next may be committed."""

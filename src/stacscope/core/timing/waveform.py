@@ -11,14 +11,14 @@ import numpy as np
 
 from stacscope.core.actors import Accepted
 from stacscope.core.ports import OutputConfig, SignalOutput
-from stacscope.core.protocol import MainApplied, MainDiscarded, QueueMain, Segment, SetSegment
+from stacscope.core.protocol import MainApplied, MainDiscarded, QueueMain, SetWaveform, Waveform
 from stacscope.core.timing.source import NotReady, TimingSource
 
-type Waveform = tuple[np.ndarray, np.ndarray]  # (ao, do)
+type Samples = tuple[np.ndarray, np.ndarray]  # (ao, do)
 
 REFILL_STEPS = 4
 """Once output is playing, a refill waits for room for a quarter of the
-hardware buffer (or the rest of the segment, if less), so the buffer never
+hardware buffer (or the rest of the waveform, if less), so the buffer never
 falls below three quarters full at a refill."""
 
 QUEUE_LIMIT = 8
@@ -26,7 +26,7 @@ QUEUE_LIMIT = 8
 
 
 class WaveformSource(TimingSource):
-    """Holds the WARMUP, MAIN and COOLDOWN segments and keeps the output fed.
+    """Holds the WARMUP, MAIN and COOLDOWN waveforms and keeps the output fed.
 
     - Warmup commits WARMUP; each cycle commits one copy of MAIN, captured at
       the start of the cycle, so an update never tears one; Cooldown commits
@@ -34,14 +34,14 @@ class WaveformSource(TimingSource):
     - Output starts once the pre-roll is queued (WARMUP plus the first MAIN),
       or earlier if the buffer fills first. It never starts with nothing
       queued, so empty WARMUP/COOLDOWN are valid no-op phases.
-    - Segments longer than the hardware buffer are written in chunks.
+    - Waveforms longer than the hardware buffer are written in chunks.
     - Once output is playing, the buffer is topped up a quarter at a time,
       so it never falls below three quarters full at a refill. Nothing is
       queued beyond it, so its depth (``OutputConfig.buffer_samples``) is
       the most an update to MAIN waits behind once it is taken.
     - ``QueueMain`` queues a MAIN for exactly one cycle, up to
       ``queue_limit`` at a time; the last one taken keeps playing. A
-      ``SetSegment`` of MAIN empties the queue, and so does the end of an
+      ``SetWaveform`` of MAIN empties the queue, and so does the end of an
       acquisition. Each MAIN taken that differs from the last is published as
       ``MainApplied``, and every dropped one in a ``MainDiscarded``.
     - An ``Underflow`` is not caught: the source dies, and the Coordinator
@@ -54,18 +54,18 @@ class WaveformSource(TimingSource):
         self.config = config
         self.queue_limit = queue_limit
         empty = (np.zeros((len(config.ao), 0)), np.zeros((len(config.do), 0), dtype=bool))
-        self._segments: dict[Segment, Waveform | None] = {
-            Segment.WARMUP: empty,
-            Segment.MAIN: None,
-            Segment.COOLDOWN: empty,
+        self._waveforms: dict[Waveform, Samples | None] = {
+            Waveform.WARMUP: empty,
+            Waveform.MAIN: None,
+            Waveform.COOLDOWN: empty,
         }
         self._started = False
         self._queued = 0
         # The queue holds only what was asked for by QueueMain; the steady MAIN
-        # stays in _segments. Each MAIN gets a new version when it is set or
+        # stays in _waveforms. Each MAIN gets a new version when it is set or
         # taken, so a change is told from a repeat by version, never by
         # comparing arrays.
-        self._pending: deque[tuple[str, Waveform]] = deque()
+        self._pending: deque[tuple[str, Samples]] = deque()
         self._main_tag: str | None = None
         self._main_version = 0
         self._reported_version: int | None = None
@@ -92,20 +92,20 @@ class WaveformSource(TimingSource):
 
     async def handle(self, msg: object) -> None:
         match msg:
-            case SetSegment(segment, ao, do):
-                problem = self._validate(segment, ao, do)
+            case SetWaveform(waveform, ao, do):
+                problem = self._validate(waveform, ao, do)
                 if problem is not None:
                     self._reject(problem)
                     return
-                self._segments[segment] = (np.asarray(ao, dtype=float), np.asarray(do, dtype=bool))
-                if segment is Segment.MAIN:
+                self._waveforms[waveform] = (np.asarray(ao, dtype=float), np.asarray(do, dtype=bool))
+                if waveform is Waveform.MAIN:
                     # "This, now": an adjustment never waits behind a sequence.
                     self._main_tag = None
                     self._main_version += 1
-                    self._discard("replaced by SetSegment")
+                    self._discard("replaced by SetWaveform")
                 self.reply(Accepted())
             case QueueMain(tag, ao, do):
-                problem = self._validate(Segment.MAIN, ao, do)
+                problem = self._validate(Waveform.MAIN, ao, do)
                 if problem is None and len(self._pending) >= self.queue_limit:
                     problem = f"the queue is full ({self.queue_limit} waiting)"
                 if problem is not None:
@@ -119,8 +119,8 @@ class WaveformSource(TimingSource):
     # --- phase hooks ----------------------------------------------------------
 
     async def arm(self, root_filename: str, cycles: int) -> None:
-        if self._segments[Segment.MAIN] is None and not self._pending:
-            raise NotReady("no MAIN segment has been set")
+        if self._waveforms[Waveform.MAIN] is None and not self._pending:
+            raise NotReady("no MAIN waveform has been set")
         await self.output.arm()
         self._started = False
         self._queued = 0
@@ -132,22 +132,22 @@ class WaveformSource(TimingSource):
         await self.output.stop()
 
     async def warmup(self) -> None:
-        await self._commit("warmup", self._segments[Segment.WARMUP])
+        await self._commit("warmup", self._waveforms[Waveform.WARMUP])
 
     async def run_cycle(self) -> None:
         if self._pending:
-            self._main_tag, self._segments[Segment.MAIN] = self._pending.popleft()
+            self._main_tag, self._waveforms[Waveform.MAIN] = self._pending.popleft()
             self._main_version += 1
         if self._main_version != self._reported_version:
             self.publish(MainApplied(self._main_tag, self._cycle, self._queued))
             self._reported_version = self._main_version
-        await self._commit("main", self._segments[Segment.MAIN])
+        await self._commit("main", self._waveforms[Waveform.MAIN])
         self._cycle += 1
         await self._start_if_queued()
 
     async def cooldown(self) -> None:
         self._discard("the acquisition ended")
-        await self._commit("cooldown", self._segments[Segment.COOLDOWN])
+        await self._commit("cooldown", self._waveforms[Waveform.COOLDOWN])
         await self._start_if_queued()
 
     async def drain(self) -> None:
@@ -157,14 +157,14 @@ class WaveformSource(TimingSource):
 
     # --- internals ---------------------------------------------------------------
 
-    async def _commit(self, label: str, waveform: Waveform) -> None:
-        ao, do = waveform  # captured once: a SetSegment cannot change it mid-write
+    async def _commit(self, label: str, samples: Samples) -> None:
+        ao, do = samples  # captured once: a SetWaveform cannot change it mid-write
         n = ao.shape[1]
         # The hardware buffer is kept small on purpose: waiting for room in it
         # is the backpressure that paces this loop, and its depth is all that
         # can queue ahead of a MAIN update. So the margin is thin, and is
         # topped up a step at a time as it plays. Waiting for room for the
-        # rest of the segment instead -- for a segment longer than the buffer,
+        # rest of the waveform instead -- for a waveform longer than the buffer,
         # for the buffer to empty -- spends the margin on every cycle.
         step = max(1, self.config.buffer_samples // REFILL_STEPS)
         written = 0
@@ -196,7 +196,7 @@ class WaveformSource(TimingSource):
         await self.output.go()
         self._started = True
 
-    def _validate(self, segment: Segment, ao: np.ndarray, do: np.ndarray) -> str | None:
+    def _validate(self, waveform: Waveform, ao: np.ndarray, do: np.ndarray) -> str | None:
         n_ao, n_do = len(self.config.ao), len(self.config.do)
         if ao.ndim != 2 or ao.shape[0] != n_ao:
             return f"AO must be {n_ao} channels × samples, got shape {ao.shape}"
@@ -208,6 +208,6 @@ class WaveformSource(TimingSource):
             return f"AO must be real-valued, got {ao.dtype}"
         if do.dtype != bool and not (np.issubdtype(do.dtype, np.integer) and np.isin(do, (0, 1)).all()):
             return f"DO must be boolean or 0/1, got {do.dtype}"
-        if segment is Segment.MAIN and ao.shape[1] == 0:
+        if waveform is Waveform.MAIN and ao.shape[1] == 0:
             return "MAIN must not be empty: it defines the cycle"
         return None

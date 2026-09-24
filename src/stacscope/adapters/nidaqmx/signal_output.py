@@ -217,7 +217,7 @@ class NiSignalOutput:
 
     async def write(self, ao, do, *, label: str | None = None) -> None:
         """``label`` is for diagnostics on our side and never reaches the
-        driver, which has no notion of where one segment ends.
+        driver, which has no notion of where one waveform ends.
 
         Sample values are passed through untouched. What an analog line drives
         and what it may safely be driven to are the instrument's business, set
@@ -506,7 +506,7 @@ def _for_driver(samples):
     two-dimensional one for a task with a single channel. The port speaks
     channels x n whatever the count, so the difference is absorbed here.
     nidaqmx's ctypes layer also refuses an array that is not C-contiguous,
-    and a chunk of a segment -- columns sliced out of it -- is not. The copy
+    and a chunk of a waveform -- columns sliced out of it -- is not. The copy
     that makes it so is what a contiguous array skips.
     """
     return np.ascontiguousarray(samples[0] if samples.shape[0] == 1 else samples)

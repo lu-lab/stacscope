@@ -59,7 +59,7 @@ async def test_an_edge_fires_when_its_sample_plays():
 
 
 async def test_nothing_fires_before_output_starts():
-    """Segments are written during the pre-roll, while the board is idle."""
+    """Waveforms are written during the pre-roll, while the board is idle."""
     rig = Rig()
     await rig.configure()
     rig.watch("camera_trigger")

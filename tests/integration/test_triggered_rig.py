@@ -29,9 +29,9 @@ from stacscope.core.ports import Channel, OutputConfig
 from stacscope.core.protocol import (
     AcquisitionStarted,
     Phase,
-    Segment,
-    SetSegment,
+    SetWaveform,
     StartAcquisition,
+    Waveform,
 )
 from stacscope.core.timing import Coordinator, CoordinatorState, DeviceSpec, WaveformSource
 
@@ -50,7 +50,7 @@ CYCLES = 3
 PER_CYCLE = 2  # camera pulses per MAIN cycle
 
 
-def segment(n, *, camera_pulses=0):
+def samples(n, *, camera_pulses=0):
     ao = np.zeros((1, n))
     do = np.zeros((2, n), dtype=bool)
     if camera_pulses:
@@ -95,16 +95,16 @@ class System:
     def request(self, ref, msg):
         return asyncio.create_task(ask(ref, msg, timeout=100.0, clock=self.clock))
 
-    async def load_segments(self):
+    async def load_waveforms(self):
         await self.clock.advance(0)
         source = self.coordinator.source
-        segments = [
-            (Segment.WARMUP, segment(4)),
-            (Segment.MAIN, segment(8, camera_pulses=PER_CYCLE)),
-            (Segment.COOLDOWN, segment(4)),
+        waveforms = [
+            (Waveform.WARMUP, samples(4)),
+            (Waveform.MAIN, samples(8, camera_pulses=PER_CYCLE)),
+            (Waveform.COOLDOWN, samples(4)),
         ]
-        for name, (ao, do) in segments:
-            reply = self.request(source, SetSegment(name, ao, do))
+        for name, (ao, do) in waveforms:
+            reply = self.request(source, SetWaveform(name, ao, do))
             await self.clock.advance(0)
             assert await reply == Accepted()
 
@@ -116,7 +116,7 @@ class System:
 
 async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitted():
     system = System()
-    await system.load_segments()
+    await system.load_waveforms()
 
     starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
     await system.clock.advance(0.5)
@@ -147,7 +147,7 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
 
 async def test_d12_nothing_is_produced_before_go_or_after_the_stop():
     system = System()
-    await system.load_segments()
+    await system.load_waveforms()
 
     starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
     await system.clock.advance(0)
@@ -164,7 +164,7 @@ async def test_d12_nothing_is_produced_before_go_or_after_the_stop():
 
 async def test_d12_the_software_timed_device_runs_against_the_same_acquisition():
     system = System()
-    await system.load_segments()
+    await system.load_waveforms()
 
     starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
     await system.clock.advance(0.5)
@@ -185,7 +185,7 @@ async def test_d12_a_second_acquisition_counts_its_own_triggers():
     """Nothing carries over: not the bus's idea of which lines were high, not
     the drawing, not the acquisition id a consumer reads."""
     system = System()
-    await system.load_segments()
+    await system.load_waveforms()
 
     for acquisition in (1, 2):
         starting = system.request(system.ref, StartAcquisition(CYCLES, f"run-0{acquisition}"))

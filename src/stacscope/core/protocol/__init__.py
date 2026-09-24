@@ -13,14 +13,14 @@ from stacscope.core.protocol.messages import (
     Phase,
     QueueMain,
     Relaunch,
-    Segment,
-    SetSegment,
+    SetWaveform,
     SourceFinished,
     SourcePhase,
     StartAcquisition,
     StartDevice,
     StopAcquisition,
     StopDevice,
+    Waveform,
 )
 from stacscope.core.protocol.registry import MESSAGES, MessageRegistry, message
 
@@ -39,13 +39,13 @@ __all__ = [
     "Phase",
     "QueueMain",
     "Relaunch",
-    "Segment",
-    "SetSegment",
+    "SetWaveform",
     "SourceFinished",
     "SourcePhase",
     "StartAcquisition",
     "StartDevice",
     "StopAcquisition",
     "StopDevice",
+    "Waveform",
     "message",
 ]

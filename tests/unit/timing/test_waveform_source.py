@@ -2,7 +2,7 @@
 
 The simulated output records what it played, sample by sample, on a virtual
 clock. A "gap" is an underflow: the output running dry before the next
-segment was committed.
+waveform was committed.
 """
 
 import asyncio
@@ -30,12 +30,12 @@ from stacscope.core.protocol import (
     MainDiscarded,
     Phase,
     QueueMain,
-    Segment,
-    SetSegment,
+    SetWaveform,
     SourceFinished,
     SourcePhase,
     StartDevice,
     StopDevice,
+    Waveform,
 )
 from stacscope.core.timing import WaveformSource
 
@@ -122,9 +122,9 @@ class Rig:
         return await ask(self.ref, msg, timeout=timeout, clock=self.clock)
 
     async def load(self, main_value=1.0):
-        for segment, value in [(Segment.WARMUP, 0.5), (Segment.MAIN, main_value), (Segment.COOLDOWN, 0.0)]:
-            ao, do = waveform(self.lengths[segment.value], value, ueye=segment is Segment.MAIN)
-            assert await self.ask(SetSegment(segment, ao, do)) == Accepted()
+        for which, value in [(Waveform.WARMUP, 0.5), (Waveform.MAIN, main_value), (Waveform.COOLDOWN, 0.0)]:
+            ao, do = waveform(self.lengths[which.value], value, ueye=which is Waveform.MAIN)
+            assert await self.ask(SetWaveform(which, ao, do)) == Accepted()
 
     async def go(self, cycles):
         await self.load()
@@ -190,7 +190,7 @@ async def test_w1_drain_waits_for_the_cooldown_to_actually_play():
 # --- W2 ------------------------------------------------------------------------
 
 
-async def test_w2_n_cycles_emit_exactly_n_main_segments():
+async def test_w2_n_cycles_emit_exactly_n_main_waveforms():
     for cycles in (1, 2, 5):
         rig = Rig()
         await rig.go(cycles=cycles)
@@ -275,7 +275,7 @@ async def test_w6_a_main_update_mid_run_lands_on_a_cycle_boundary():
     await rig.clock.advance(1.25)  # inside a cycle
 
     ao, do = waveform(8, 2.0, ueye=True)
-    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, ao, do), timeout=10.0))
+    updating = asyncio.create_task(rig.ask(SetWaveform(Waveform.MAIN, ao, do), timeout=10.0))
     await rig.clock.advance(1.0)  # the source is mid-cycle until t = 2.0
     assert await updating == Accepted()
     await rig.clock.advance(2.0)
@@ -300,12 +300,12 @@ async def test_w7_the_refill_keeps_the_buffer_topped_up(main, buffer):
     loop back, and it bounds how stale the queued output can get (W8). The
     price is a thin margin, so the loop must top it up in small steps as it
     plays, never let it run down and then refill in one go. Waiting for room
-    for a whole segment -- or, for a segment longer than the buffer, for the
+    for a whole waveform -- or, for a waveform longer than the buffer, for the
     buffer to empty -- spends the margin on every cycle, and a refill that is
     then late by a little is an underflow.
 
     The legacy engine got this from the driver: one blocking write per
-    segment, which DAQmx feeds in as room appears."""
+    waveform, which DAQmx feeds in as room appears."""
     rig = Rig(main=main, buffer=buffer)
     await rig.go(cycles=4)
     await rig.clock.advance(30.0)
@@ -326,7 +326,7 @@ async def test_w8_an_update_plays_within_one_buffer_of_being_accepted():
     await rig.clock.advance(1.25)
 
     accepted = []
-    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, *waveform(8, 2.0, ueye=True)), timeout=10.0))
+    updating = asyncio.create_task(rig.ask(SetWaveform(Waveform.MAIN, *waveform(8, 2.0, ueye=True)), timeout=10.0))
     updating.add_done_callback(lambda _: accepted.append(rig.clock.now()))
     await rig.clock.advance(6.0)
     rig.ref.tell(Finish(), Priority.URGENT)
@@ -392,8 +392,8 @@ async def test_w9_a_queued_main_may_differ_in_length():
     assert rig.output.underflow is None
 
 
-async def test_w10_set_segment_during_a_sequence_clears_it_and_lands_next():
-    """The first-class use keeps priority. A ``SetSegment`` means "this, now":
+async def test_w10_set_waveform_during_a_sequence_clears_it_and_lands_next():
+    """The first-class use keeps priority. A ``SetWaveform`` means "this, now":
     the user's adjustment must not wait behind a sweep, so it empties the
     queue and plays at the next cycle boundary, within one buffer (W8). What
     was dropped is reported by tag, so the sender knows those steps never
@@ -407,7 +407,7 @@ async def test_w10_set_segment_during_a_sequence_clears_it_and_lands_next():
     await rig.clock.advance(2.25)  # inside the second cycle
 
     accepted = []
-    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, *waveform(8, 9.0, ueye=True)), timeout=10.0))
+    updating = asyncio.create_task(rig.ask(SetWaveform(Waveform.MAIN, *waveform(8, 9.0, ueye=True)), timeout=10.0))
     updating.add_done_callback(lambda _: accepted.append(rig.clock.now()))
     await rig.clock.advance(4.0)
     rig.ref.tell(Finish(), Priority.URGENT)
@@ -428,7 +428,7 @@ async def test_w11_each_new_main_is_reported_with_its_cycle_and_first_sample():
     waveform was live on which volume. Published as the source takes it, with
     the cycle's index in this acquisition and the index of its first sample in
     the output, from the first sample of warmup -- which, over the rate, is
-    when it plays. A ``SetSegment`` change is reported too, untagged; a
+    when it plays. A ``SetWaveform`` change is reported too, untagged; a
     repeated MAIN is not reported again."""
     rig = Rig()
     await rig.load(main_value=1.0)
@@ -437,7 +437,7 @@ async def test_w11_each_new_main_is_reported_with_its_cycle_and_first_sample():
     assert await rig.ask(StartDevice("run-01", 4)) == DeviceReady()
     rig.ref.tell(Go())
     await rig.clock.advance(1.5)
-    updating = asyncio.create_task(rig.ask(SetSegment(Segment.MAIN, *waveform(8, 5.0, ueye=True)), timeout=10.0))
+    updating = asyncio.create_task(rig.ask(SetWaveform(Waveform.MAIN, *waveform(8, 5.0, ueye=True)), timeout=10.0))
     await rig.clock.advance(20.0)
     assert await updating == Accepted()
 
@@ -538,23 +538,23 @@ async def test_a_queued_main_alone_is_enough_to_arm():
 # --- validation --------------------------------------------------------------------
 
 
-async def test_segments_must_match_the_configured_channels():
+async def test_waveforms_must_match_the_configured_channels():
     rig = Rig()
     ao, do = waveform(8, 1.0)
 
-    assert isinstance(await rig.ask(SetSegment(Segment.MAIN, ao[:1], do)), Rejected)
-    assert isinstance(await rig.ask(SetSegment(Segment.MAIN, ao, do[:, :7])), Rejected)
-    assert isinstance(await rig.ask(SetSegment(Segment.MAIN, *waveform(0, 1.0))), Rejected)
+    assert isinstance(await rig.ask(SetWaveform(Waveform.MAIN, ao[:1], do)), Rejected)
+    assert isinstance(await rig.ask(SetWaveform(Waveform.MAIN, ao, do[:, :7])), Rejected)
+    assert isinstance(await rig.ask(SetWaveform(Waveform.MAIN, *waveform(0, 1.0))), Rejected)
 
 
-async def test_arming_without_a_main_segment_is_rejected():
+async def test_arming_without_a_main_waveform_is_rejected():
     rig = Rig()
 
     assert isinstance(await rig.ask(StartDevice("run-01", 1)), Rejected)
     assert rig.source.phase is Phase.IDLE
 
 
-async def test_a_segment_longer_than_the_buffer_is_written_in_chunks():
+async def test_a_waveform_longer_than_the_buffer_is_written_in_chunks():
     rig = Rig(main=20, buffer=12)
     await rig.go(cycles=2)
     await rig.clock.advance(20.0)

@@ -201,7 +201,7 @@ class FakeTask:
         smallest real configuration there is.
         """
         # And, found on Dev1-sim, the ctypes layer refuses an array that is not
-        # C-contiguous -- such as a slice of a segment's columns, which is
+        # C-contiguous -- such as a slice of a waveform's columns, which is
         # what a chunked write hands over -- before the driver sees it.
         if not data.flags.c_contiguous:
             raise ctypes.ArgumentError("argument 6: TypeError: array must have flags ['C_CONTIGUOUS']")

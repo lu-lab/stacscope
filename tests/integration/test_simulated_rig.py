@@ -12,10 +12,10 @@ from stacscope.core.ports import Channel, OutputConfig
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
-    Segment,
-    SetSegment,
+    SetWaveform,
     StartAcquisition,
     StopAcquisition,
+    Waveform,
 )
 from stacscope.core.timing import Coordinator, CoordinatorState, DeviceSpec, WaveformSource
 
@@ -52,21 +52,21 @@ class System:
     def request(self, ref, msg):
         return asyncio.create_task(ask(ref, msg, timeout=100.0, clock=self.clock))
 
-    async def load_segments(self):
+    async def load_waveforms(self):
         """A client talks to the source directly for waveforms, not via the Coordinator."""
         await self.clock.advance(0)
         source = self.coordinator.source
-        for segment, n in [(Segment.WARMUP, 4), (Segment.MAIN, 8), (Segment.COOLDOWN, 4)]:
+        for waveform, n in [(Waveform.WARMUP, 4), (Waveform.MAIN, 8), (Waveform.COOLDOWN, 4)]:
             do = np.zeros((2, n), dtype=bool)
             do[:, 0] = True
-            reply = self.request(source, SetSegment(segment, np.zeros((1, n)), do))
+            reply = self.request(source, SetWaveform(waveform, np.zeros((1, n)), do))
             await self.clock.advance(0)
             assert await reply == Accepted()
 
 
 async def test_a_full_acquisition_end_to_end():
     system = System()
-    await system.load_segments()
+    await system.load_waveforms()
 
     starting = system.request(system.ref, StartAcquisition(-1, "run-01"))
     await system.clock.advance(1.0)
@@ -88,7 +88,7 @@ async def test_a_full_acquisition_end_to_end():
 
 async def test_an_underflow_faults_the_whole_system_and_stops_the_camera():
     system = System()
-    await system.load_segments()
+    await system.load_waveforms()
     starting = system.request(system.ref, StartAcquisition(-1, "run-01"))
     await system.clock.advance(1.0)
     assert await starting == AcquisitionStarted()

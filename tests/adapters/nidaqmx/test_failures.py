@@ -66,8 +66,8 @@ async def test_the_samples_reach_the_driver_exactly_as_given(output, daq):
     np.testing.assert_array_equal(daq.task("do").written[0], do)
 
 
-async def test_a_chunk_cut_from_a_longer_segment_reaches_the_driver(output, daq):
-    """A refill writes a segment a piece at a time, as columns sliced out of
+async def test_a_chunk_cut_from_a_longer_waveform_reaches_the_driver(output, daq):
+    """A refill writes a waveform a piece at a time, as columns sliced out of
     it, and such a slice is not contiguous in memory. The port takes any
     array; the driver's ctypes layer refuses that one. Found on Dev1-sim,
     the first time the real ``WaveformSource`` drove the adapter."""
@@ -79,9 +79,9 @@ async def test_a_chunk_cut_from_a_longer_segment_reaches_the_driver(output, daq)
     np.testing.assert_array_equal(daq.task("do").written[0], do[:, 8:24])
 
 
-async def test_the_segment_label_never_reaches_the_driver(output, daq):
+async def test_the_waveform_label_never_reaches_the_driver(output, daq):
     """N5, second half. The label is ours, for diagnostics; DAQmx has no
-    notion of where one segment ends and the next begins."""
+    notion of where one waveform ends and the next begins."""
     await output.write(*ramp(8), label="COOLDOWN")
 
     assert "COOLDOWN" not in repr(daq.log)
@@ -298,8 +298,8 @@ async def test_draining_waits_for_the_digital_task_too(playing, daq, clock):
 async def test_draining_waits_for_what_was_written_to_play(playing, daq, clock):
     """N8. Draining is the wait for the samples we wrote to have been
     generated, and nothing shorter. What it must not be is a fixed pause or an
-    immediate return: either would cut the tail off the last segment, and the
-    last segment is the one that parks the scanners and drops the laser."""
+    immediate return: either would cut the tail off the last waveform, and the
+    last waveform is the one that parks the scanners and drops the laser."""
     draining = asyncio.create_task(playing.drain())
     await clock.advance(0.01)
     assert not draining.done()

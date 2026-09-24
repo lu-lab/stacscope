@@ -143,9 +143,10 @@ class SourceFinished:
 # --- client → WaveformSource, directly (never through the Coordinator) ---------
 
 
-class Segment(Enum):
-    """The three waveform segments an AO source holds. Not called "buffers":
-    that word is reserved for the data flow."""
+class Waveform(Enum):
+    """The three waveforms an AO source holds: WARMUP plays once, MAIN once
+    per cycle, COOLDOWN once. Not called "phases": ``Phase`` is the
+    acquisition's state, and RUN may play several MAINs."""
 
     WARMUP = "warmup"
     MAIN = "main"
@@ -154,13 +155,13 @@ class Segment(Enum):
 
 @message
 @dataclass(frozen=True, slots=True, eq=False)
-class SetSegment:
-    """Replace a segment. ``ao`` is AO channels × samples in volts; ``do`` is
+class SetWaveform:
+    """Replace a waveform. ``ao`` is AO channels × samples in volts; ``do`` is
     DO lines × samples, boolean; both in the configured channel order and the
     same length. A MAIN update mid-run takes effect at the next cycle boundary.
     Replied ``Accepted`` or ``Rejected``."""
 
-    segment: Segment
+    waveform: Waveform
     ao: np.ndarray
     do: np.ndarray
 
@@ -171,10 +172,10 @@ class QueueMain:
     """Queue a MAIN to play for exactly one cycle, after any already queued.
     When the queue runs out, the last MAIN taken keeps playing. ``tag`` is
     the caller's name for it, echoed in ``MainApplied`` and ``MainDiscarded``.
-    ``ao`` and ``do`` are as for ``SetSegment``; the length need not match
+    ``ao`` and ``do`` are as for ``SetWaveform``; the length need not match
     the current MAIN's, and the samples are played exactly as given.
 
-    A ``SetSegment`` of MAIN empties the queue. So does the end of an
+    A ``SetWaveform`` of MAIN empties the queue. So does the end of an
     acquisition: nothing queued for one acquisition plays in the next. Either
     way the dropped tags are published in ``MainDiscarded``.
 
@@ -191,7 +192,7 @@ class QueueMain:
 class MainApplied:
     """Published by a waveform source when a different MAIN is taken for a
     cycle, and for the first cycle of every acquisition. ``tag`` is the
-    ``QueueMain`` tag, or ``None`` for a MAIN set by ``SetSegment``.
+    ``QueueMain`` tag, or ``None`` for a MAIN set by ``SetWaveform``.
     ``cycle`` counts MAIN cycles from 0 in this acquisition; ``sample`` is
     the index of the cycle's first sample in the acquisition's output,
     counting from the first sample of warmup, so it plays ``sample / rate``

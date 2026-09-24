@@ -29,7 +29,7 @@ from stacscope.core.ports import Clock, OutputConfig
 class TriggerBus:
     """Rising edges on the output's DO lines, delivered as they play.
 
-    Edges are worked out when a segment is written, which is before it plays,
+    Edges are worked out when a waveform is written, which is before it plays,
     and become callbacks only once output has started — the pre-roll is written
     while the board is still idle. A stop drops whatever has not played yet.
 

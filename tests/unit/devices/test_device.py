@@ -137,10 +137,10 @@ async def test_a_device_that_was_stopped_can_be_started_again():
 
 
 async def test_a_refused_arm_is_rejected_and_the_device_stays_usable():
-    rig = Rig(refuse="no MAIN segment set")
+    rig = Rig(refuse="no MAIN waveform set")
 
     reply = await rig.start()
-    assert reply == Rejected("no MAIN segment set")
+    assert reply == Rejected("no MAIN waveform set")
     assert rig.device.state is DeviceState.IDLE
     assert rig.listener.faults() == [], "a refusal is an answer, not a fault"
 
@@ -165,12 +165,12 @@ async def test_an_unexpected_arm_failure_is_answered_and_published_as_fatal():
 
 
 async def test_a_told_start_that_fails_is_published_rather_than_lost():
-    rig = Rig(refuse="no MAIN segment set")
+    rig = Rig(refuse="no MAIN waveform set")
     rig.ref.tell(StartDevice("run-01", 3))
     await rig.clock.advance(0)
 
     (fault,) = rig.listener.faults()
-    assert "no MAIN segment set" in fault.reason
+    assert "no MAIN waveform set" in fault.reason
 
 
 # --- D3: release on death -----------------------------------------------------

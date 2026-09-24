@@ -13,7 +13,7 @@ What it answers, from the architecture plan's Step 3:
       wait_until_done was compared here too, and never returns on this
       board; see the plan.)
   H3  Refilling by polling for space (the adapter) against one blocking write
-      per segment (the legacy engine): what each costs in CPU.
+      per waveform (the legacy engine): what each costs in CPU.
   H4  What the saved tasks load with for data transfer, and whether setting
       DMA changes anything measurable.
   H5  How small the hardware buffer can be. The real WaveformSource drives
@@ -81,9 +81,9 @@ from stacscope.core.protocol import (
     MainApplied,
     Phase,
     QueueMain,
-    Segment,
-    SetSegment,
+    SetWaveform,
     StartDevice,
+    Waveform,
 )
 from stacscope.core.timing import WaveformSource
 
@@ -99,8 +99,8 @@ BUFFER = 100_000
 TIGHT = 10_000
 """100 ms: where a slow refill would show up first."""
 
-SEGMENT = 2_000
-"""20 ms per refill, the cadence of a short segment."""
+REFILL = 2_000
+"""20 ms per refill, the cadence of a short waveform."""
 
 STREAM_SECONDS = 4.0
 TOLERANCE = 0.15
@@ -279,7 +279,7 @@ async def test_h1_a_late_write_reports_running_dry(make_output, report):
     output = await make_output()
     await ran_dry(output)
 
-    underflow = await underflow_from(lambda: output.write(*zeros(SEGMENT)), report)
+    underflow = await underflow_from(lambda: output.write(*zeros(REFILL)), report)
 
     assert underflow.at == pytest.approx(BUFFER / RATE, rel=TOLERANCE)
 
@@ -319,16 +319,16 @@ async def test_h1_what_the_driver_says_after_running_dry(report):
         probe("DO is_task_done", do.is_task_done)
         probe("AO space_avail again", lambda: ao.out_stream.space_avail)
         probe("AO write while stopped by the driver",
-              lambda: ao.write(np.zeros((5, SEGMENT)), auto_start=False))
+              lambda: ao.write(np.zeros((5, REFILL)), auto_start=False))
         probe("AO stop", ao.stop)
         probe("AO stop again", ao.stop)
         probe("DO stop", do.stop)
         probe("DO stop again", do.stop)
         probe("AO space_avail after stop", lambda: ao.out_stream.space_avail)
         probe("DO write after stop",
-              lambda: do.write(np.zeros((3, SEGMENT), dtype=bool), auto_start=False))
+              lambda: do.write(np.zeros((3, REFILL), dtype=bool), auto_start=False))
         probe("AO write after stop",
-              lambda: ao.write(np.zeros((5, SEGMENT)), auto_start=False))
+              lambda: ao.write(np.zeros((5, REFILL)), auto_start=False))
         probe("DO start again", do.start)
         probe("AO start again", ao.start)
         await asyncio.sleep(0.1)
@@ -434,8 +434,8 @@ async def test_h1_how_free_space_reads_as_output_runs_dry(report, fill, watch):
         if fill == "kept-fed":
             until_left = time.monotonic() + 0.5
             while time.monotonic() < until_left:
-                await output.wait_for_space(SEGMENT)
-                await output.write(*zeros(SEGMENT))
+                await output.wait_for_space(REFILL)
+                await output.write(*zeros(REFILL))
         # From here on nothing is written, and the loop blocks: nothing else
         # runs in this test, and a sleep would blur the times by the Windows
         # timer's 16 ms.
@@ -508,26 +508,26 @@ async def test_h2_drain_ends_when_output_does(make_output, report):
 
 
 async def stream(output, refill: str) -> tuple[float, int]:
-    """Pre-fill, start, and feed ``STREAM_SECONDS`` of zeros a segment at a
+    """Pre-fill, start, and feed ``STREAM_SECONDS`` of zeros a waveform at a
     time. Returns the process's CPU time as a fraction of wall time while
     streaming, and the number of refills. Running dry raises."""
     # (The first run also reported the fill just after each refill. That is
     # full by construction, so it measured nothing; H5 measures the margin,
     # just before each refill.)
-    while output.space_available() >= SEGMENT:
-        await output.write(*zeros(SEGMENT))
+    while output.space_available() >= REFILL:
+        await output.write(*zeros(REFILL))
     await output.go()
 
-    refills = int(STREAM_SECONDS * RATE / SEGMENT)
+    refills = int(STREAM_SECONDS * RATE / REFILL)
     wall, cpu = time.monotonic(), time.process_time()
     for _ in range(refills):
         if refill == "polled":
-            await output.wait_for_space(SEGMENT)
-            await output.write(*zeros(SEGMENT))
+            await output.wait_for_space(REFILL)
+            await output.write(*zeros(REFILL))
         else:
-            # The legacy engine's refill: one write per segment, left to block
+            # The legacy engine's refill: one write per waveform, left to block
             # inside the driver until there is room for all of it.
-            ao, do = zeros(SEGMENT)
+            ao, do = zeros(REFILL)
             output._ao.write(ao, auto_start=False, timeout=10.0)
             output._do.write(do, auto_start=False, timeout=10.0)
     output.space_available()  # raises Underflow if it ran dry on the way
@@ -539,14 +539,14 @@ async def stream(output, refill: str) -> tuple[float, int]:
 @pytest.mark.parametrize("refill", ["polled", "blocking"])
 async def test_h3_refill(make_output, report, refill, buffer):
     """H3. The adapter polls ``space_avail`` every millisecond; the legacy
-    engine blocked in one write per segment. Both must keep the board fed at
+    engine blocked in one write per waveform. Both must keep the board fed at
     100 kS/s without running dry. CPU time is what the refill cost, driver
     included."""
     output = await make_output(buffer)
 
     load, refills = await stream(output, refill)
 
-    report(f"{refills} refills of {SEGMENT}, no gap, CPU {load:.1%} of one core")
+    report(f"{refills} refills of {REFILL}, no gap, CPU {load:.1%} of one core")
 
 
 @pytest.mark.parametrize("mechanism", ["as-loaded", "DMA"])
@@ -590,7 +590,7 @@ async def test_h4_data_transfer(make_output, report, mechanism):
 
 MAIN = 5_000
 """50 ms, a frame at 20 fps. Longer than the smaller buffers in the sweep, so
-the chunked refill of a long segment is exercised too."""
+the chunked refill of a long waveform is exercised too."""
 
 LONG_MAIN = 30_000
 """300 ms, the longest volume the instrument has used."""
@@ -689,8 +689,8 @@ async def drive(buffer: int, main: int, seconds: float, during=None, *, queue=()
     beside = []
     try:
         await asyncio.wait_for(source.started.wait(), timeout=5.0)
-        for segment, n in ((Segment.WARMUP, main), (Segment.MAIN, main), (Segment.COOLDOWN, SEGMENT)):
-            assert await ask(ref, SetSegment(segment, *zeros(n)), timeout=5.0) == Accepted()
+        for waveform, n in ((Waveform.WARMUP, main), (Waveform.MAIN, main), (Waveform.COOLDOWN, REFILL)):
+            assert await ask(ref, SetWaveform(waveform, *zeros(n)), timeout=5.0) == Accepted()
         for tag, n in queue:
             assert await ask(ref, QueueMain(tag, *zeros(n)), timeout=5.0) == Accepted()
         assert await ask(ref, StartDevice("board", -1), timeout=5.0) == DeviceReady()
@@ -751,7 +751,7 @@ async def test_h5_how_small_the_buffer_can_be(report, buffer):
         ao, do = zeros(MAIN)
         ao[:] = -0.0
         sent.append(time.monotonic())
-        assert await ask(ref, SetSegment(Segment.MAIN, ao, do), timeout=5.0) == Accepted()
+        assert await ask(ref, SetWaveform(Waveform.MAIN, ao, do), timeout=5.0) == Accepted()
 
     run = await drive(buffer, MAIN, STREAM_SECONDS, update)
 
@@ -791,7 +791,7 @@ async def test_h6_update_latency_across_the_cycle(report, main):
         for _ in range(updates):
             await asyncio.sleep(main / RATE * random.uniform(1.6, 2.6))
             sent.append(time.monotonic())
-            assert await ask(ref, SetSegment(Segment.MAIN, *zeros(main)), timeout=5.0) == Accepted()
+            assert await ask(ref, SetWaveform(Waveform.MAIN, *zeros(main)), timeout=5.0) == Accepted()
 
     seconds = updates * (main / RATE * 2.6 + 0.05) + 0.5
     run = await drive(FLOOR, main, seconds, send)
@@ -1009,7 +1009,7 @@ async def test_h10_the_last_digital_samples_reach_the_pin(report, buffer, total)
         await output.write(ao[:, :at], do[:, :at])
         await output.go()
         while at < total:
-            n = min(SEGMENT, total - at)
+            n = min(REFILL, total - at)
             await output.wait_for_space(n)
             await output.write(ao[:, at:at + n], do[:, at:at + n])
             at += n

@@ -57,7 +57,7 @@ class SignalOutput(Protocol):
     async def write(self, ao: np.ndarray, do: np.ndarray, *, label: str | None = None) -> None:
         """Queue ``ao`` (channels × n, volts) and ``do`` (lines × n, bool).
         ``n`` must not exceed ``space_available()``. ``label`` marks the start
-        of a segment, for diagnostics. Raises ``Underflow`` if it occurred."""
+        of a waveform, for diagnostics. Raises ``Underflow`` if it occurred."""
         ...
 
     async def go(self) -> None:

@@ -161,18 +161,28 @@ class _Mapped:
         """The slot holding global frame ``index`` in the current acquisition."""
         return (index - self.acquisition_start) % self._layout.n_slots
 
+    def _bytes(self) -> np.ndarray:
+        """The whole segment as bytes. Build every view from this."""
+        # np.frombuffer holds a buffer export for as long as it, or any view
+        # derived from it, lives, so SharedMemory.close() raises BufferError
+        # while a caller holds one. np.ndarray(buffer=self._shm.buf) keeps
+        # only a reference to the mmap and releases the export, so the close
+        # went through and unmapped the memory under live views: the next
+        # touch was an access violation.
+        return np.frombuffer(self._shm.buf, np.uint8)
+
     def _map(self, layout: ResolvedLayout, *, writable: bool):
         data_offset = header.read(self._shm.buf, "data_offset")
         frames = np.ndarray(
             (layout.n_slots, *layout.shape),
             layout.dtype,
-            buffer=self._shm.buf,
+            buffer=self._bytes(),
             offset=data_offset + layout.frame_offset,
             strides=(layout.slot_bytes, *layout.strides),
         )
         frames.flags.writeable = writable
         meta = np.ndarray(
-            (layout.n_slots,), META_DTYPE, buffer=self._shm.buf, offset=header.read(self._shm.buf, "meta_offset")
+            (layout.n_slots,), META_DTYPE, buffer=self._bytes(), offset=header.read(self._shm.buf, "meta_offset")
         )
         meta.flags.writeable = writable
         self._layout = layout
@@ -232,7 +242,7 @@ class FrameWriter(_Mapped):
         self._acquiring = False
         self._map(resolved, writable=True)
         self.slots = np.ndarray(
-            (resolved.n_slots, resolved.slot_bytes), np.uint8, buffer=self._shm.buf, offset=data_offset
+            (resolved.n_slots, resolved.slot_bytes), np.uint8, buffer=self._bytes(), offset=data_offset
         )
 
     def start_acquisition(self) -> int:
@@ -279,6 +289,9 @@ class FrameWriter(_Mapped):
         self.slots = None
 
     def close(self) -> None:
+        """Unmap the segment and remove it. Raises ``BufferError`` while any
+        view into it (``frames``, ``slots``, ``meta``, or a slice of them) is
+        still alive; drop those and close again."""
         self._close()
         self._shm.unlink()
 
@@ -347,6 +360,9 @@ class FrameReader(_Mapped):
             raise LayoutError(f"image buffer version {version}, this reader speaks {VERSION}")
 
     def close(self) -> None:
+        """Unmap the segment, leaving it for the producer and other readers.
+        Raises ``BufferError`` while any view into it (``frames``, ``meta``, a
+        ``Frame`` or ``Group``) is still alive; drop those and close again."""
         self._close()
 
 

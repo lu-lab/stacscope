@@ -25,9 +25,10 @@ class Overrun(Exception):
 class Frame:
     """One frame: its global index, its acquisition, and a view of its pixels.
 
-    ``data`` is a view into shared memory, not a copy. Check
-    ``reader.still_valid(index)`` after using it to know it was not overwritten
-    meanwhile; ``data.copy()`` is the copy if one is wanted. ``meta`` is a copy
+    ``data`` is a view into shared memory, not a copy, and the reader cannot
+    close while it is alive. Check ``reader.still_valid(index)`` after using
+    it to know it was not overwritten meanwhile; ``data.copy()`` is the copy
+    if one is wanted. ``meta`` is a copy
     of the frame's metadata record (40 bytes).
     """
 

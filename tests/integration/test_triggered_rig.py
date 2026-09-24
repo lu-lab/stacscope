@@ -141,6 +141,7 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
         lit = set(np.flatnonzero(last.any(axis=0)).tolist())
         drawn = {(c + frames[-1].index) % SHAPE[1] for c in range(4)}  # the producer's bar
         assert lit == drawn, "the frame holds the picture that frame index should draw"
+        del frames, last  # views of the segment: the reader cannot close under them
     finally:
         reader.close()
 
@@ -205,5 +206,6 @@ async def test_d12_a_second_acquisition_counts_its_own_triggers():
         assert [f.meta["hw_frame"] for f in frames] == list(
             range(CYCLES * PER_CYCLE, 2 * CYCLES * PER_CYCLE)
         ), "the camera's own frame numbers run on across acquisitions"
+        del frames  # views of the segment: the reader cannot close under them
     finally:
         reader.close()

@@ -124,10 +124,14 @@ class _Buffers:
 
 
 @pytest.fixture
-def buffers():
-    """See ``_Buffers``. Whatever a test leaves open is closed after it."""
+async def buffers(rig):
+    """See ``_Buffers``. Whatever a test leaves open is closed after it, once
+    the capture has detached: the role's order, since memory an adapter still
+    holds cannot close. Requesting ``rig`` here sets it up first, so its own
+    teardown, which closes the capture, runs after this one."""
     made = _Buffers()
     yield made
+    await rig.capture.detach()
     made.close_all()
 
 

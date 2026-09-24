@@ -195,6 +195,58 @@ def test_a_reader_closing_leaves_the_segment_alone(make_writer, name):
     assert exists(name)
 
 
+# A view a caller can hold, and whose close it must block: every view the
+# buffer hands out, and what a Cursor builds from them.
+HELD = {
+    "writer frames": ("writer", lambda writer, reader: writer.frames),
+    "writer frame": ("writer", lambda writer, reader: writer.frames[1]),
+    "writer slots": ("writer", lambda writer, reader: writer.slots),
+    "writer slot": ("writer", lambda writer, reader: writer.slots[0]),
+    "writer meta": ("writer", lambda writer, reader: writer.meta),
+    "reader frames": ("reader", lambda writer, reader: reader.frames),
+    "reader meta": ("reader", lambda writer, reader: reader.meta),
+    "reader Frame": ("reader", lambda writer, reader: reader.cursor(0).latest()),
+    "reader Group": ("reader", lambda writer, reader: reader.cursor(0).latest_group(2)),
+}
+
+
+@pytest.mark.parametrize("closing, hold", HELD.values(), ids=HELD.keys())
+def test_closing_under_a_live_view_raises_instead_of_unmapping(name, closing, hold):
+    """Close with a view still alive raises ``BufferError`` and leaves the
+    segment mapped; dropping the view lets the next close through.
+
+    The alternative is worse than it looks: the segment is unmapped under the
+    view, and the next touch of it (a viewer redrawing, a consumer finishing a
+    frame) crashes the process with an access violation, with no traceback
+    pointing at the close. An error at the close names the mistake where it
+    was made. It is also what lets a test prove that something, a capture
+    adapter after ``detach`` say, kept no view: without it, closing the
+    segment proves nothing.
+
+    Never touches a view after a close that went through: on the red side
+    that is the crash itself."""
+    writer = ImageBuffer.create(name, capacity_bytes=1 << 16, max_slots=8)
+    reader = None
+    try:
+        writer.configure(LAYOUT)
+        writer.start_acquisition()
+        produce(writer, 2)
+        reader = ImageBuffer.open(name)
+        held = hold(writer, reader)
+        assert held is not None
+        side = writer if closing == "writer" else reader
+
+        with pytest.raises(BufferError):
+            side.close()
+        del held
+        side.close()
+    finally:
+        if reader is not None:
+            reader.close()
+        writer.close()
+    assert not exists(name)
+
+
 @pytest.mark.parametrize("bad", ["", "has space", "slash/name", "dash-name", "x" * 31, "ümlaut"])
 def test_names_outside_the_portable_set_are_refused(bad):
     with pytest.raises(ValueError):

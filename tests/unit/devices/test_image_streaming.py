@@ -145,6 +145,7 @@ async def test_a_consumer_follows_a_new_acquisition_without_reopening(rig):
         assert first == [0, 1]
         assert frame.acquisition_id == 2, "the consumer sees a new acquisition"
         assert frame.index == 2, "and a counter that never goes backwards"
+        del frame  # its pixels are a view: the reader cannot close under it
     finally:
         reader.close()
 
@@ -201,6 +202,7 @@ async def test_a_consumer_keeps_its_segment_across_a_stop(rig):
         await r.ask(StopDevice())
         frame = reader.cursor(0).next()
         assert (np.asarray(frame.data) == 0).all()
+        del frame  # its pixels are a view: the reader cannot close under it
     finally:
         reader.close()
 

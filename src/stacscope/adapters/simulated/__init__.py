@@ -4,6 +4,7 @@ from stacscope.adapters.simulated.camera import SimulatedCamera, SimulatedFreeRu
 from stacscope.adapters.simulated.clock import VirtualClock
 from stacscope.adapters.simulated.device import SimulatedDevice
 from stacscope.adapters.simulated.faulty import Fail, FaultyDevice
+from stacscope.adapters.simulated.frame_capture import SimulatedFrameCapture
 from stacscope.adapters.simulated.image_generator import TestImageGenerator
 from stacscope.adapters.simulated.link import SimulatedLink
 from stacscope.adapters.simulated.pressure_box import SimulatedPressureBox
@@ -16,6 +17,7 @@ __all__ = [
     "FaultyDevice",
     "SimulatedCamera",
     "SimulatedDevice",
+    "SimulatedFrameCapture",
     "SimulatedFreeRunningCamera",
     "SimulatedLink",
     "SimulatedPressureBox",

@@ -23,7 +23,36 @@ device knows what its hardware writes. The header carries all of it, so a
 consumer outside Python can read the buffer without asking anyone.
 """
 
-from stacscope.core.buffer import FrameWriter, ImageBuffer, Layout, Metadata
+import mmap
+
+from stacscope.core.buffer import FrameWriter, ImageBuffer, Layout, LayoutError, Metadata
+from stacscope.core.ports import FrameFormat
+
+
+def layout_for(fmt: FrameFormat, n_slots: int) -> Layout:
+    """The buffer layout for ``n_slots`` frames of ``fmt``: each slot holds
+    ``frame_bytes``, rounded up so every slot starts on ``slot_alignment``.
+
+    Raises ``LayoutError`` for an alignment that is not a power of two, or is
+    larger than a page, which is the most any segment guarantees.
+    """
+    alignment = fmt.slot_alignment
+    if alignment < 1 or alignment & (alignment - 1):
+        raise LayoutError(f"slot alignment {alignment} is not a power of two")
+    # The segment's slot area starts on a page boundary (ImageBuffer.create);
+    # nothing beyond that is promised on every OS, so a coarser alignment could
+    # not be honoured for the first slot.
+    if alignment > mmap.PAGESIZE:
+        raise LayoutError(f"slot alignment {alignment} exceeds the {mmap.PAGESIZE}-byte page")
+    return Layout(
+        shape=fmt.shape,
+        dtype=fmt.dtype,
+        n_slots=n_slots,
+        strides=fmt.strides,
+        frame_offset=fmt.frame_offset,
+        slot_bytes=-(-fmt.frame_bytes // alignment) * alignment,
+        in_flight=fmt.in_flight,
+    )
 
 
 class ImageStreaming:

@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from stacscope.core.buffer import FrameBuffer
+from stacscope.core.buffer import ImageBuffer
 
 MiB = 1 << 20
 
@@ -24,7 +24,7 @@ def make_writer(name):
     writers = []
 
     def make(capacity_bytes=4 * MiB, max_slots=16):
-        writer = FrameBuffer.create(name, capacity_bytes=capacity_bytes, max_slots=max_slots)
+        writer = ImageBuffer.create(name, capacity_bytes=capacity_bytes, max_slots=max_slots)
         writers.append(writer)
         return writer
 

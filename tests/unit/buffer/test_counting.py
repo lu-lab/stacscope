@@ -11,7 +11,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 import pytest
 
-from stacscope.core.buffer import FrameBuffer, Layout
+from stacscope.core.buffer import ImageBuffer, Layout
 
 FRAMES_WRITTEN = 256  # header offset, alone on its own 128-byte line
 LAYOUT = Layout(shape=(2, 2), dtype="<u2", n_slots=3)
@@ -54,7 +54,7 @@ def test_each_acquisition_writes_from_slot_zero(writer):
 def test_a_reader_sees_a_new_acquisition(writer, name):
     writer.start_acquisition()
     writer.publish(4)
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         assert (reader.acquisition_id, reader.acquisition_start) == (1, 0)
         assert reader.published() == 4

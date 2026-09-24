@@ -9,7 +9,7 @@ may write more), so ``in_flight`` slots are unsafe before the counter says so.
 import pytest
 
 from buffer_support import produce
-from stacscope.core.buffer import FrameBuffer, Layout, Overrun
+from stacscope.core.buffer import ImageBuffer, Layout, Overrun
 
 
 def layout(n_slots=4, in_flight=1, shape=(2, 2)):
@@ -24,7 +24,7 @@ def rig(make_writer, name):
         writer = make_writer()
         writer.configure(layout(**kwargs))
         writer.start_acquisition()
-        reader = FrameBuffer.open(name)
+        reader = ImageBuffer.open(name)
         readers.append(reader)
         return writer, reader
 

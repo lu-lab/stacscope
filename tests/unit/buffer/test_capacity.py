@@ -10,7 +10,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 import pytest
 
-from stacscope.core.buffer import FrameBuffer, Layout, LayoutError
+from stacscope.core.buffer import ImageBuffer, Layout, LayoutError
 
 GENERATION = 64  # header offset of layout_generation
 
@@ -38,7 +38,7 @@ def test_more_slots_than_the_metadata_table_holds_are_rejected(make_writer):
 def test_a_layout_smaller_than_capacity_is_fine(make_writer, name):
     writer = make_writer(capacity_bytes=1 << 20, max_slots=16)
     writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=3))
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         assert reader.frames.shape == (3, 2, 2)
     finally:
@@ -53,7 +53,7 @@ def test_a_rejected_layout_leaves_the_current_one_in_place(make_writer, name):
         writer.configure(Layout(shape=(10, 10), dtype="<u2", n_slots=6))
 
     assert generation(name) == before
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         assert reader.frames.shape == (3, 2, 2)
     finally:
@@ -97,7 +97,7 @@ def test_every_layout_field_is_written_while_the_generation_is_odd(make_writer, 
 def test_a_reader_remaps_when_the_layout_changes(make_writer, name):
     writer = make_writer()
     writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=3))
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         assert reader.sync() is False, "nothing changed yet"
 
@@ -114,7 +114,7 @@ def test_a_reader_remaps_when_the_layout_changes(make_writer, name):
 
 def test_a_reader_may_open_before_the_producer_configures(make_writer, name):
     writer = make_writer()
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         assert reader.frames is None
         assert reader.sync() is False
@@ -129,7 +129,7 @@ def test_a_reader_may_open_before_the_producer_configures(make_writer, name):
 def test_a_reader_never_maps_a_layout_that_is_mid_change(make_writer, name):
     writer = make_writer()
     writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=3))
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     shm = SharedMemory(name, track=False)
     try:
         # Freeze the producer halfway through a change: odd generation, new
@@ -141,7 +141,7 @@ def test_a_reader_never_maps_a_layout_that_is_mid_change(make_writer, name):
         assert reader.sync() is False
         assert reader.frames.shape == (3, 2, 2)
         with pytest.raises(LayoutError):
-            FrameBuffer.open(name, timeout=0.05)
+            ImageBuffer.open(name, timeout=0.05)
     finally:
         shm.close()
         reader.close()

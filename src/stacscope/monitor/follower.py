@@ -1,6 +1,6 @@
 """The buffer monitor's model: what to show for a given slot, with no Qt import.
 
-Opens a frame-buffer segment by name and reports its state, slot count,
+Opens an image-buffer segment by name and reports its state, slot count,
 header fields, and a view of any slot on request. See
 ``stacscope.monitor.window`` for the window that draws this.
 """
@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from stacscope.core.buffer import FrameBuffer, LayoutError, header
+from stacscope.core.buffer import ImageBuffer, LayoutError, header
 
 
 class State(Enum):
@@ -179,7 +179,7 @@ class BufferMonitor:
         if self._reader is not None:
             return True
         try:
-            self._reader = FrameBuffer.open(self.name)
+            self._reader = ImageBuffer.open(self.name)
         except (FileNotFoundError, LayoutError):
             return False  # not there yet, or not settled on a layout
         return True

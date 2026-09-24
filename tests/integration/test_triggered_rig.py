@@ -24,7 +24,7 @@ from stacscope.adapters.simulated import (
     VirtualClock,
 )
 from stacscope.core.actors import Accepted, Actor, Subscribe, ask, spawn
-from stacscope.core.buffer import FrameBuffer
+from stacscope.core.buffer import ImageBuffer
 from stacscope.core.ports import Channel, OutputConfig
 from stacscope.core.protocol import (
     AcquisitionStarted,
@@ -122,7 +122,7 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
     await system.clock.advance(0.5)
     assert await starting == AcquisitionStarted()
 
-    reader = FrameBuffer.open(system.buffer_name)
+    reader = ImageBuffer.open(system.buffer_name)
     try:
         await system.clock.advance(10.0)
 
@@ -198,7 +198,7 @@ async def test_d12_a_second_acquisition_counts_its_own_triggers():
         assert system.camera.writer.published() == acquisition * CYCLES * PER_CYCLE
         assert system.camera.missed == 0
 
-    reader = FrameBuffer.open(system.buffer_name)
+    reader = ImageBuffer.open(system.buffer_name)
     try:
         frames = [reader.cursor(i).next() for i in range(CYCLES * PER_CYCLE, 2 * CYCLES * PER_CYCLE)]
         assert {f.acquisition_id for f in frames} == {2}, "the consumer sees the second one"

@@ -11,7 +11,7 @@ from multiprocessing.shared_memory import SharedMemory
 
 import pytest
 
-from stacscope.core.buffer import FrameBuffer, Layout, MetaField, Metadata, Overrun, TimeSource
+from stacscope.core.buffer import ImageBuffer, Layout, MetaField, Metadata, Overrun, TimeSource
 
 LAYOUT = Layout(shape=(2, 2), dtype="<u2", n_slots=4)
 ALL = Metadata(
@@ -29,7 +29,7 @@ def rig(make_writer, name):
         writer = make_writer()
         writer.configure(layout, metadata)
         writer.start_acquisition()
-        reader = FrameBuffer.open(name)
+        reader = ImageBuffer.open(name)
         readers.append(reader)
         return writer, reader
 

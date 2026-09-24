@@ -12,15 +12,15 @@ import textwrap
 import time
 
 from buffer_support import produce
-from stacscope.core.buffer import FrameBuffer, Layout, MetaField, Metadata
+from stacscope.core.buffer import ImageBuffer, Layout, MetaField, Metadata
 
 TOTAL = 3000
 
 READER = """
     import json, sys, time
-    from stacscope.core.buffer import FrameBuffer, Overrun
+    from stacscope.core.buffer import ImageBuffer, Overrun
 
-    reader = FrameBuffer.open({name!r})
+    reader = ImageBuffer.open({name!r})
     cursor = reader.cursor(reader.oldest())
     print("ready", flush=True)
     kept, lost, bad, stalled = 0, 0, [], False

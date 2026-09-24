@@ -2,8 +2,8 @@
 
 PySide6 ships only ``abi3`` wheels, so the monitor's window cannot run on the
 free-threaded build, while the engine does. The monitor is therefore meant to
-run on standard CPython beside a free-threaded producer, reading the same
-segment. That works only because a frame buffer is shared memory and a monitor
+run on standard CPython beside a free-threaded generator, reading the same
+segment. That works only because an image buffer is shared memory and a monitor
 is a pure consumer: no link, no protocol, nothing to agree on but a name.
 
 Not in the default suite, for two reasons. It needs both interpreters, which
@@ -25,8 +25,8 @@ import uuid
 
 import pytest
 
-from stacscope.adapters.simulated import PatternProducer
-from stacscope.core.buffer import FrameBuffer, Layout
+from stacscope.adapters.simulated import TestImageGenerator
+from stacscope.core.buffer import ImageBuffer, Layout
 from stacscope.monitor import BufferMonitor
 
 SHAPE = (8, 16)
@@ -63,12 +63,12 @@ def _has_other() -> bool:
 @pytest.mark.skipif(not _has_other(), reason=f"no {OTHER} interpreter on this machine")
 def test_the_other_interpreter_reads_this_ones_buffer(tmp_path):
     name = "cross" + uuid.uuid4().hex[:12]
-    writer = FrameBuffer.create(name, capacity_bytes=1 << 16, max_slots=16)
+    writer = ImageBuffer.create(name, capacity_bytes=1 << 16, max_slots=16)
     try:
-        producer = PatternProducer(writer, frame_period=0.01)
-        producer.configure(Layout(shape=SHAPE, dtype="<u2", n_slots=SLOTS))
-        producer.start_acquisition()
-        producer.emit(SLOTS)  # a frame in every slot, so every read has something
+        generator = TestImageGenerator(writer, frame_period=0.01)
+        generator.configure(Layout(shape=SHAPE, dtype="<u2", n_slots=SLOTS))
+        generator.start_acquisition()
+        generator.emit(SLOTS)  # a frame in every slot, so every read has something
 
         here = BufferMonitor(name)
         expected = []

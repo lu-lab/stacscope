@@ -52,7 +52,7 @@ async def read_frame(reader: asyncio.StreamReader) -> bytes | None:
 # tell is synchronous by design, and control traffic is tiny -- the largest
 # message in the system is a waveform retune at roughly 200 KB -- so the
 # socket's own buffer is queue enough. This link deliberately has no
-# backpressure, for the same reason the frame buffer does not: a sender that
+# backpressure, for the same reason the image buffer does not: a sender that
 # must wait on a receiver has coupled the two.
 class Connection:
     """One link: a stream at the bottom, a ``Peer`` at the top."""

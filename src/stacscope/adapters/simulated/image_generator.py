@@ -1,4 +1,6 @@
-"""A synthetic camera: a small bar that moves a few columns each frame.
+"""A test image generator: a small bar that moves a few columns each frame.
+
+It stands in for a camera wherever one is needed without hardware.
 
 Each frame touches only its bar, plus the bar its slot held one ring ago,
 so emitting costs almost nothing however large the frame, and a person
@@ -13,7 +15,9 @@ import numpy as np
 from stacscope.core.buffer import FrameWriter, Layout, MetaField, Metadata, TimeSource
 
 
-class PatternProducer:
+class TestImageGenerator:
+    __test__ = False  # a "Test" name, but not a pytest test class
+
     def __init__(
         self,
         writer: FrameWriter,
@@ -43,7 +47,7 @@ class PatternProducer:
     def reset(self) -> None:
         """Start drawing afresh against the writer's current layout. Separate
         from ``configure`` because a device may have configured the buffer
-        itself — a streaming device does, as part of arming."""
+        itself — an ``ImageStreaming`` device does, as part of arming."""
         self._writer.frames[...] = 0  # once, so old pixels don't read as bars
         self._bars.clear()
         dtype = self._writer.frames.dtype

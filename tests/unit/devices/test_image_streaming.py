@@ -15,8 +15,8 @@ import pytest
 
 from stacscope.adapters.simulated import VirtualClock
 from stacscope.core.actors import Actor, ask, spawn
-from stacscope.core.buffer import FrameBuffer, Layout
-from stacscope.core.devices import Streaming, TimedDevice
+from stacscope.core.buffer import ImageBuffer, Layout
+from stacscope.core.devices import ImageStreaming, TimedDevice
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
 MiB = 1 << 20
@@ -43,7 +43,7 @@ class CameraHardware(TimedDevice):
         self.calls.append("disarm")
 
 
-class FakeCamera(Streaming, CameraHardware):
+class FakeCamera(ImageStreaming, CameraHardware):
     """A camera that produces frames only when a test says so."""
 
     def layout(self):
@@ -102,7 +102,7 @@ async def test_the_buffer_exists_from_launch_not_from_the_first_acquisition(rig)
     r = rig()
     await r.launched()
 
-    reader = FrameBuffer.open(r.name)
+    reader = ImageBuffer.open(r.name)
     try:
         assert reader.published() == 0
     finally:
@@ -116,7 +116,7 @@ async def test_starting_configures_the_layout_and_begins_an_acquisition(rig):
     assert await r.ask(StartDevice("run-01", 4)) == DeviceReady()
     r.device.expose(3)
 
-    reader = FrameBuffer.open(r.name)
+    reader = ImageBuffer.open(r.name)
     try:
         assert reader.frames.shape == (8, *SHAPE)
         assert reader.published() == 3
@@ -132,7 +132,7 @@ async def test_a_consumer_follows_a_new_acquisition_without_reopening(rig):
     await r.ask(StartDevice("run-01", 4))
     r.device.expose(2)
 
-    reader = FrameBuffer.open(r.name)
+    reader = ImageBuffer.open(r.name)
     try:
         cursor = reader.cursor(reader.oldest())
         first = [cursor.next().index for _ in range(2)]
@@ -154,7 +154,7 @@ async def test_a_new_layout_reaches_a_consumer_that_was_already_attached(rig):
     await r.launched()
     await r.ask(StartDevice("run-01", 4))
 
-    reader = FrameBuffer.open(r.name)
+    reader = ImageBuffer.open(r.name)
     try:
         assert reader.frames.shape == (8, *SHAPE)
 
@@ -182,7 +182,7 @@ async def test_the_last_frames_stay_readable_after_the_acquisition_stops(rig):
 
     assert await r.ask(StopDevice()) == DeviceStopped()
 
-    reader = FrameBuffer.open(r.name)
+    reader = ImageBuffer.open(r.name)
     try:
         assert reader.published() == 3
         assert (reader.frames[reader.slot_of(2)] == 2).all(), "the pixels are still there"
@@ -196,7 +196,7 @@ async def test_a_consumer_keeps_its_segment_across_a_stop(rig):
     await r.ask(StartDevice("run-01", 4))
     r.device.expose(1)
 
-    reader = FrameBuffer.open(r.name)
+    reader = ImageBuffer.open(r.name)
     try:
         await r.ask(StopDevice())
         frame = reader.cursor(0).next()
@@ -215,7 +215,7 @@ async def test_the_segment_goes_when_the_device_does(rig):
     await r.shut_down()
 
     with pytest.raises(FileNotFoundError):
-        FrameBuffer.open(r.name, timeout=0.05)
+        ImageBuffer.open(r.name, timeout=0.05)
 
 
 async def test_the_buffer_is_ready_before_the_hardware_is_armed(rig):

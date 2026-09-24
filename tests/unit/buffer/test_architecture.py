@@ -11,14 +11,14 @@ import sys
 
 import pytest
 
-from stacscope.core.buffer import FrameBuffer, UnsupportedPlatform
+from stacscope.core.buffer import ImageBuffer, UnsupportedPlatform
 
 
 @pytest.mark.parametrize("machine", ["AMD64", "x86_64", "amd64"])
 def test_x86_64_is_accepted(monkeypatch, name, machine):
     monkeypatch.setattr(platform, "machine", lambda: machine)
-    writer = FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
-    FrameBuffer.open(name).close()
+    writer = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
+    ImageBuffer.open(name).close()
     writer.close()
 
 
@@ -26,13 +26,13 @@ def test_x86_64_is_accepted(monkeypatch, name, machine):
 def test_other_architectures_are_refused_before_anything_is_created(monkeypatch, name, machine):
     monkeypatch.setattr(platform, "machine", lambda: machine)
     with pytest.raises(UnsupportedPlatform):
-        FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+        ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
     with pytest.raises(UnsupportedPlatform):
-        FrameBuffer.open(name)
+        ImageBuffer.open(name)
 
     monkeypatch.undo()
     with pytest.raises(FileNotFoundError):
-        FrameBuffer.open(name)  # the refused create left nothing behind
+        ImageBuffer.open(name)  # the refused create left nothing behind
 
 
 def test_a_32_bit_interpreter_on_a_64_bit_machine_is_refused(monkeypatch, name):
@@ -41,4 +41,4 @@ def test_a_32_bit_interpreter_on_a_64_bit_machine_is_refused(monkeypatch, name):
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(sys, "maxsize", 2**31 - 1)
     with pytest.raises(UnsupportedPlatform):
-        FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+        ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)

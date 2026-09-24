@@ -7,8 +7,8 @@ of this suite's conftest files was imported first. See the note in
 
 import uuid
 
-from stacscope.adapters.simulated import PatternProducer
-from stacscope.core.buffer import FrameBuffer, Layout
+from stacscope.adapters.simulated import TestImageGenerator
+from stacscope.core.buffer import ImageBuffer, Layout
 
 SHAPE = (8, 16)
 SLOTS = 4
@@ -22,22 +22,22 @@ def fresh_name() -> str:
 
 
 class Rig:
-    """A producer writing a moving bar into a segment of its own."""
+    """A generator writing a moving bar into a segment of its own."""
 
     def __init__(self, layout: Layout = LAYOUT):
         self.name = fresh_name()
-        self.writer = FrameBuffer.create(self.name, capacity_bytes=1 << 16, max_slots=16)
-        self.producer = PatternProducer(self.writer, frame_period=0.01)
-        self.producer.configure(layout)
-        self.producer.start_acquisition()
+        self.writer = ImageBuffer.create(self.name, capacity_bytes=1 << 16, max_slots=16)
+        self.generator = TestImageGenerator(self.writer, frame_period=0.01)
+        self.generator.configure(layout)
+        self.generator.start_acquisition()
 
     def emit(self, n: int = 1) -> None:
-        self.producer.emit(n)
+        self.generator.emit(n)
 
     def reconfigure(self, layout: Layout) -> None:
         """A new layout mid-life, as a device reconfiguring its camera would."""
-        self.producer.configure(layout)
-        self.producer.start_acquisition()
+        self.generator.configure(layout)
+        self.generator.start_acquisition()
 
     def close(self) -> None:
         self.writer.close()

@@ -1,10 +1,14 @@
-"""Streaming: a device that produces frames into a shared-memory buffer.
+"""ImageStreaming: a device that streams images into a shared-memory buffer.
 
 This is the seam between the two flows that otherwise never touch. On one side
 the device protocol, which is asynchronous control; on the other the buffer,
 which is throughput and nothing else. The mixin is thin on purpose — it decides
 *when* the buffer is created, configured and released, and never touches a
 frame.
+
+**A stream does not wait for its readers.** Images are published whether or
+not anyone consumes them, and a reader that falls behind loses frames rather
+than slowing the device.
 
 **Buffer lifetime is device lifetime.** The segment is created when the device
 launches and released only when it goes, so a consumer can attach before the
@@ -19,12 +23,12 @@ device knows what its hardware writes. The header carries all of it, so a
 consumer outside Python can read the buffer without asking anyone.
 """
 
-from stacscope.core.buffer import FrameBuffer, FrameWriter, Layout, Metadata
+from stacscope.core.buffer import FrameWriter, ImageBuffer, Layout, Metadata
 
 
-class Streaming:
-    """Mixin for a ``TimedDevice`` that produces frames. Put it first:
-    ``class Camera(Streaming, TimedDevice)``.
+class ImageStreaming:
+    """Mixin for a ``TimedDevice`` that streams images. Put it first:
+    ``class Camera(ImageStreaming, TimedDevice)``.
 
     ``buffer_name``, ``capacity_bytes`` and ``max_slots`` come from config:
     the name because a consumer has to find the buffer without talking to the
@@ -51,20 +55,17 @@ class Streaming:
 
     async def setup(self) -> None:
         await super().setup()
-        self.writer = FrameBuffer.create(
+        self.writer = ImageBuffer.create(
             self.buffer_name, capacity_bytes=self.capacity_bytes, max_slots=self.max_slots
         )
 
     async def arm(self, root_filename: str, cycles: int) -> None:
-        """The buffer is configured **before** the rest of the chain arms the
-        hardware: a driver is pointed at the frame memory as it arms (DCAM
-        attaches the slot pointers), so the layout has to be in place, and no
-        frame may arrive before its acquisition has been started.
-
-        ``Recording`` goes the other way, opening its file after the chain
-        returns, which composes: ``class Camera(Recording, Streaming, Hardware)``
-        configures the buffer, arms the camera, then starts the recorder.
+        """Configures the buffer for ``layout()`` and starts a new acquisition,
+        **before** the rest of the chain arms, so the slots are laid out when
+        the hardware is armed and no frame can arrive ahead of its acquisition.
         """
+        # Before, not after: a driver is pointed at the slot memory as it arms
+        # (DCAM attaches the slot pointers), so the layout must already be there.
         self.writer.configure(self.layout(), self.metadata())
         self.acquisition_id = self.writer.start_acquisition()
         await super().arm(root_filename, cycles)

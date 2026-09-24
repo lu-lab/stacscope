@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from buffer_support import produce
-from stacscope.core.buffer import FrameBuffer, Layout
+from stacscope.core.buffer import ImageBuffer, Layout
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def rig(make_writer, name):
         writer = make_writer()
         writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=n_slots, in_flight=in_flight))
         writer.start_acquisition()
-        reader = FrameBuffer.open(name)
+        reader = ImageBuffer.open(name)
         readers.append(reader)
         return writer, reader
 

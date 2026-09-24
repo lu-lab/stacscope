@@ -18,9 +18,9 @@ from functools import partial
 import pytest
 from process_support import FAST_HEARTBEAT, until
 
-from stacscope.adapters.simulated import SimulatedStreamingCamera, SimulatedTimingSource
+from stacscope.adapters.simulated import SimulatedFreeRunningCamera, SimulatedTimingSource
 from stacscope.core.actors import ask, spawn
-from stacscope.core.buffer import FrameBuffer
+from stacscope.core.buffer import ImageBuffer
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
@@ -45,7 +45,7 @@ async def rig(host, buffer_name):
         participants=[
             DeviceSpec(
                 "camera",
-                partial(SimulatedStreamingCamera, buffer_name, interval=0.005),
+                partial(SimulatedFreeRunningCamera, buffer_name, interval=0.005),
                 ready_timeout=10.0,
                 heartbeat=FAST_HEARTBEAT,
                 placement=Placement.PROCESS,
@@ -69,7 +69,7 @@ async def reader_for(name: str):
     def appeared() -> bool:
         nonlocal reader
         try:
-            reader = FrameBuffer.open(name)
+            reader = ImageBuffer.open(name)
         except FileNotFoundError:
             return False
         return True

@@ -5,17 +5,17 @@ that proves the two meet correctly. Triggers reach it on the simulated wire,
 never through a message, because that is how a real camera works: the DAQ pulls
 its trigger line and the driver DMAs a frame in without asking any actor.
 
-The frames themselves come from ``PatternProducer``, so what a viewer shows is
+The images themselves come from ``TestImageGenerator``, so what a viewer shows is
 a bar moving across the field.
 """
 
-from stacscope.adapters.simulated.pattern_producer import PatternProducer
+from stacscope.adapters.simulated.image_generator import TestImageGenerator
 from stacscope.core.buffer import Layout
-from stacscope.core.devices import DeviceState, SoftwareTimed, Streaming, TimedDevice
+from stacscope.core.devices import DeviceState, ImageStreaming, SoftwareTimed, TimedDevice
 from stacscope.core.protocol import Phase
 
 
-class SimulatedCamera(Streaming, TimedDevice):
+class SimulatedCamera(ImageStreaming, TimedDevice):
     """Produces one frame per rising edge on its trigger line, while armed.
 
     Everything outside ``arm`` and the trigger callback is inherited: the
@@ -44,7 +44,7 @@ class SimulatedCamera(Streaming, TimedDevice):
         self.shape = shape
         self.dtype = dtype
         self.n_slots = n_slots
-        self.producer: PatternProducer | None = None
+        self.generator: TestImageGenerator | None = None
         self.missed = 0
         """Triggers that arrived when the camera was not armed to take them."""
 
@@ -52,17 +52,17 @@ class SimulatedCamera(Streaming, TimedDevice):
         return Layout(shape=self.shape, dtype=self.dtype, n_slots=self.n_slots)
 
     def metadata(self):
-        return self.producer.metadata
+        return self.generator.metadata
 
     async def setup(self) -> None:
         await super().setup()
-        self.producer = PatternProducer(self.writer)
+        self.generator = TestImageGenerator(self.writer)
         if self.bus is not None:
             self.bus.subscribe(self.trigger, self._triggered)
 
     async def arm(self, root_filename: str, cycles: int) -> None:
         await super().arm(root_filename, cycles)  # buffer configured, acquisition started
-        self.producer.reset()
+        self.generator.reset()
 
     async def close(self) -> None:
         if self.bus is not None:
@@ -72,12 +72,12 @@ class SimulatedCamera(Streaming, TimedDevice):
     def _triggered(self) -> None:
         """A trigger pulse arrived. Outside the mailbox, like a DMA callback."""
         if self.state is DeviceState.ARMED:
-            self.producer.emit(1)
+            self.generator.emit(1)
         else:
             self.missed += 1
 
 
-class SimulatedStreamingCamera(SoftwareTimed, Streaming, TimedDevice):
+class SimulatedFreeRunningCamera(SoftwareTimed, ImageStreaming, TimedDevice):
     """A camera with no trigger line, free-running once the acquisition reaches
     the phase it chose.
 
@@ -110,23 +110,23 @@ class SimulatedStreamingCamera(SoftwareTimed, Streaming, TimedDevice):
         self.shape = shape
         self.dtype = dtype
         self.n_slots = n_slots
-        self.producer: PatternProducer | None = None
+        self.generator: TestImageGenerator | None = None
 
     def layout(self) -> Layout:
         return Layout(shape=self.shape, dtype=self.dtype, n_slots=self.n_slots)
 
     def metadata(self):
-        return self.producer.metadata
+        return self.generator.metadata
 
     async def setup(self) -> None:
         await super().setup()
-        self.producer = PatternProducer(self.writer)
+        self.generator = TestImageGenerator(self.writer)
 
     async def arm(self, root_filename: str, cycles: int) -> None:
         await super().arm(root_filename, cycles)  # buffer configured, acquisition started
-        self.producer.reset()
+        self.generator.reset()
 
     async def routine(self) -> None:
         while True:
             await self.clock.sleep(self.interval)
-            self.producer.emit(1)
+            self.generator.emit(1)

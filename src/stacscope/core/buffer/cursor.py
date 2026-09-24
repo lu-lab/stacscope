@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from stacscope.core.buffer.frame_buffer import FrameReader
+    from stacscope.core.buffer.image_buffer import FrameReader
 
 
 class Overrun(Exception):

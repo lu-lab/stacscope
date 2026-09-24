@@ -11,7 +11,7 @@ from multiprocessing.shared_memory import SharedMemory
 import numpy as np
 import pytest
 
-from stacscope.core.buffer import FrameBuffer, Layout, LayoutError
+from stacscope.core.buffer import ImageBuffer, Layout, LayoutError
 
 # The documented header (little-endian). Offsets are bytes from the start.
 MAGIC = b"STCB"
@@ -46,7 +46,7 @@ def test_consumer_sees_exactly_the_frames_the_producer_wrote(make_writer, name):
     for slot in range(3):
         writer.frames[slot] = ramp((4, 6), "<u2", start=100 * slot)
 
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         assert reader.frames.shape == (3, 4, 6)
         assert reader.frames.dtype == np.dtype("<u2")
@@ -59,7 +59,7 @@ def test_consumer_sees_exactly_the_frames_the_producer_wrote(make_writer, name):
 def test_consumer_frames_are_views_not_copies(make_writer, name):
     writer = make_writer()
     writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=2))
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         view = reader.frames[1]
         writer.frames[1] = 7
@@ -72,7 +72,7 @@ def test_consumer_frames_are_views_not_copies(make_writer, name):
 def test_consumer_frames_are_read_only(make_writer, name):
     writer = make_writer()
     writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=2))
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         with pytest.raises(ValueError):
             reader.frames[0] = 1
@@ -92,7 +92,7 @@ def test_padding_and_embedded_bytes_are_described_not_exposed(make_writer, name)
     writer.frames[1] = ramp((4, 5), "<u2", start=1)
     before = bytes(raw)
 
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     try:
         np.testing.assert_array_equal(reader.frames[1], ramp((4, 5), "<u2", 1))
         assert reader.frames.strides == (96, 16, 2)
@@ -172,7 +172,7 @@ def test_opening_a_segment_this_reader_cannot_trust_fails(name, magic, version):
     try:
         struct.pack_into("<4sI", shm.buf, 0, magic, version)
         with pytest.raises(LayoutError):
-            FrameBuffer.open(name)
+            ImageBuffer.open(name)
     finally:
         shm.close()
         shm.unlink()

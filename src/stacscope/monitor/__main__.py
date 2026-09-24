@@ -60,11 +60,11 @@ Buffer names are 1-30 characters of [A-Za-z0-9_].
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="stacscope.monitor",
-        description="Watch a STACScope frame buffer while it is being written.",
+        description="Watch a STACScope image buffer while it is being written.",
         epilog=HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("name", help="the frame buffer to watch, by segment name")
+    parser.add_argument("name", help="the image buffer to watch, by segment name")
     parser.add_argument(
         "--demo",
         action="store_true",

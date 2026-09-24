@@ -1,4 +1,4 @@
-"""Frame-buffer throughput against camera interface tiers. Run on demand:
+"""Image-buffer throughput against camera interface tiers. Run on demand:
 
     uv run python benchmarks/buffer_tiers.py
 
@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 
-from stacscope.core.buffer import FrameBuffer, Layout, MetaField, Metadata
+from stacscope.core.buffer import ImageBuffer, Layout, MetaField, Metadata
 
 GB = 1e9
 TIERS = {  # interface: sustained bytes/s
@@ -45,7 +45,7 @@ def rate(fn, frames):
 
 def measure(shape):
     frame_bytes = int(np.prod(shape)) * 2
-    writer = FrameBuffer.create("bench_tiers", capacity_bytes=N_SLOTS * frame_bytes, max_slots=N_SLOTS)
+    writer = ImageBuffer.create("bench_tiers", capacity_bytes=N_SLOTS * frame_bytes, max_slots=N_SLOTS)
     try:
         writer.configure(Layout(shape=shape, dtype="<u2", n_slots=N_SLOTS), METADATA)
         writer.start_acquisition()
@@ -64,7 +64,7 @@ def measure(shape):
                 writer.stamp(index, hw_frame=index, device_ticks=index, host_time_ns=time.time_ns())
                 writer.publish(1)
 
-        reader = FrameBuffer.open("bench_tiers")
+        reader = ImageBuffer.open("bench_tiers")
         try:
             def consume(rounds):
                 # Publish most of a ring, then time reading it back; repeat.

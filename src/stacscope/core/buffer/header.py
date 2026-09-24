@@ -1,4 +1,4 @@
-"""The frame buffer's binary header — the contract for every consumer.
+"""The image buffer's binary header — the contract for every consumer.
 
 ======  ======  ====================  ==============================================
 offset  format  field                 meaning

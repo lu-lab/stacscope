@@ -20,7 +20,7 @@ from multiprocessing.shared_memory import SharedMemory
 import pytest
 
 from buffer_support import produce
-from stacscope.core.buffer import FrameBuffer, Layout
+from stacscope.core.buffer import ImageBuffer, Layout
 
 LAYOUT = Layout(shape=(2, 2), dtype="<u2", n_slots=3)
 GENERATION = 64  # header offset of layout_generation
@@ -49,8 +49,8 @@ class CrashingProducer:
         code = textwrap.dedent(f"""
             import os, struct, sys
             from buffer_support import produce
-            from stacscope.core.buffer import FrameBuffer, Layout
-            writer = FrameBuffer.create({name!r}, capacity_bytes=1 << 16, max_slots=8)
+            from stacscope.core.buffer import ImageBuffer, Layout
+            writer = ImageBuffer.create({name!r}, capacity_bytes=1 << 16, max_slots=8)
         """) + textwrap.dedent(setup) + textwrap.dedent("""
             print("ready", flush=True)
             sys.stdin.readline()
@@ -73,7 +73,7 @@ class CrashingProducer:
 
 
 def test_closing_the_producer_removes_the_segment(name):
-    writer = FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+    writer = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
     writer.close()
     assert not exists(name)
 
@@ -84,10 +84,10 @@ def test_a_restarted_producer_takes_over_the_crashed_ones_segment(name):
         writer.start_acquisition()
         produce(writer, 5)
     """)
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     crashed.crash()
     try:
-        writer = FrameBuffer.create(name, capacity_bytes=1 << 16, max_slots=8)
+        writer = ImageBuffer.create(name, capacity_bytes=1 << 16, max_slots=8)
         try:
             assert writer.published() == 5, "the counter carries on"
             cursor = reader.cursor()
@@ -115,12 +115,12 @@ def test_a_restart_during_a_layout_change_is_completed_not_trusted(name):
     holder = SharedMemory(name, track=False)  # keeps the segment alive on Windows
     crashed.crash()
     try:
-        writer = FrameBuffer.create(name, capacity_bytes=1 << 16, max_slots=8)
+        writer = ImageBuffer.create(name, capacity_bytes=1 << 16, max_slots=8)
         try:
             writer.configure(Layout(shape=(3, 3), dtype="<u2", n_slots=2))
             generation = struct.unpack_from("<Q", holder.buf, GENERATION)[0]
             assert generation % 2 == 0, "a settled layout"
-            reader = FrameBuffer.open(name, timeout=0.1)
+            reader = ImageBuffer.open(name, timeout=0.1)
             assert reader.frames.shape == (2, 3, 3)
             reader.close()
         finally:
@@ -136,16 +136,16 @@ def test_a_segment_that_does_not_fit_is_replaced_or_refused(name, capacity_bytes
     """Pins the one place the platforms still differ. A segment too small for
     the new config can't be taken over: POSIX unlinks it and starts afresh
     (its readers keep an orphan); Windows can't free a name a reader holds."""
-    old = FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+    old = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
     old.configure(LAYOUT)
-    reader = FrameBuffer.open(name)
+    reader = ImageBuffer.open(name)
     old._close()  # the old producer is gone; the reader still holds the segment
     try:
         if sys.platform == "win32":
             with pytest.raises(FileExistsError):
-                FrameBuffer.create(name, capacity_bytes=capacity_bytes, max_slots=max_slots)
+                ImageBuffer.create(name, capacity_bytes=capacity_bytes, max_slots=max_slots)
         else:
-            new = FrameBuffer.create(name, capacity_bytes=capacity_bytes, max_slots=max_slots)
+            new = ImageBuffer.create(name, capacity_bytes=capacity_bytes, max_slots=max_slots)
             assert new.published() == 0, "a fresh segment"
             assert reader.frames.shape == (3, 2, 2), "the orphan keeps its old layout"
             new.close()
@@ -156,7 +156,7 @@ def test_a_segment_that_does_not_fit_is_replaced_or_refused(name, capacity_bytes
 @pytest.mark.parametrize(
     ("magic", "version"), [(b"JUNK", 1), (b"STCB", 2)], ids=["foreign", "other version"]
 )
-def test_a_segment_that_is_not_this_frame_buffer_is_never_taken_over(name, magic, version):
+def test_a_segment_that_is_not_this_image_buffer_is_never_taken_over(name, magic, version):
     foreign = SharedMemory(name, create=True, size=4096, track=False)
     try:
         # Plausible in every other respect: big enough, enough slots.
@@ -164,9 +164,9 @@ def test_a_segment_that_is_not_this_frame_buffer_is_never_taken_over(name, magic
         struct.pack_into("<QQ", foreign.buf, 16, 1 << 20, 64)
         if sys.platform == "win32":
             with pytest.raises(FileExistsError):
-                FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+                ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
         else:
-            new = FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+            new = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
             assert bytes(foreign.buf[:4]) == magic, "the foreign segment was not written"
             new.close()
     finally:
@@ -180,8 +180,8 @@ def test_a_reader_process_exiting_leaves_the_segment_alone(make_writer, name):
     writer.configure(LAYOUT)
     for close in ("reader.close()", "pass"):  # a tidy exit and an untidy one
         run_python(f"""
-            from stacscope.core.buffer import FrameBuffer
-            reader = FrameBuffer.open({name!r})
+            from stacscope.core.buffer import ImageBuffer
+            reader = ImageBuffer.open({name!r})
             assert reader.frames.shape == (3, 2, 2)
             {close}
         """)
@@ -191,19 +191,19 @@ def test_a_reader_process_exiting_leaves_the_segment_alone(make_writer, name):
 def test_a_reader_closing_leaves_the_segment_alone(make_writer, name):
     writer = make_writer()
     writer.configure(LAYOUT)
-    FrameBuffer.open(name).close()
+    ImageBuffer.open(name).close()
     assert exists(name)
 
 
 @pytest.mark.parametrize("bad", ["", "has space", "slash/name", "dash-name", "x" * 31, "ümlaut"])
 def test_names_outside_the_portable_set_are_refused(bad):
     with pytest.raises(ValueError):
-        FrameBuffer.create(bad, capacity_bytes=4096, max_slots=4)
+        ImageBuffer.create(bad, capacity_bytes=4096, max_slots=4)
     with pytest.raises(ValueError):
-        FrameBuffer.open(bad)
+        ImageBuffer.open(bad)
 
 
 def test_the_longest_portable_name_is_accepted():
     name = "B7_" + "x" * 27
-    writer = FrameBuffer.create(name, capacity_bytes=4096, max_slots=4)
+    writer = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
     writer.close()

@@ -77,7 +77,7 @@ def _replace_segment(name: str, size: int) -> SharedMemory:
         ) from None
 
 
-class FrameBuffer:
+class ImageBuffer:
     """Entry points: ``create`` for the producer, ``open`` for readers."""
 
     @staticmethod
@@ -341,10 +341,10 @@ class FrameReader(_Mapped):
     def _check_identity(self):
         buf = self._shm.buf
         if self._shm.size < HEADER_BYTES or header.read(buf, "magic") != MAGIC:
-            raise LayoutError(f"{self._shm.name!r} is not a frame buffer")
+            raise LayoutError(f"{self._shm.name!r} is not an image buffer")
         version = header.read(buf, "version")
         if version != VERSION:
-            raise LayoutError(f"frame buffer version {version}, this reader speaks {VERSION}")
+            raise LayoutError(f"image buffer version {version}, this reader speaks {VERSION}")
 
     def close(self) -> None:
         self._close()

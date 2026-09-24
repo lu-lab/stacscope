@@ -32,7 +32,7 @@ def require_ordered_memory() -> None:
     machine = platform.machine()
     if machine.lower() not in _ORDERED or sys.maxsize <= 2**32:
         raise UnsupportedPlatform(
-            f"the frame buffer needs x86-64 memory ordering, not {machine or 'unknown'!r}; "
+            f"the image buffer needs x86-64 memory ordering, not {machine or 'unknown'!r}; "
             "see counter.py for the upgrade path"
         )
 

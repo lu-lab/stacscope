@@ -25,8 +25,12 @@ from stacscope.core.protocol import Phase, SourcePhase
 
 
 class SoftwareTimed:
-    """Mixin for a ``TimedDevice`` that runs a routine. Put it first:
-    ``class PressureBox(SoftwareTimed, TimedDevice)``.
+    """Mixin for a ``TimedDevice`` that runs a routine. List it first among
+    the device's bases, before any other role:
+    ``class PressureBox(SoftwareTimed, TimedDevice)``. Its ``disarm`` cancels
+    the routine before everything listed after it disarms, so listed first,
+    the routine stops before anything else does. See
+    ``stacscope.core.devices`` for all the roles together.
 
     The routine is an ordinary coroutine on ``self.clock``, which is what lets
     it be written the way the experiment reads — ramp, hold, step — rather than

@@ -55,10 +55,14 @@ section explains why.
 - **Milestone 3's spec tests are complete** (D1–D12, device actors), on
   `main`. The participant side of the protocol is in `src/stacscope/core/devices/`:
   `TimedDevice` (IDLE ↔ ARMED, `arm` / `disarm` / `close`), and three mixins
-  that compose in that order — `Recording` (the acquisition's shared stem
-  becomes this device's own file), `SoftwareTimed` (a routine on the clock,
-  started by the published `SourcePhase` the device chose), and `ImageStreaming`
-  (an `ImageBuffer` for the device's lifetime). The Coordinator gained
+  — `Recording` (the acquisition's shared stem becomes this device's own
+  file), `SoftwareTimed` (a routine on the clock, started by the published
+  `SourcePhase` the device chose), and `ImageStreaming` (an `ImageBuffer` for
+  the device's lifetime). **The order of a device's bases is the order of its
+  calls**: each role wraps every class listed after it, so list them
+  `SoftwareTimed, ImageStreaming, Recording`, then the adapter. The package
+  docstring (`core/devices/__init__.py`) is the full statement, and
+  `tests/unit/devices/test_composition.py` pins it. The Coordinator gained
   `DeviceSpec.required`, an abort on a live device's fatal `Fault`, and
   relaying of `SourcePhase` to participants. `adapters/simulated/` gained
   `TriggerBus` — the wire, in simulation, so an end-to-end frame count is
@@ -97,7 +101,12 @@ section explains why.
   `SimulatedFrameCapture`. The contract is in
   `tests/contract/image_streaming_contract.py`. A mixin shares the actor's
   attribute namespace: a role flag named `_stopping` once stopped the whole
-  actor. **Next is the `Recording` change.** Start from
+  actor. **The `Recording` change is done**: the device picks where its
+  file opens by where it lists `Recording`. `OrcaFlash(ImageStreaming,
+  Recording, TimedDevice)` arms as attach, arm camera, open file, start, and
+  disarms as stop, publish, close file, disarm camera, detach (DCAM's order).
+  `ImageStreaming.disarm` is now `arm` mirrored, and a file that fails to
+  open disarms what armed below it. Start from
   the status block at the top of the plan's "Milestone 5": it has the ordered
   next steps. The plan's "5b — the image-streaming role and its capture port"
   has the decisions, the tests, and a survey of the dev box camera.

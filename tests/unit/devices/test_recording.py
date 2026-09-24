@@ -12,7 +12,7 @@ acquisition that is not being saved runs.
 from pathlib import Path
 
 from stacscope.adapters.simulated import VirtualClock
-from stacscope.core.actors import Actor, Fault, Subscribe, ask, spawn
+from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
 from stacscope.core.devices import Recording, TimedDevice
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
@@ -23,12 +23,13 @@ class Hardware(TimedDevice):
     """The adapter's own half: what preparing and releasing this device means.
     ``Recording`` goes in front of it, so a broken chain shows up here."""
 
-    def __init__(self, close_fails=False):
+    def __init__(self, close_fails=False, open_fails=False):
         super().__init__()
         self.opened = []
         self.closed = 0
         self.calls = []
         self.close_fails = close_fails
+        self.open_fails = open_fails
 
     async def arm(self, root_filename, cycles):
         self.calls.append("arm")
@@ -45,6 +46,8 @@ class FakeRecorder(Recording, Hardware):
 
     async def open_recording(self, path):
         self.calls.append("open")
+        if self.open_fails:
+            raise OSError("the disk is full")
         self.opened.append(path)
 
     async def close_recording(self):
@@ -210,3 +213,22 @@ async def test_a_failed_close_is_not_retried_on_the_way_out():
     rig.ref.tell(Poison())
     await rig.device.stopped.wait()
     assert rig.device.closed == 1
+
+
+async def test_a_recorder_that_cannot_open_disarms_what_it_armed():
+    """The device below was armed before the file was tried, and a failed arm
+    is never followed by a disarm: if Recording did not undo it, a shutter
+    opened in the adapter's arm would stay open. The refusal is still fatal,
+    so the acquisition does not go ahead without its file."""
+    rig = Rig(open_fails=True)
+
+    assert isinstance(await rig.ask(StartDevice("run-01", 10)), Rejected)
+    await rig.clock.advance(0)
+
+    assert rig.device.calls == ["arm", "open", "disarm"]
+    [fault] = rig.faults()
+    assert fault.fatal and "disk is full" in fault.reason
+
+    assert await rig.ask(StopDevice()) == DeviceStopped()
+    assert rig.device.closed == 0, "no file was opened, so none is closed"
+    assert rig.device.calls == ["arm", "open", "disarm"], "and it is not disarmed twice"

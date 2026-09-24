@@ -28,6 +28,14 @@ frames, and the device publishes each one, stamped, as it arrives. A lost
 frame ends the publishing for that acquisition and is reported as a fatal
 fault. A producer without a grabber, one that computes its images, writes its
 slots itself instead.
+
+**Where it sits among the device's base classes matters.** It wraps every
+class listed after it: it lays out the buffer and hands the slots to the
+grabber before they arm, and starts capture after; it stops capture before
+they disarm, and takes the slots back after. A camera that records lists it
+before Recording, as in class OrcaFlash(ImageStreaming, Recording,
+TimedDevice). The package's own description (stacscope.core.devices)
+explains the rule.
 """
 
 import asyncio
@@ -69,8 +77,30 @@ def layout_for(fmt: FrameFormat, n_slots: int) -> Layout:
 
 
 class ImageStreaming:
-    """Mixin for a ``TimedDevice`` that streams images. Put it first:
-    ``class Camera(ImageStreaming, TimedDevice)``.
+    """Mixin for a ``TimedDevice`` that streams images.
+
+    **Where it goes in the bases decides what it wraps.** Like every role, it
+    acts around whatever is listed after it, and with a capture it acts on
+    both sides:
+
+    - ``arm``: lay out the buffer, attach the slots to the capture, *then*
+      everything after it arms, *then* capture starts.
+    - ``disarm``: stop capture and publish the last frames, *then*
+      everything after it disarms, *then* the slots are detached.
+
+    Disarm is arm in reverse, so everything listed after it arms with the
+    slots attached and disarms before they are taken back. List it before
+    ``Recording``, so a file opens between attach and start and closes
+    between stop and detach::
+
+        class OrcaFlash(ImageStreaming, Recording, TimedDevice)
+
+        arm:     attach frame memory, arm camera, open file, start capture
+        disarm:  stop capture, publish last frames, close file,
+                 disarm camera, detach frame memory
+
+    A ``SoftwareTimed`` role goes before it, so its routine stops before
+    capture does. See ``stacscope.core.devices`` for all the roles together.
 
     ``buffer_name``, ``capacity_bytes`` and ``max_slots`` come from config:
     the name because a consumer has to find the buffer without talking to the
@@ -118,10 +148,11 @@ class ImageStreaming:
 
     async def arm(self, root_filename: str, cycles: int) -> None:
         """Configures the buffer for ``layout()`` and starts a new acquisition,
-        **before** the rest of the chain arms, so the slots are laid out when
-        the hardware is armed and no frame can arrive ahead of its acquisition.
-        With a capture, attaches the slots to it before the rest of the chain
-        arms, and starts it after.
+        **before** everything listed after this class arms, so the slots are
+        laid out when the hardware is armed and no frame can arrive ahead of
+        its acquisition. With a capture, attaches the slots to it before
+        everything after this class arms, and starts it after. If any of that
+        fails, the slots are detached before the error is raised.
         """
         # Before, not after: a driver is pointed at the slot memory as it arms
         # (DCAM attaches the slot pointers), so the layout must already be there.
@@ -144,15 +175,46 @@ class ImageStreaming:
         self._publisher = asyncio.create_task(self._publish_frames(layout))
 
     async def disarm(self) -> None:
-        """With a capture: stops it, publishes every frame it delivered, and
-        takes the slots back, before the rest of the chain disarms."""
-        if self._publisher is not None:
-            self._capture_stopping = True
+        """With a capture: stops it and publishes every frame it delivered,
+        *then* everything listed after this class disarms, *then* the slots
+        are detached, even if that disarm failed.
+
+        If the capture will not stop, everything after this class still
+        disarms, but the slots stay attached, and the stop's error is
+        raised; closing the device releases them. Any later failure is added
+        to it as a note."""
+        if self._publisher is None:
+            await super().disarm()
+            return
+        self._capture_stopping = True
+        try:
             await self.capture.stop()
-            await self._publisher  # ends once the delivered frames are out
-            self._publisher = None
+        except BaseException as exc:
+            # Listed first, this class holds the file's close (Recording, after
+            # it) and the camera's safe state behind its stop, the step most
+            # likely to fail on real hardware. The device is idle by now, so
+            # teardown will not disarm again: whatever is skipped here is
+            # skipped for good. No detach: the driver may still be writing
+            # into the slots. close() cancels the publisher and closes the
+            # capture, and leaves the segment mapped if that fails too.
+            try:
+                await super().disarm()
+            except Exception as later:
+                exc.add_note(f"disarm also failed: {later!r}")
+            raise
+        await self._publisher  # ends once the delivered frames are out
+        self._publisher = None
+        # Arm mirrored: attach, chain, start; stop, chain, detach. The chain
+        # includes a Recording listed after this class, and the file must
+        # close before the slots go back. Hamamatsu's recording sample does
+        # cap_stop, rec_close, buf_release, and nothing in the reference says
+        # the driver's recorder has finished with the frames before rec_close.
+        # A buffer-reading recorder needs the final pass above to be done
+        # before it closes, which this order also gives it.
+        try:
+            await super().disarm()
+        finally:
             await self.capture.detach()
-        await super().disarm()
 
     async def close(self) -> None:
         """Releases the capture, then the segment, then whatever is below.

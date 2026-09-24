@@ -209,6 +209,7 @@ class FrameWriter(_Mapped):
         super().__init__(shm)
         self.slots: np.ndarray | None = None
         self._acquiring = False
+        self._removed = False
         self._written = self._counter.published()
         self.acquisition_id = header.read(shm.buf, "acquisition_id")
         self.acquisition_start = header.read(shm.buf, "acquisition_start")
@@ -291,9 +292,17 @@ class FrameWriter(_Mapped):
     def close(self) -> None:
         """Unmap the segment and remove it. Raises ``BufferError`` while any
         view into it (``frames``, ``slots``, ``meta``, or a slice of them) is
-        still alive; drop those and close again."""
+        still alive; drop those and close again. Closing again after that
+        does nothing."""
+        # POSIX removes by name, so a second unlink would remove whichever
+        # segment holds the name by then: a restarted producer's, say. Set
+        # only once the unlink is done, so a close retried after BufferError
+        # still removes this one.
+        if self._removed:
+            return
         self._close()
         self._shm.unlink()
+        self._removed = True
 
 
 class FrameReader(_Mapped):

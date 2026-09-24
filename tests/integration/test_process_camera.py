@@ -19,7 +19,7 @@ import pytest
 from process_support import FAST_HEARTBEAT, until
 
 from stacscope.adapters.simulated import SimulatedFreeRunningCamera, SimulatedTimingSource
-from stacscope.core.actors import ask, spawn
+from stacscope.core.actors import Rejected, ask, spawn
 from stacscope.core.buffer import ImageBuffer
 from stacscope.core.protocol import (
     AcquisitionStarted,
@@ -122,7 +122,9 @@ async def test_the_engine_survives_its_camera_process_being_killed(host, rig, bu
     # The segment outlives the process that wrote it: this consumer holds it,
     # and what it already recorded reads back the same after the death.
     assert read(reader, 3) == taken
-    # not latched: the engine is ready to go again without the lost camera
-    assert await ask(engine, StartAcquisition(-1, ""), timeout=15) == AcquisitionStarted()
-    await ask(engine, StopAcquisition(), timeout=15)
+    # Alive and answering, not latched: it refuses to start without its
+    # required camera, and says which, until the user relaunches it (D5).
+    refused = await ask(engine, StartAcquisition(-1, ""), timeout=15)
+    assert isinstance(refused, Rejected) and "camera" in refused.reason
+    assert coordinator.state is CoordinatorState.IDLE
     reader.close()

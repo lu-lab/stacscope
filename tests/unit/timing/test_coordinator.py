@@ -4,7 +4,7 @@ Run against ``SimulatedTimingSource``, whose phases are no-ops: nothing here
 may depend on the source being an AO board.
 """
 
-from timing_support import PERIOD, READY_TIMEOUT, Factory, Rig
+from timing_support import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
 from stacscope.core.actors import Accepted, Rejected
@@ -24,7 +24,11 @@ from stacscope.core.timing import CoordinatorState
 
 
 async def test_c1_a_participant_that_exits_is_dropped_from_the_registry():
-    rig = Rig(camera=SimulatedDevice(), shutter=SimulatedDevice(fail_in_setup=True))
+    # Optional: a lost required device refuses the start instead (D5).
+    rig = Rig(
+        camera=SimulatedDevice(),
+        shutter=Dev(SimulatedDevice(fail_in_setup=True), required=False),
+    )
     await rig.clock.advance(0)
 
     assert set(rig.coordinator.participants) == {"camera"}
@@ -246,7 +250,8 @@ async def test_relaunching_a_lost_participant_brings_it_back_into_acquisitions()
 
 async def test_relaunch_is_refused_unless_the_device_is_gone_and_nothing_is_running():
     shutter = Factory(lambda: SimulatedDevice(fail_in_setup=True), SimulatedDevice)
-    rig = Rig(camera=SimulatedDevice(), shutter=shutter)
+    # Optional, so an acquisition can run while it is lost.
+    rig = Rig(camera=SimulatedDevice(), shutter=Dev(shutter, required=False))
     await rig.clock.advance(0)
 
     for name in ("nonexistent", "camera", "source"):  # unknown, or alive

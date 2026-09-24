@@ -63,7 +63,8 @@ class DeviceSpec:
     """Where the device runs. A process of its own costs a link and buys fault
     isolation: the right trade for a vendor driver, not for a shutter."""
     required: bool = True
-    """Whether losing this device mid-run ends the acquisition. Default true,
+    """Whether losing this device ends the acquisition, and refuses every
+    later one until the device is relaunched. Default true,
     so the safe answer is the one nobody has to remember. An optional device is
     a deliberate choice: an experiment worth finishing without it."""
 
@@ -79,6 +80,9 @@ class Coordinator(Actor):
     - ``StopAcquisition``: ``Finish`` to the source. On ``SourceFinished`` —
       requested or because the cycle count ran out — ``StopDevice`` to
       everyone, then reply ``AcquisitionStopped``.
+    - While a ``required`` participant is lost, ``StartAcquisition`` is
+      refused, naming it, until it is relaunched. A lost optional one is
+      left out.
     - A participant's ``ChildExited`` drops it from the registry. The
       source's is fatal: everyone is stopped and the Coordinator is Faulted,
       refusing ``StartAcquisition`` until the source is relaunched.
@@ -127,6 +131,15 @@ class Coordinator(Actor):
         match msg:
             case StartAcquisition(cycles, root_filename):
                 if self._refuse(msg, CoordinatorState.IDLE):
+                    return
+                if lost := self._lost_required():
+                    # Refused, not latched: nothing holds the Coordinator, and
+                    # each start is refused until the device is relaunched. A
+                    # run without a required camera would still fire every
+                    # other device (user, 2026-09-24).
+                    self._reject(
+                        f"required device lost: {', '.join(lost)}; Relaunch it to start"
+                    )
                     return
                 await self._start(StartDevice(root_filename, cycles))
             case StopAcquisition():
@@ -249,6 +262,13 @@ class Coordinator(Actor):
             self._reject(f"no device named {name!r} is configured")
             return
         self.reply(Accepted())
+
+    def _lost_required(self) -> list[str]:
+        return [
+            name
+            for name, spec in self._specs.items()
+            if spec.required and name not in self.participants
+        ]
 
     def _devices(self) -> list[tuple[DeviceSpec, ActorRef]]:
         devices = [(self._specs[name], ref) for name, ref in self.participants.items()]

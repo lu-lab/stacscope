@@ -8,7 +8,7 @@ reports a hardware fault is still there, and the fix is the user's.
 from timing_support import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
-from stacscope.core.actors import Accepted, Fault
+from stacscope.core.actors import Accepted, Fault, Rejected
 from stacscope.core.protocol import (
     AcquisitionStarted,
     Phase,
@@ -147,6 +147,59 @@ async def test_d5_losing_an_optional_participant_lets_the_run_finish():
 async def test_d5_a_required_device_is_the_default():
     rig = Rig(camera=Fragile())
     assert rig.coordinator._specs["camera"].required
+
+
+async def test_d5_a_lost_required_participant_refuses_every_start_until_relaunched():
+    """``required`` means no acquisition runs without it, not only that losing
+    it ends the run it was in. Otherwise a camera that died unnoticed leaves
+    the next acquisition firing lasers and moving pressure with nothing
+    recording (user, 2026-09-24). The refusal is not a latched state: each
+    start is simply refused until the device is back."""
+    camera = Factory(Fragile, SimulatedDevice)
+    rig = Rig(camera=camera, shutter=SimulatedDevice())
+    await rig.start()
+    await rig.clock.advance(2.0)
+    rig.coordinator.participants["camera"].tell(Die())
+    await rig.clock.advance(1.0)
+    assert rig.coordinator.state is CoordinatorState.IDLE
+    shutter_calls, source_calls = list(rig.devices["shutter"].names()), list(rig.source.calls)
+
+    for _ in range(2):
+        reply = await rig.call(StartAcquisition(-1, "run-02"))
+        assert isinstance(reply, Rejected)
+        assert "camera" in reply.reason and "Relaunch" in reply.reason
+        assert rig.coordinator.state is CoordinatorState.IDLE
+    assert rig.devices["shutter"].names() == shutter_calls, "nothing was armed"
+    assert rig.source.calls == source_calls, "the source was not armed either"
+
+    assert await rig.call(Relaunch("camera")) == Accepted()
+    assert await rig.start() == AcquisitionStarted()
+    assert camera.made[-1].names() == ["start"]
+
+
+async def test_d5_a_required_participant_lost_while_idle_refuses_the_start():
+    """No run was going, so nothing aborted and only a non-fatal ``Fault``
+    said so. The start is where that loss must not go unnoticed."""
+    shutter = Factory(lambda: SimulatedDevice(fail_in_setup=True), SimulatedDevice)
+    rig = Rig(camera=SimulatedDevice(), shutter=shutter)
+    await rig.clock.advance(0)
+    assert "shutter" not in rig.coordinator.participants
+
+    reply = await rig.start()
+    assert isinstance(reply, Rejected)
+    assert "shutter" in reply.reason and "camera" not in reply.reason
+    assert rig.devices["camera"].names() == [], "refused before anything armed"
+
+
+async def test_d5_a_lost_optional_participant_is_left_out_of_the_next_start():
+    """Optional is the deliberate choice to run without it."""
+    rig = Rig(camera=SimulatedDevice(), monitor=Dev(Fragile(), required=False))
+    await rig.clock.advance(0)
+    rig.coordinator.participants["monitor"].tell(Die())
+    await rig.clock.advance(0)
+    assert "monitor" not in rig.coordinator.participants
+
+    assert await rig.start() == AcquisitionStarted()
 
 
 # --- D6: a participant reports a hardware fault it cannot fix -----------------

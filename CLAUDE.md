@@ -39,7 +39,8 @@ section explains why.
   contract suite in `tests/contract/`. Plus end-to-end tests in
   `tests/integration/`.
   Relaunch: `Relaunch(name)` to the Coordinator respawns a lost device. It is
-  never automatic; the user decides.
+  never automatic; the user decides. While a `required` device is lost, the
+  Coordinator refuses `StartAcquisition`, naming it, until it is relaunched.
 - **Milestone 2's spec tests are complete** (B1–B10, the data flow), on
   `main`. The shared-memory image buffer is in `src/stacscope/core/buffer/`:
   the header spec (`header.py`), producer-defined `Layout`, the
@@ -108,7 +109,9 @@ section explains why.
   `ImageStreaming.disarm` is now `arm` mirrored, and a file that fails to
   open disarms what armed below it. A capture that will not stop still lets
   the file close and the camera disarm. A capture that will not *start*
-  disarms what armed after `ImageStreaming`, then detaches. **The base-class
+  disarms what armed after `ImageStreaming`, then detaches. If a role's
+  undo of a failed arm cannot disarm, the device answers `Rejected` and
+  then dies (`TimedDevice._undo_arm`): it has failed in both directions. **The base-class
   order is enforced**: `TimedDevice.__init_subclass__` raises `TypeError`
   for roles out of order or listed after the adapter. **5b is done.**
   **Next, for a new session: the "Sixth session" entry at the top of the

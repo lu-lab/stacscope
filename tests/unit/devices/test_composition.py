@@ -128,20 +128,6 @@ class Flash(ImageStreaming, DriverRecording, CameraHardware):
     """The Flash's composition: the role, then the recorder, then the camera."""
 
 
-class ArmErrorProbe(Flash):
-    """The Flash, keeping the exception its arm raised. The protocol reports
-    only its ``repr``, which leaves out any notes on it."""
-
-    arm_error = None
-
-    async def arm(self, root_filename, cycles):
-        try:
-            await super().arm(root_filename, cycles)
-        except Exception as exc:
-            self.arm_error = exc
-            raise
-
-
 class Listener(Actor):
     def __init__(self):
         super().__init__()
@@ -313,23 +299,63 @@ async def test_a_capture_that_will_not_start_leaves_nothing_armed(rig):
     assert await r.ask(StartDevice("run-02", 4)) == DeviceReady()
 
 
-async def test_when_the_rollback_also_fails_the_start_is_the_error_and_the_slots_go_back(rig):
-    """If the camera then fails to disarm, the arm still fails with the
-    start's error, the first failure, and the disarm's is a note on it, as
-    in ImageStreaming's own disarm (user, 2026-09-24). The slots are given
-    back anyway: the capture never started, so no driver is writing into
-    them."""
-    r = rig(ArmErrorProbe)
+async def test_a_device_that_cannot_undo_a_failed_start_dies_of_it(rig):
+    """A capture that will not start, then a camera that will not disarm: the
+    device has failed in both directions, and nothing is known about its
+    hardware. Left alive and idle, it would ignore the Coordinator's abort
+    (StopDevice to an idle device does nothing), and the next acquisition
+    would arm on top of whatever state it is in. So it dies, as a failed
+    disarm always does, and relaunching it is the user's call (user,
+    2026-09-24). It still answers the arm first, so the Coordinator aborts at
+    once instead of waiting out its timeout. The slots are given back anyway:
+    the capture never started, so no driver is writing into them."""
+    r = rig()
     await r.device.started.wait()
     r.device.capture.start_fails = True
     r.device.disarm_fails = True
 
     assert isinstance(await r.ask(StartDevice("run-01", 4)), Rejected)
+    await r.device.stopped.wait()
 
-    assert r.device.log[-2:] == ["disarm", "detach"]
-    error = r.device.arm_error
-    assert "would not start" in str(error)
+    assert r.device.log[-3:] == ["disarm", "detach", "capture closed"]
+    error = r.device.exit_error
+    assert "would not start" in str(error), "the first failure is the one it dies of"
     assert any("would not disarm" in note for note in getattr(error, "__notes__", []))
+
+
+async def test_a_device_that_cannot_undo_a_failed_open_dies_of_it(rig):
+    """The same for Recording's undo: a file that will not open, then a camera
+    that will not disarm. The open is the first failure, so it is the error,
+    and the disarm's is a note on it, as in ImageStreaming (user,
+    2026-09-24)."""
+    r = rig()
+    r.device.open_fails = True
+    r.device.disarm_fails = True
+
+    assert isinstance(await r.ask(StartDevice("run-01", 4)), Rejected)
+    await r.device.stopped.wait()
+
+    assert r.device.log == ["attach", "arm", "open file", "disarm", "detach", "capture closed"]
+    error = r.device.exit_error
+    assert isinstance(error, OSError) and "disk is full" in str(error)
+    assert any("would not disarm" in note for note in getattr(error, "__notes__", []))
+
+
+async def test_the_fault_names_both_failures(rig):
+    """The fatal Fault is how the Coordinator's clients learn why the arm
+    failed, and a repr alone leaves out the notes: here, that the camera also
+    failed to disarm, which is the part that says its state is unknown."""
+    r = rig()
+    r.device.open_fails = True
+    r.device.disarm_fails = True
+
+    await r.ask(StartDevice("run-01", 4))
+    await r.device.stopped.wait()
+    await r.clock.advance(0)
+
+    [fault, *_] = r.faults()
+    assert fault.fatal
+    assert "disk is full" in fault.reason and "would not disarm" in fault.reason
 
 
 async def test_the_frame_memory_is_given_back_even_if_the_camera_fails_to_disarm(rig):

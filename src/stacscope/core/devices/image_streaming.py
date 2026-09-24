@@ -154,7 +154,8 @@ class ImageStreaming:
         everything after this class arms, and starts it after. If any of that
         fails, the slots are detached before the error is raised, and if the
         start is what failed, everything after this class is disarmed first.
-        A failure of that disarm is added to the start's error as a note.
+        If that disarm fails too, it is added to the start's error as a note,
+        and the device dies once the arm has been answered.
         """
         # Laid out before anything can see the slots: the capture is attached
         # to them below, and a device without one may point its own driver at
@@ -182,11 +183,10 @@ class ImageStreaming:
             # Everything after this class is armed by now: on the Flash, the
             # camera and an open DCIMG file. Undone in disarm's order, file
             # before slots. The start's error is the one raised, as in disarm
-            # (user, 2026-09-24). The detach also stops a half-started capture.
+            # (user, 2026-09-24); if the disarm fails too, it is a note on it
+            # and the device dies. The detach also stops a half-started capture.
             try:
-                await super().disarm()
-            except Exception as later:
-                exc.add_note(f"disarm also failed: {later!r}")
+                await self._undo_arm(exc, super().disarm)
             finally:
                 await self.capture.detach()
             raise

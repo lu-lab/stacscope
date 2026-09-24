@@ -10,9 +10,10 @@ subscribe to the Coordinator's republished ``SourcePhase`` instead, which is
 control flow and never to be trusted for timing.
 """
 
+from collections.abc import Awaitable, Callable
 from enum import Enum
 
-from stacscope.core.actors import Actor, Fault, Rejected
+from stacscope.core.actors import Actor, Fault, Rejected, describe
 from stacscope.core.protocol import (
     DeviceLaunched,
     DeviceReady,
@@ -54,7 +55,14 @@ class TimedDevice(Actor):
     would help nobody. A ``disarm`` that fails is the opposite — the hardware's
     state is now unknown, so the device dies rather than confirm a stop it did
     not achieve, and the Coordinator reports the stop unconfirmed.
+
+    A role whose arm fails partway disarms what had armed below it. If that
+    disarm fails too, the arm is still answered ``Rejected`` with a fatal
+    ``Fault``, and then the device dies of the arm's error, as for any failed
+    disarm.
     """
+
+    _arm_undo_failed: bool = False
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Refuses, with ``TypeError``, a device whose roles are listed out of
@@ -112,6 +120,22 @@ class TimedDevice(Actor):
         """Release the hardware for good. Called once, however the actor ends,
         after ``disarm`` if it was armed."""
 
+    async def _undo_arm(self, cause: BaseException, disarm: Callable[[], Awaitable[None]]) -> None:
+        """For a role whose arm failed with ``cause`` after what is listed
+        below it had armed: calls ``disarm``, the role's ``super().disarm``.
+        If that fails too, its error is added to ``cause`` as a note, and the
+        device dies of ``cause`` once the arm has been answered. The caller
+        then re-raises ``cause``."""
+        try:
+            await disarm()
+        except Exception as later:
+            cause.add_note(f"disarm also failed: {later!r}")
+            # Failed in both directions: nothing is known about the hardware.
+            # Kept alive it would be idle, so the Coordinator's StopDevice would
+            # do nothing and the next arm would land on it as it is (user,
+            # 2026-09-24).
+            self._arm_undo_failed = True
+
     # --- the protocol ------------------------------------------------------
 
     async def handle(self, msg: object) -> None:
@@ -137,8 +161,11 @@ class TimedDevice(Actor):
             self._reject(str(exc))
             return
         except Exception as exc:
-            reason = f"{type(self).__name__} failed to arm: {exc!r}"
+            # describe(), not repr: a failed undo is a note on the arm's error.
+            reason = f"{type(self).__name__} failed to arm: {describe(exc)}"
             self._reject(reason, fatal=True)
+            if self._arm_undo_failed:
+                raise  # answered first, so the Coordinator need not time out
             return
         self.state = DeviceState.ARMED
         self.reply(DeviceReady())

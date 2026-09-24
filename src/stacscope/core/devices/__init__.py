@@ -58,6 +58,9 @@ If an arm fails, the roles undo what they can before the error goes on,
 because a failed arm is never followed by a disarm: Recording, when its file
 will not open, disarms what armed after it; ImageStreaming detaches the frame
 memory, and when capture fails to start, first disarms what armed after it.
+If that undoing disarm fails too, the device has failed in both directions
+and nothing is known about its hardware: the arm is refused, and then the
+device dies of the arm's error, with the disarm's added as a note.
 
 If a disarm fails, everything listed after the failing step still disarms,
 so a file is still closed and the hardware still reaches its safe state. A

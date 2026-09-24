@@ -48,7 +48,8 @@ class Recording:
 
     It owns exactly one rule — an empty stem means do not record — so that no
     adapter has to remember it. A file that will not open fails the arm, after
-    disarming everything that armed after it. A file that will not close is
+    disarming everything that armed after it; if that disarm fails too, the
+    device dies once the arm has been answered. A file that will not close is
     reported as a fatal ``Fault``, never raised, and death closes the file
     too, because an unclosed file may be an unreadable one.
     """
@@ -92,11 +93,12 @@ class Recording:
             return
         try:
             await self.open_recording(path)
-        except BaseException:
+        except BaseException as exc:
             # A failed arm is never followed by a disarm, and what armed below
-            # may have opened a shutter or started a pump. If this disarm fails
-            # too, that error is raised, with the open's chained to it.
-            await super().disarm()
+            # may have opened a shutter or started a pump. The open's error is
+            # the one raised; if the disarm fails too, it is a note on it and
+            # the device dies.
+            await self._undo_arm(exc, super().disarm)
             raise
         self._recording = True
 

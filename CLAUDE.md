@@ -86,8 +86,11 @@ section explains why.
   responsibility is the buffer, and hardware sits under it behind a
   `FrameCapture` port. Camera settings are each device's own messages, not
   port methods. **Next is 5b's tests, red/green in simulation** — K1–K8, then
-  F1–F6. The plan's "5b — the image-streaming role and its capture port" has the
-  decisions, the tests, and a survey of the dev box camera.
+  F1–F6. Start from the status block at the top of the plan's
+  "Milestone 5": it says where the last session stopped and suggests how to
+  begin K1, which the user has not yet confirmed. The plan's "5b — the
+  image-streaming role and its capture port" has the decisions, the tests,
+  and a survey of the dev box camera.
   What 5a leaves open is in the plan's "Open items".
   `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`
   and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is

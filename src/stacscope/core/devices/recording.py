@@ -42,9 +42,9 @@ class Recording:
                  disarm camera, detach frame memory
 
     That is the order DCAM's DCIMG recorder needs, and a recorder that reads
-    the buffer. Listed before ``ImageStreaming``, the file would open after
-    capture starts and close before it stops. See ``stacscope.core.devices``
-    for all the roles together.
+    the buffer. Listing it before ``ImageStreaming`` raises ``TypeError``
+    when the class is defined. See ``stacscope.core.devices`` for all the
+    roles together.
 
     It owns exactly one rule — an empty stem means do not record — so that no
     adapter has to remember it. A file that will not open fails the arm, after

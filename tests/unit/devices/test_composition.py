@@ -27,7 +27,7 @@ import pytest
 
 from stacscope.adapters.simulated import SimulatedFrameCapture, VirtualClock
 from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
-from stacscope.core.devices import ImageStreaming, Recording, TimedDevice
+from stacscope.core.devices import ImageStreaming, Recording, SoftwareTimed, TimedDevice
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
 MiB = 1 << 20
@@ -45,12 +45,18 @@ class LoggingCapture(SimulatedFrameCapture):
         self.log = log
         self.stop_fails = False
         """Fail the next stop, once, as a driver that will not stop would."""
+        self.start_fails = False
+        """Fail every start, before capture begins, as a driver that
+        rejects the start would."""
 
     async def attach(self, slots):
         await super().attach(slots)
         self.log.append("attach")
 
     async def start(self):
+        if self.start_fails:
+            self.log.append("start failed")
+            raise RuntimeError("the capture would not start")
         await super().start()
         self.log.append("start")
 
@@ -122,8 +128,18 @@ class Flash(ImageStreaming, DriverRecording, CameraHardware):
     """The Flash's composition: the role, then the recorder, then the camera."""
 
 
-class RecorderFirst(DriverRecording, ImageStreaming, CameraHardware):
-    """The same roles listed the other way round."""
+class ArmErrorProbe(Flash):
+    """The Flash, keeping the exception its arm raised. The protocol reports
+    only its ``repr``, which leaves out any notes on it."""
+
+    arm_error = None
+
+    async def arm(self, root_filename, cycles):
+        try:
+            await super().arm(root_filename, cycles)
+        except Exception as exc:
+            self.arm_error = exc
+            raise
 
 
 class Listener(Actor):
@@ -209,19 +225,49 @@ async def test_the_file_closes_only_after_the_last_frame_is_published(rig):
     assert r.device.published_at_close == 1
 
 
-async def test_listing_the_recorder_first_opens_it_after_capture_starts(rig):
-    """The order is the device's to choose, and it is honoured as written.
-    This is the order that is wrong for the Flash: it documents why the Flash
-    lists ImageStreaming first, and that nothing reorders the roles behind a
-    device's back."""
-    r = rig(RecorderFirst)
-    await r.ask(StartDevice("run-01", 4))
-    await r.ask(StopDevice())
+def test_listing_the_recorder_before_image_streaming_is_refused():
+    """Listed first, the recorder would open its file after capture starts
+    and close it before capture stops: on the Flash, a DCIMG that misses its
+    first and last frames, or an arm DCAM refuses. Nothing about that order is
+    visible until an acquisition runs, so it is refused where it is written,
+    when the class is defined (user, 2026-09-24)."""
+    with pytest.raises(TypeError, match="Recording.*after.*ImageStreaming"):
 
-    assert r.device.log == [
-        "attach", "arm", "start", "open file",
-        "close file", "stop", "disarm", "detach",
-    ]  # fmt: skip
+        class RecorderFirst(DriverRecording, ImageStreaming, CameraHardware):
+            pass
+
+
+def test_listing_software_timed_after_image_streaming_is_refused():
+    """A routine on the clock may be what triggers the frames, so it must
+    stop before capture does, which means listing it first."""
+    with pytest.raises(TypeError, match="ImageStreaming.*after.*SoftwareTimed"):
+
+        class RoutineInside(ImageStreaming, SoftwareTimed, CameraHardware):
+            pass
+
+
+def test_a_role_listed_after_the_adapter_is_refused():
+    """The chain ends at TimedDevice, whose arm and disarm call nothing
+    further, so a role that falls below it in the bases is never called at
+    all: a recorder that never records, silently."""
+    with pytest.raises(TypeError, match="Recording.*before.*TimedDevice"):
+
+        class RecorderLast(CameraHardware, Recording):
+            pass
+
+
+def test_every_role_in_order_is_accepted_and_so_is_a_subclass_of_a_device():
+    """The documented order, and a device class derived from a composed one:
+    its own class comes first in the bases, which is not a role and is
+    allowed anywhere above them."""
+
+    class Everything(SoftwareTimed, ImageStreaming, Recording, CameraHardware):
+        pass
+
+    class Derived(Everything):
+        pass
+
+    assert Derived.__mro__.index(SoftwareTimed) < Derived.__mro__.index(Recording)
 
 
 async def test_a_file_that_will_not_open_leaves_nothing_armed(rig):
@@ -240,6 +286,50 @@ async def test_a_file_that_will_not_open_leaves_nothing_armed(rig):
 
     r.device.open_fails = False
     assert await r.ask(StartDevice("run-02", 4)) == DeviceReady()
+
+
+async def test_a_capture_that_will_not_start_leaves_nothing_armed(rig):
+    """The start is the last step of the arm, so by then the camera is armed
+    and the file is open. A failed arm is never followed by a disarm, so
+    ImageStreaming disarms what armed after it before giving the slots back,
+    in the disarm's own order: close the file, disarm the camera, detach.
+    Left alone, the Flash would keep a DCIMG file open and the camera
+    armed with nothing to ever disarm them."""
+    r = rig()
+    await r.device.started.wait()  # the capture is built in setup
+    r.device.capture.start_fails = True
+
+    assert isinstance(await r.ask(StartDevice("run-01", 4)), Rejected)
+    await r.clock.advance(0)
+
+    assert r.device.log == [
+        "attach", "arm", "open file", "start failed",
+        "close file", "disarm", "detach",
+    ]  # fmt: skip
+    [fault] = r.faults()
+    assert fault.fatal and "would not start" in fault.reason
+
+    r.device.capture.start_fails = False
+    assert await r.ask(StartDevice("run-02", 4)) == DeviceReady()
+
+
+async def test_when_the_rollback_also_fails_the_start_is_the_error_and_the_slots_go_back(rig):
+    """If the camera then fails to disarm, the arm still fails with the
+    start's error, the first failure, and the disarm's is a note on it, as
+    in ImageStreaming's own disarm (user, 2026-09-24). The slots are given
+    back anyway: the capture never started, so no driver is writing into
+    them."""
+    r = rig(ArmErrorProbe)
+    await r.device.started.wait()
+    r.device.capture.start_fails = True
+    r.device.disarm_fails = True
+
+    assert isinstance(await r.ask(StartDevice("run-01", 4)), Rejected)
+
+    assert r.device.log[-2:] == ["disarm", "detach"]
+    error = r.device.arm_error
+    assert "would not start" in str(error)
+    assert any("would not disarm" in note for note in getattr(error, "__notes__", []))
 
 
 async def test_the_frame_memory_is_given_back_even_if_the_camera_fails_to_disarm(rig):

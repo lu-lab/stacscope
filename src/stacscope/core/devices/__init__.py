@@ -48,16 +48,16 @@ is taken back. That is what DCAM requires, and what a recorder that reads
 the buffer needs too: it sees every frame, including the last ones
 published at the stop.
 
-The order is not checked. Python will accept the roles in any order and each
-will do its part where it is listed, so a camera listing Recording before
-ImageStreaming would open its file after capture starts and close it before
-capture stops. Choosing the order is choosing when each part happens.
+The order is checked when the device's class is defined: roles out of this
+order, or listed after the adapter's class, raise TypeError. A camera
+listing Recording before ImageStreaming would otherwise open its file after
+capture starts and close it before capture stops, and a role listed after
+the adapter would never be called at all.
 
 If an arm fails, the roles undo what they can before the error goes on,
 because a failed arm is never followed by a disarm: Recording, when its file
 will not open, disarms what armed after it; ImageStreaming detaches the frame
-memory. One case is not yet covered: a capture that fails to start leaves
-armed whatever armed after ImageStreaming.
+memory, and when capture fails to start, first disarms what armed after it.
 
 If a disarm fails, everything listed after the failing step still disarms,
 so a file is still closed and the hardware still reaches its safe state. A

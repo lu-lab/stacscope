@@ -107,10 +107,12 @@ section explains why.
   disarms as stop, publish, close file, disarm camera, detach (DCAM's order).
   `ImageStreaming.disarm` is now `arm` mirrored, and a file that fails to
   open disarms what armed below it. A capture that will not stop still lets
-  the file close and the camera disarm. **5b is done.** **Next, for a new
-  session: the "Handover" entry at the top of the plan's "Milestone 5"
-  status block.** First a known gap (a capture that fails to *start*
-  leaves armed what armed after `ImageStreaming`), then 5c: the DCAM ctypes
+  the file close and the camera disarm. A capture that will not *start*
+  disarms what armed after `ImageStreaming`, then detaches. **The base-class
+  order is enforced**: `TimedDevice.__init_subclass__` raises `TypeError`
+  for roles out of order or listed after the adapter. **5b is done.**
+  **Next, for a new session: the "Sixth session" entry at the top of the
+  plan's "Milestone 5" status block**, then 5c: the DCAM ctypes
   layer against a fake DLL, and a test that measures the in-flight depth,
   written against the fake and run on the camera in 5d by the user. Time
   stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM

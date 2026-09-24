@@ -152,8 +152,9 @@ class ImageStreaming:
         laid out when the hardware is armed and no frame can arrive ahead of
         its acquisition. With a capture, attaches the slots to it before
         everything after this class arms, and starts it after. If any of that
-        fails, the slots are detached before the error is raised; if only the
-        start fails, everything after this class is left armed.
+        fails, the slots are detached before the error is raised, and if the
+        start is what failed, everything after this class is disarmed first.
+        A failure of that disarm is added to the start's error as a note.
         """
         # Laid out before anything can see the slots: the capture is attached
         # to them below, and a device without one may point its own driver at
@@ -166,15 +167,28 @@ class ImageStreaming:
             await super().arm(root_filename, cycles)
             return
         await self.capture.attach(self.writer.slots)
+        # A failed arm is not followed by a disarm, and the next arm lays the
+        # segment out again: the hardware must not keep these slots.
         try:
             await super().arm(root_filename, cycles)
-            await self.capture.start()
         except BaseException:
-            # A failed arm is not followed by a disarm, and the next arm lays
-            # the segment out again: the hardware must not keep these slots.
-            # Known gap: if start() is what failed, everything after this class
-            # armed and is not disarmed here (a Recording's file stays open).
+            # The chain undid its own part (Recording disarms below it when
+            # its file will not open), so only the slots are left to give back.
             await self.capture.detach()
+            raise
+        try:
+            await self.capture.start()
+        except BaseException as exc:
+            # Everything after this class is armed by now: on the Flash, the
+            # camera and an open DCIMG file. Undone in disarm's order, file
+            # before slots. The start's error is the one raised, as in disarm
+            # (user, 2026-09-24). The detach also stops a half-started capture.
+            try:
+                await super().disarm()
+            except Exception as later:
+                exc.add_note(f"disarm also failed: {later!r}")
+            finally:
+                await self.capture.detach()
             raise
         # Capture is running: publish what it delivers until disarm says stop.
         self._capture_stopping = False

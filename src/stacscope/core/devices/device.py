@@ -56,6 +56,38 @@ class TimedDevice(Actor):
     not achieve, and the Coordinator reports the stop unconfirmed.
     """
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Refuses, with ``TypeError``, a device whose roles are listed out of
+        the order ``SoftwareTimed, ImageStreaming, Recording``, or listed
+        after its adapter's class. See ``stacscope.core.devices``."""
+        super().__init_subclass__(**kwargs)
+        # Imported here: the roles' modules import this one.
+        from stacscope.core.devices.image_streaming import ImageStreaming
+        from stacscope.core.devices.recording import Recording
+        from stacscope.core.devices.software_timed import SoftwareTimed
+
+        # Checked on the MRO, not on __bases__: the MRO is the order the calls
+        # run in, and it also covers a role inherited through a device class
+        # or through a subclass of a role. A wrong order is otherwise silent
+        # until an acquisition runs (user, 2026-09-24).
+        mro = cls.__mro__
+        listed = [role for role in (SoftwareTimed, ImageStreaming, Recording) if role in mro]
+        for earlier, later in zip(listed, listed[1:]):
+            if mro.index(later) < mro.index(earlier):
+                raise TypeError(
+                    f"{cls.__name__} lists {later.__name__} before {earlier.__name__}; "
+                    f"list {later.__name__} after {earlier.__name__}, in the order "
+                    "SoftwareTimed, ImageStreaming, Recording, then the adapter"
+                )
+        # TimedDevice's own arm and disarm call nothing further, so a role
+        # below it in the MRO would never run.
+        for role in listed:
+            if mro.index(role) > mro.index(TimedDevice):
+                raise TypeError(
+                    f"{cls.__name__} lists {role.__name__} after its adapter; "
+                    f"list {role.__name__} before TimedDevice and the adapter's class"
+                )
+
     def __init__(self) -> None:
         super().__init__()
         self.state = DeviceState.IDLE

@@ -41,12 +41,12 @@ section explains why.
   Relaunch: `Relaunch(name)` to the Coordinator respawns a lost device. It is
   never automatic; the user decides.
 - **Milestone 2's spec tests are complete** (B1–B10, the data flow), on
-  `main`. The shared-memory frame buffer is in `src/stacscope/core/buffer/`:
+  `main`. The shared-memory image buffer is in `src/stacscope/core/buffer/`:
   the header spec (`header.py`), producer-defined `Layout`, the
   `publish`/`published` counter (`counter.py`, the only place memory ordering
   lives; x86-64 only by decision), `Cursor` (`next` / `latest` /
   `latest_group` / `wait`), per-frame metadata (`metadata.py`), and segment
-  lifetime. `PatternProducer` in `adapters/simulated/` is the synthetic
+  lifetime. `TestImageGenerator` in `adapters/simulated/` is the synthetic
   camera. `benchmarks/buffer_tiers.py` reports throughput against the
   interface tiers on demand. Decisions and their reasons are in the plan's
   "Open items → Consumer API". CI runs Linux + Windows
@@ -57,8 +57,8 @@ section explains why.
   `TimedDevice` (IDLE ↔ ARMED, `arm` / `disarm` / `close`), and three mixins
   that compose in that order — `Recording` (the acquisition's shared stem
   becomes this device's own file), `SoftwareTimed` (a routine on the clock,
-  started by the published `SourcePhase` the device chose), and `Streaming`
-  (a `FrameBuffer` for the device's lifetime). The Coordinator gained
+  started by the published `SourcePhase` the device chose), and `ImageStreaming`
+  (an `ImageBuffer` for the device's lifetime). The Coordinator gained
   `DeviceSpec.required`, an abort on a live device's fatal `Fault`, and
   relaying of `SourcePhase` to participants. `adapters/simulated/` gained
   `TriggerBus` — the wire, in simulation, so an end-to-end frame count is
@@ -75,16 +75,20 @@ section explains why.
   device and never learns where it went. The runtime gained `adopt` (watch a
   child it did not start), `spawn(address=...)`, an `Actor.started` event, and
   a `stop()` that works from outside so `teardown` still releases the hardware.
-  `adapters/simulated/` gained `FaultyDevice` and `SimulatedStreamingCamera`.
+  `adapters/simulated/` gained `FaultyDevice` and `SimulatedFreeRunningCamera`.
   **A heartbeat is mandatory for a process child**, by decision: the link
   catches a process that dies, only a heartbeat catches one that is alive and
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
 - **Milestone 5 is in progress** (real adapters). The ordered work list is in
   the plan under "Milestone 5 → Next steps". **5a, the NI-DAQmx adapter,
-  is done**, through 5a-3 on the physical board. **Next is 5b, the camera
-  port.** It is a design task: the plan's "Milestone 5" opens with a status
-  block that says what to read first. Propose the port's shape to the user
-  before writing code. What 5a leaves open is in the plan's "Open items".
+  is done**, through 5a-3 on the physical board. **5b's shape is decided**
+  (2026-09-24): `ImageStreaming` is a device role whose primary
+  responsibility is the buffer, and hardware sits under it behind a
+  `FrameCapture` port. Camera settings are each device's own messages, not
+  port methods. **Next is 5b's tests, red/green in simulation** — K1–K8, then
+  F1–F6. The plan's "5b — the image-streaming role and its capture port" has the
+  decisions, the tests, and a survey of the dev box camera.
+  What 5a leaves open is in the plan's "Open items".
   `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`
   and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is
   done: `SignalOutput.close()`, which `WaveformSource.teardown` always calls.
@@ -113,7 +117,7 @@ section explains why.
   for trying the rig's config by hand; no test uses it.)
   `WaveformSource` also takes a bounded queue of MAINs (`QueueMain`,
   W9–W13) for sweeps and closed loops. It publishes `MainApplied(tag, cycle,
-  sample)` and `MainDiscarded`, and `SetSegment` still means "this, now"
+  sample)` and `MainDiscarded`, and `SetWaveform` still means "this, now"
   and clears the queue. On the board, `buffer_samples` may not go below
   the AO onboard FIFO (3276 with five channels), and `space_available` is
   the smaller of the two tasks' free space. The plan's "Refill experiments"
@@ -135,7 +139,7 @@ section explains why.
   the board. If either misbehaves later, start from the H2/H3 records in
   the plan.
 - **Buffer monitor (devtool).** `src/stacscope/monitor/` — a pyqtgraph window
-  for watching a frame buffer live: a slider over the ring's slots, live
+  for watching an image buffer live: a slider over the ring's slots, live
   follow, pause and refresh, the full header and per-frame metadata, and the
   magma colormap embedded as a table. The model (`follower.py`) holds every
   decision and imports no Qt, so it is tested in the default suite; the window
@@ -167,8 +171,12 @@ section explains why.
   child that cannot reach its endpoint exits rather than waits, as does one
   whose link home drops. Never add a wait here without a deadline.
 
-Names follow the plan: `setup` / `run` / `teardown` hooks; "segment" for
-WARMUP/MAIN/COOLDOWN (reserve "buffer" for the data flow); "actor runtime", not
+Names follow the plan's "Vocabulary" section, which settles image / frame /
+slot / segment / buffer / waveform / phase. In short: "image" at the flow level
+(`ImageStreaming`, `ImageBuffer`), "frame" for the mechanics inside the buffer
+and the grabber (`Frame`, `FrameCapture`); "waveform" for WARMUP/MAIN/COOLDOWN,
+"phase" only for `Phase`, "segment" only for shared memory, "buffer" for the
+data flow. Also `setup` / `run` / `teardown` hooks, and "actor runtime", not
 "actor core".
 
 ## Read these first, in this order

@@ -160,7 +160,7 @@ async def test_d12_nothing_is_produced_before_go_or_after_the_stop():
 
     await system.clock.advance(10.0)
     assert system.camera.writer.published() == produced, "no triggers, no frames"
-    assert system.camera.missed == 0, "and no pulse reached a camera that was not armed"
+    assert system.camera.capture.missed == 0, "and no pulse reached a camera that was not armed"
 
 
 async def test_d12_the_software_timed_device_runs_against_the_same_acquisition():
@@ -197,15 +197,20 @@ async def test_d12_a_second_acquisition_counts_its_own_triggers():
         assert system.coordinator.state is CoordinatorState.IDLE
         assert system.camera.acquisition_id == acquisition
         assert system.camera.writer.published() == acquisition * CYCLES * PER_CYCLE
-        assert system.camera.missed == 0
+        assert system.camera.capture.missed == 0
 
     reader = ImageBuffer.open(system.buffer_name)
     try:
         frames = [reader.cursor(i).next() for i in range(CYCLES * PER_CYCLE, 2 * CYCLES * PER_CYCLE)]
         assert {f.acquisition_id for f in frames} == {2}, "the consumer sees the second one"
+        # The stamps are the camera's own frame numbers, which restart with
+        # each capture, not the buffer's indices, which never go back. (Until
+        # the rig was rebuilt over a capture port, 2026-09-24, the simulated
+        # camera numbered on across acquisitions; DCAM's reference does not
+        # say which a real camera does.)
         assert [f.meta["hw_frame"] for f in frames] == list(
-            range(CYCLES * PER_CYCLE, 2 * CYCLES * PER_CYCLE)
-        ), "the camera's own frame numbers run on across acquisitions"
+            range(CYCLES * PER_CYCLE)
+        ), "the camera's own frame numbers, from its own start"
         del frames  # views of the segment: the reader cannot close under them
     finally:
         reader.close()

@@ -24,6 +24,7 @@ class SimulatedFrameCapture:
     ``dtype`` of the pixels, ``row_bytes`` for a row pitch wider than the
     pixels, ``frame_offset`` for bytes before the first pixel, and the
     ``slot_alignment`` and ``in_flight`` depth the hardware asks for.
+    ``reformat`` changes any of them later, between captures.
     """
 
     def __init__(
@@ -47,19 +48,15 @@ class SimulatedFrameCapture:
         self.trigger = trigger
         self._bar_width = bar_width
         self._step = step
-        kind = np.dtype(dtype)
-        self._bright = np.iinfo(kind).max if kind.kind in "iu" else 1
-        itemsize = np.dtype(dtype).itemsize
-        row_bytes = shape[1] * itemsize if row_bytes is None else row_bytes
-        self._format = FrameFormat(
+        self._settings = dict(
             shape=tuple(shape),
             dtype=dtype,
-            strides=(row_bytes, itemsize),
-            frame_bytes=frame_offset + shape[0] * row_bytes,
+            row_bytes=row_bytes,
             frame_offset=frame_offset,
             slot_alignment=slot_alignment,
             in_flight=in_flight,
         )
+        self._set_format()
         self._metadata = Metadata(
             fields=MetaField.HW_FRAME | MetaField.DEVICE_TIME | MetaField.HOST_TIME,
             device_time_source=TimeSource.CAMERA,
@@ -168,6 +165,16 @@ class SimulatedFrameCapture:
         """Lose the next ``n`` frames: exposed and counted, never delivered."""
         self._dropping += n
 
+    def reformat(self, **settings) -> None:
+        """Change any of the format settings given to the constructor, as a
+        camera setting such as ROI would. ``frame_format()`` reports the change
+        at once, and the next memory attached is written in it. Raises
+        ``RuntimeError`` while memory is attached."""
+        if self._slots is not None:
+            raise RuntimeError("frame memory is attached; detach it first")
+        self._settings.update(settings)
+        self._set_format()
+
     # --- internals ---------------------------------------------------------------
 
     def _triggered(self) -> None:
@@ -213,6 +220,21 @@ class SimulatedFrameCapture:
     def _open(self) -> None:
         if self.closed:
             raise RuntimeError("the capture has been closed")
+
+    def _set_format(self) -> None:
+        settings = self._settings
+        shape, dtype = tuple(settings["shape"]), np.dtype(settings["dtype"])
+        self._bright = np.iinfo(dtype).max if dtype.kind in "iu" else 1
+        row_bytes = settings["row_bytes"] or shape[1] * dtype.itemsize
+        self._format = FrameFormat(
+            shape=shape,
+            dtype=settings["dtype"],
+            strides=(row_bytes, dtype.itemsize),
+            frame_bytes=settings["frame_offset"] + shape[0] * row_bytes,
+            frame_offset=settings["frame_offset"],
+            slot_alignment=settings["slot_alignment"],
+            in_flight=settings["in_flight"],
+        )
 
 
 class _Pixels:

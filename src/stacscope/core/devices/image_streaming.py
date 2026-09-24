@@ -2,9 +2,9 @@
 
 This is the seam between the two flows that otherwise never touch. On one side
 the device protocol, which is asynchronous control; on the other the buffer,
-which is throughput and nothing else. The mixin is thin on purpose — it decides
-*when* the buffer is created, configured and released, and never touches a
-frame.
+which is throughput and nothing else. The role decides when the buffer is
+created, laid out and released, and what is published into it; it never
+touches a pixel.
 
 **A stream does not wait for its readers.** Images are published whether or
 not anyone consumes them, and a reader that falls behind loses frames rather
@@ -21,12 +21,25 @@ new acquisition began.
 depth are the device's to declare, through ``layout()``, because only the
 device knows what its hardware writes. The header carries all of it, so a
 consumer outside Python can read the buffer without asking anyone.
+
+**Hardware sits under it, behind a frame capture.** A camera hands its frame
+grabber the buffer's slots when it arms. From then on the grabber writes the
+frames, and the device publishes each one, stamped, as it arrives. A lost
+frame ends the publishing for that acquisition and is reported as a fatal
+fault. A producer without a grabber, one that computes its images, writes its
+slots itself instead.
 """
 
+import asyncio
 import mmap
 
+from stacscope.core.actors import Fault
 from stacscope.core.buffer import FrameWriter, ImageBuffer, Layout, LayoutError, Metadata
-from stacscope.core.ports import FrameFormat
+from stacscope.core.ports import FrameCapture, FrameFormat, FramesLost
+
+WAIT = 1.0
+"""Seconds the publisher waits for frames before asking again. It bounds only
+how long one wait lasts: stopping the capture ends a wait at once."""
 
 
 def layout_for(fmt: FrameFormat, n_slots: int) -> Layout:
@@ -63,24 +76,39 @@ class ImageStreaming:
     the name because a consumer has to find the buffer without talking to the
     engine, and the capacity because it is an allocation, made once, that every
     acquisition's layout must fit inside.
+
+    A device with hardware sets ``capture`` in its ``setup``, before calling
+    ``super().setup()``, and ``n_slots`` from config. Each acquisition is then
+    laid out from the capture's frame format, every frame it delivers is
+    stamped and published, and the capture is closed with the device. A device
+    without one overrides ``layout()`` and publishes through ``writer`` itself.
     """
 
     buffer_name: str = ""
     capacity_bytes: int = 0
     max_slots: int = 0
+    n_slots: int = 0
+    capture: FrameCapture | None = None
 
     writer: FrameWriter | None = None
     acquisition_id: int = 0
 
+    _publisher: asyncio.Task | None = None
+    _capture_stopping: bool = False
+
     def layout(self) -> Layout:
         """The structure of this acquisition's frames, which only the device
-        knows. Called on every ``arm``, so it may change between acquisitions."""
-        raise NotImplementedError
+        knows. Called on every ``arm``, so it may change between acquisitions.
+        With a ``capture``: ``n_slots`` frames of its current format."""
+        if self.capture is None:
+            raise NotImplementedError("a device without a capture declares its own layout")
+        return layout_for(self.capture.frame_format(), self.n_slots)
 
     def metadata(self) -> Metadata:
-        """Which per-frame fields this producer fills. The default declares
-        none, which is what a device with no frame counter or clock reports."""
-        return Metadata()
+        """Which per-frame fields this producer fills: the capture's stamps,
+        or, with no capture, none, which is what a device with no frame
+        counter or clock reports."""
+        return Metadata() if self.capture is None else self.capture.metadata()
 
     async def setup(self) -> None:
         await super().setup()
@@ -92,19 +120,123 @@ class ImageStreaming:
         """Configures the buffer for ``layout()`` and starts a new acquisition,
         **before** the rest of the chain arms, so the slots are laid out when
         the hardware is armed and no frame can arrive ahead of its acquisition.
+        With a capture, attaches the slots to it before the rest of the chain
+        arms, and starts it after.
         """
         # Before, not after: a driver is pointed at the slot memory as it arms
         # (DCAM attaches the slot pointers), so the layout must already be there.
-        self.writer.configure(self.layout(), self.metadata())
+        layout = self.layout()
+        self.writer.configure(layout, self.metadata())
         self.acquisition_id = self.writer.start_acquisition()
-        await super().arm(root_filename, cycles)
+        if self.capture is None:
+            await super().arm(root_filename, cycles)
+            return
+        await self.capture.attach(self.writer.slots)
+        try:
+            await super().arm(root_filename, cycles)
+            await self.capture.start()
+        except BaseException:
+            # A failed arm is not followed by a disarm, and the next arm lays
+            # the segment out again: the hardware must not keep these slots.
+            await self.capture.detach()
+            raise
+        self._capture_stopping = False
+        self._publisher = asyncio.create_task(self._publish_frames(layout))
+
+    async def disarm(self) -> None:
+        """With a capture: stops it, publishes every frame it delivered, and
+        takes the slots back, before the rest of the chain disarms."""
+        if self._publisher is not None:
+            self._capture_stopping = True
+            await self.capture.stop()
+            await self._publisher  # ends once the delivered frames are out
+            self._publisher = None
+            await self.capture.detach()
+        await super().disarm()
 
     async def close(self) -> None:
-        """Releases the segment. Stopping an acquisition deliberately does not:
+        """Releases the capture, then the segment, then whatever is below.
+        Each runs even if one before it failed; the first failure is raised
+        afterwards, with any later one added to it as a note.
+
+        If the capture failed to release, the segment is left mapped, since
+        its hardware may still be writing into it. ``BufferError`` from the
+        segment means this process still holds a view of it (``frames``,
+        ``slots``, ``meta``, or a slice of them).
+
+        Stopping an acquisition deliberately does not release the segment:
         the last frames stay readable until the next acquisition overwrites
         them, because nothing says a consumer has finished reading when the
         producer has finished writing."""
-        if self.writer is not None:
-            self.writer.close()
-            self.writer = None
-        await super().close()
+        errors: list[Exception] = []
+        publisher, self._publisher = self._publisher, None
+        if publisher is not None:  # still running only if disarm never ran, or failed
+            publisher.cancel()
+            await asyncio.gather(publisher, return_exceptions=True)
+        released = True
+        if self.capture is not None:
+            try:
+                await self.capture.close()
+            except Exception as exc:
+                errors.append(exc)
+                released = False
+        # Not left to the BufferError alone: a capture that gave its view back
+        # and then failed to release would let the close unmap memory its
+        # driver is still writing into. Left mapped, the segment goes with the
+        # process; on POSIX its name stays, and the next producer under that
+        # name takes it over.
+        if self.writer is not None and released:
+            try:
+                self.writer.close()
+                self.writer = None
+            except Exception as exc:
+                errors.append(exc)
+        try:
+            await super().close()
+        except Exception as exc:
+            errors.append(exc)
+        if errors:
+            for later in errors[1:]:
+                errors[0].add_note(f"close also failed: {later!r}")
+            raise errors[0]
+
+    async def _publish_frames(self, layout: Layout) -> None:
+        """Publishes each frame the capture delivers, until the capture stops
+        or a frame is lost."""
+        seen = 0
+        try:
+            while True:
+                # Read before waiting: a stop that lands during the wait gets
+                # one more pass, which publishes whatever arrived before it.
+                stopping = self._capture_stopping
+                delivered = await self.capture.wait_frames(seen, 0 if stopping else WAIT)
+                seen = self._publish(seen, delivered, layout)
+                if stopping:
+                    return
+        except Exception as exc:
+            # Nothing more is published this acquisition: a consumer counting
+            # frames would misplace every one after the gap.
+            reason = f"{type(self).__name__} stopped publishing: {exc!r}"
+            self.publish(Fault(self.ref, reason, fatal=True))
+
+    def _publish(self, seen: int, delivered: int, layout: Layout) -> int:
+        """Stamps and publishes frames ``seen`` to ``delivered - 1`` of this
+        acquisition, and returns ``delivered``. Raises ``FramesLost`` if the
+        hardware may already be writing into the slot of any of them."""
+        if delivered <= seen:
+            return seen
+        # The hardware may be writing up to in_flight frames past the newest
+        # it reported, into the slots of frames one ring earlier.
+        oldest = delivered + layout.in_flight - layout.n_slots
+        if seen < oldest:
+            raise FramesLost(seen, oldest - seen)
+        first = self.writer.acquisition_start + seen
+        for offset, stamp in enumerate(self.capture.stamps(seen, delivered - seen)):
+            self.writer.stamp(
+                first + offset,
+                hw_frame=int(stamp["hw_frame"]),
+                device_ticks=int(stamp["device_ticks"]),
+                host_time_ns=int(stamp["host_time_ns"]),
+            )
+        self.writer.publish(delivered - seen)
+        return delivered

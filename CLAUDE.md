@@ -90,8 +90,14 @@ section explains why.
   `tests/contract/frame_capture_contract.py`. **Buffer views now pin the
   segment**: every view is built over `np.frombuffer`, so closing a buffer
   while a caller still holds a view (`frames`, `slots`, a `Frame`) raises
-  `BufferError`. Tests must drop their frames before closing a reader. **Next
-  is F1–F6.** Start from
+  `BufferError`. Tests must drop their frames before closing a reader.
+  **F1–F6 (the role contract) are green in simulation**:
+  `ImageStreaming` takes an optional `capture` and publishes what it
+  delivers, and `SimulatedCamera` is now that role over
+  `SimulatedFrameCapture`. The contract is in
+  `tests/contract/image_streaming_contract.py`. A mixin shares the actor's
+  attribute namespace: a role flag named `_stopping` once stopped the whole
+  actor. **Next is the `Recording` change.** Start from
   the status block at the top of the plan's "Milestone 5": it has the ordered
   next steps. The plan's "5b — the image-streaming role and its capture port"
   has the decisions, the tests, and a survey of the dev box camera.

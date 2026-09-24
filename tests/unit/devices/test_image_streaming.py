@@ -13,10 +13,10 @@ import uuid
 import numpy as np
 import pytest
 
-from stacscope.adapters.simulated import VirtualClock
-from stacscope.core.actors import Actor, ask, spawn
+from stacscope.adapters.simulated import SimulatedFrameCapture, VirtualClock
+from stacscope.core.actors import Actor, Rejected, ask, spawn
 from stacscope.core.buffer import ImageBuffer, Layout
-from stacscope.core.devices import ImageStreaming, TimedDevice
+from stacscope.core.devices import ImageStreaming, NotReady, TimedDevice
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
 MiB = 1 << 20
@@ -35,12 +35,18 @@ class CameraHardware(TimedDevice):
         self.shape = shape
         self.n_slots = n_slots
         self.calls = []
+        self.refuse = False
 
     async def arm(self, root_filename, cycles):
+        if self.refuse:
+            raise NotReady("not now")
         self.calls.append(("arm", self.writer.frames.shape, self.writer.acquisition_id))
 
     async def disarm(self):
         self.calls.append("disarm")
+
+    async def close(self):
+        self.calls.append("hardware closed")
 
 
 class FakeCamera(ImageStreaming, CameraHardware):
@@ -58,12 +64,12 @@ class FakeCamera(ImageStreaming, CameraHardware):
 
 
 class Rig:
-    def __init__(self, **kwargs):
+    def __init__(self, kind=None, **kwargs):
         self.clock = VirtualClock()
         self.parent = Actor()
         spawn(self.parent, clock=self.clock, name="coordinator")
         self.name = "t" + uuid.uuid4().hex[:20]
-        self.device = FakeCamera(self.name, **kwargs)
+        self.device = (kind or FakeCamera)(self.name, **kwargs)
         self.ref = self.parent.spawn_child(self.device, name="camera")
 
     async def ask(self, msg):
@@ -83,8 +89,8 @@ class Rig:
 async def rig():
     rigs = []
 
-    def make(**kwargs):
-        rigs.append(Rig(**kwargs))
+    def make(kind=None, **kwargs):
+        rigs.append(Rig(kind, **kwargs))
         return rigs[-1]
 
     yield make
@@ -228,3 +234,163 @@ async def test_the_buffer_is_ready_before_the_hardware_is_armed(rig):
 
     await r.ask(StartDevice("run-01", 4))
     assert r.device.calls == [("arm", (8, *SHAPE), 1)], "layout and acquisition both set"
+
+
+# --- F5: releasing in order, however the device goes (ImageStreaming.close) ------
+
+
+class ReleasingCapture(SimulatedFrameCapture):
+    """A capture that logs its close and, if told to, fails it the dangerous
+    way: it gives the frame memory back and then cannot release the device."""
+
+    def __init__(self, clock, log, *, fails=False):
+        super().__init__(clock, shape=SHAPE)
+        self.log = log
+        self.fails = fails
+
+    async def close(self):
+        self.log.append("capture closed")
+        if self.fails:
+            await self.detach()
+            raise RuntimeError("the device would not release")
+        await super().close()
+
+
+class CapturingCamera(ImageStreaming, CameraHardware):
+    """A camera whose frames come from a capture, logging each release. With
+    ``leak``, the device's own code keeps a view of its frames past close."""
+
+    def __init__(self, name, *, fails=False, leak=False):
+        super().__init__(name)
+        self.fails = fails
+        self.leak = leak
+        self.leaked = None
+
+    async def setup(self):
+        self.capture = ReleasingCapture(self.clock, self.calls, fails=self.fails)
+        await super().setup()
+        close = self.writer.close
+
+        def logged_close():
+            self.calls.append("segment closed")
+            close()
+
+        self.writer.close = logged_close
+
+    async def arm(self, root_filename, cycles):
+        await super().arm(root_filename, cycles)
+        if self.leak:
+            self.leaked = self.writer.frames[0]
+
+
+async def test_closing_releases_the_capture_then_the_segment_then_the_rest(rig):
+    """The hardware lets go of the frame memory before the segment closes,
+    and whatever sits below the role closes last."""
+    r = rig(CapturingCamera)
+    await r.launched()
+    await r.ask(StartDevice("run-01", 4))
+
+    await r.shut_down()
+
+    assert r.device.exit_error is None
+    assert r.device.calls[-3:] == ["capture closed", "segment closed", "hardware closed"]
+
+
+async def test_a_capture_that_fails_to_release_leaves_the_segment_mapped(rig):
+    """If the device would not release, its driver may still be writing into
+    the slots, so the segment stays mapped until the process goes. The pin
+    alone cannot be relied on: this adapter gave its view back before
+    failing, so closing the segment would have gone through. The rest of the
+    device is still released, and the death reason is the capture's."""
+    r = rig(CapturingCamera, fails=True)
+    await r.launched()
+    await r.ask(StartDevice("run-01", 4))
+
+    await r.shut_down()
+
+    try:
+        assert "segment closed" not in r.device.calls
+        assert r.device.calls[-2:] == ["capture closed", "hardware closed"]
+        assert isinstance(r.device.exit_error, RuntimeError)
+        ImageBuffer.open(r.name).close()  # still there
+    finally:
+        r.device.writer.close()
+
+
+async def test_a_leaked_view_fails_the_close_only_after_everything_else_is_released(rig):
+    """A view the producer's own code kept makes the segment refuse to close.
+    That is a bug to report, as the device's death reason, but not a reason
+    to skip releasing what comes after it."""
+    r = rig(CapturingCamera, leak=True)
+    await r.launched()
+    await r.ask(StartDevice("run-01", 4))
+
+    await r.shut_down()
+
+    try:
+        assert r.device.calls[-3:] == ["capture closed", "segment closed", "hardware closed"]
+        assert isinstance(r.device.exit_error, BufferError)
+    finally:
+        r.device.leaked = None
+        r.device.writer.close()
+
+
+async def test_a_refused_arm_gives_the_frame_memory_back(rig):
+    """An arm that fails after the slots were attached must detach them, or
+    the next arm, which lays the segment out again, finds the hardware still
+    holding the old slots, and its attach is refused."""
+    r = rig(CapturingCamera)
+    await r.launched()
+    r.device.refuse = True
+    assert isinstance(await r.ask(StartDevice("run-01", 4)), Rejected)
+
+    r.device.refuse = False
+    assert await r.ask(StartDevice("run-02", 4)) == DeviceReady()
+
+
+# --- F4: the pass after the stop ---------------------------------------------------
+
+
+class StopMidTransferCapture(SimulatedFrameCapture):
+    """A frame is in transfer when the capture is stopped, and lands after the
+    wait under way has already reported. A driver whose wait runs in a thread
+    does this: the count it gave the role is one short by the time the role
+    resumes. The simulated capture alone never does, because it counts as the
+    role resumes."""
+
+    def __init__(self, clock):
+        super().__init__(clock, shape=SHAPE)
+        self.in_transfer = False
+
+    async def stop(self):
+        self.in_transfer = self._capturing
+        await super().stop()
+
+    async def wait_frames(self, seen, timeout):
+        delivered = await super().wait_frames(seen, timeout)
+        if self.in_transfer:
+            self.in_transfer = False
+            self._capturing = True  # the transfer completes; no new trigger is taken
+            self._triggered()
+            self._capturing = False
+        return delivered
+
+
+class StopMidTransferCamera(ImageStreaming, CameraHardware):
+    async def setup(self):
+        self.capture = StopMidTransferCapture(self.clock)
+        await super().setup()
+
+
+async def test_stop_publishes_a_frame_that_landed_after_the_last_count(rig):
+    """The stop takes one more count once the capture has stopped, and
+    publishes what it finds. Without it, a frame that completed as the stop
+    came is delivered and never published: the last plane of the stack,
+    missing, with no fault to say so."""
+    r = rig(StopMidTransferCamera)
+    await r.launched()
+    await r.ask(StartDevice("run-01", 4))
+
+    assert await r.ask(StopDevice()) == DeviceStopped()
+
+    assert r.device.writer.published() == 1

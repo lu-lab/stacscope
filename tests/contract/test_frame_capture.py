@@ -99,3 +99,29 @@ async def test_pixels_are_written_where_the_format_places_them(rig, buffers):
         touched[start : start + cols * itemsize] = True
 
     assert (slot[~touched] == SENTINEL).all()
+
+
+async def test_reformat_takes_effect_from_the_next_attach(rig, buffers):
+    """A setting that changes the frame, as ROI does on a camera: the format
+    reports it at once, and the next memory attached is written in it."""
+    rig.capture.reformat(shape=(12, 20))
+    fmt = rig.capture.frame_format()
+    assert fmt.shape == (12, 20)
+    assert fmt.frame_offset + 11 * fmt.strides[0] + 20 * fmt.strides[1] <= fmt.frame_bytes
+
+    writer = await _capturing(rig, buffers)
+    await rig.trigger(1)
+
+    lit = np.flatnonzero((writer.frames[0] == np.iinfo(writer.frames.dtype).max).all(axis=0))
+    assert list(lit) == [0, 1, 2, 3]
+
+
+async def test_reformat_is_refused_while_memory_is_attached(rig, buffers):
+    """The simulated hardware writes the geometry it was attached with; a
+    format changed under attached memory would describe frames it is not
+    writing."""
+    writer = buffers(rig.capture.frame_format(), rig.n_slots)
+    await rig.capture.attach(writer.slots)
+
+    with pytest.raises(RuntimeError):
+        rig.capture.reformat(shape=(12, 20))

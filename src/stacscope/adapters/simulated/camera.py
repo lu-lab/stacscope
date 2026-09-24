@@ -5,22 +5,27 @@ that proves the two meet correctly. Triggers reach it on the simulated wire,
 never through a message, because that is how a real camera works: the DAQ pulls
 its trigger line and the driver DMAs a frame in without asking any actor.
 
-The images themselves come from ``TestImageGenerator``, so what a viewer shows is
-a bar moving across the field.
+Its frames come from a simulated frame grabber, which draws a bar moving
+across the field, so that is what a viewer shows. The free-running camera
+draws the same bar with a test image generator of its own.
 """
 
+from stacscope.adapters.simulated.frame_capture import SimulatedFrameCapture
 from stacscope.adapters.simulated.image_generator import TestImageGenerator
 from stacscope.core.buffer import Layout
-from stacscope.core.devices import DeviceState, ImageStreaming, SoftwareTimed, TimedDevice
+from stacscope.core.devices import ImageStreaming, SoftwareTimed, TimedDevice
 from stacscope.core.protocol import Phase
 
 
 class SimulatedCamera(ImageStreaming, TimedDevice):
     """Produces one frame per rising edge on its trigger line, while armed.
 
-    Everything outside ``arm`` and the trigger callback is inherited: the
-    buffer's lifetime, the layout, and the protocol replies are not this
-    device's business.
+    Frames are captured by a ``SimulatedFrameCapture``, available as
+    ``capture`` once the device has started; everything else, from the
+    buffer's layout to publishing each frame, is the ``ImageStreaming``
+    role's. ``shape``, ``dtype``, ``row_bytes``, ``frame_offset``,
+    ``slot_alignment`` and ``in_flight`` set the frame format, as they do on
+    the capture.
     """
 
     def __init__(
@@ -29,8 +34,12 @@ class SimulatedCamera(ImageStreaming, TimedDevice):
         *,
         bus=None,
         trigger: str = "camera_trigger",
-        shape: tuple[int, ...] = (64, 64),
+        shape: tuple[int, int] = (64, 64),
         dtype: str = "<u2",
+        row_bytes: int | None = None,
+        frame_offset: int = 0,
+        slot_alignment: int = 64,
+        in_flight: int = 1,
         n_slots: int = 16,
         capacity_bytes: int = 1 << 24,
         max_slots: int = 64,
@@ -39,42 +48,24 @@ class SimulatedCamera(ImageStreaming, TimedDevice):
         self.buffer_name = buffer_name
         self.capacity_bytes = capacity_bytes
         self.max_slots = max_slots
+        self.n_slots = n_slots
         self.bus = bus
         self.trigger = trigger
-        self.shape = shape
-        self.dtype = dtype
-        self.n_slots = n_slots
-        self.generator: TestImageGenerator | None = None
-        self.missed = 0
-        """Triggers that arrived when the camera was not armed to take them."""
-
-    def layout(self) -> Layout:
-        return Layout(shape=self.shape, dtype=self.dtype, n_slots=self.n_slots)
-
-    def metadata(self):
-        return self.generator.metadata
+        self._format = dict(
+            shape=shape,
+            dtype=dtype,
+            row_bytes=row_bytes,
+            frame_offset=frame_offset,
+            slot_alignment=slot_alignment,
+            in_flight=in_flight,
+        )
 
     async def setup(self) -> None:
+        # The capture runs on the actor's clock, which exists only from here.
+        self.capture = SimulatedFrameCapture(
+            self.clock, self.bus, trigger=self.trigger, **self._format
+        )
         await super().setup()
-        self.generator = TestImageGenerator(self.writer)
-        if self.bus is not None:
-            self.bus.subscribe(self.trigger, self._triggered)
-
-    async def arm(self, root_filename: str, cycles: int) -> None:
-        await super().arm(root_filename, cycles)  # buffer configured, acquisition started
-        self.generator.reset()
-
-    async def close(self) -> None:
-        if self.bus is not None:
-            self.bus.unsubscribe(self.trigger, self._triggered)
-        await super().close()
-
-    def _triggered(self) -> None:
-        """A trigger pulse arrived. Outside the mailbox, like a DMA callback."""
-        if self.state is DeviceState.ARMED:
-            self.generator.emit(1)
-        else:
-            self.missed += 1
 
 
 class SimulatedFreeRunningCamera(SoftwareTimed, ImageStreaming, TimedDevice):

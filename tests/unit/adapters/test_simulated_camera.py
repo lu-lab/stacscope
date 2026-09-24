@@ -32,20 +32,20 @@ async def camera():
 async def test_a_trigger_before_arming_is_counted_and_written_nowhere(camera):
     device, _, _ = camera
 
-    device._triggered()
-    device._triggered()
+    device.capture._triggered()
+    device.capture._triggered()
 
-    assert device.missed == 2
+    assert device.capture.missed == 2
     assert device.writer.published() == 0
 
 
 async def test_a_trigger_after_stopping_is_counted_too(camera):
     device, ref, clock = camera
     assert await ask(ref, StartDevice("run-01", 4), timeout=1.0, clock=clock) == DeviceReady()
-    device._triggered()
+    device.capture._triggered()
 
     await ask(ref, StopDevice(), timeout=1.0, clock=clock)
-    device._triggered()
+    device.capture._triggered()
 
     assert device.writer.published() == 1, "only the one that arrived while armed"
-    assert device.missed == 1
+    assert device.capture.missed == 1

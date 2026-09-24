@@ -37,7 +37,8 @@ SHAPE = (4, 6)
 class LoggingCapture(SimulatedFrameCapture):
     """A capture that logs what the role asks of it. ``stop`` and ``detach``
     log only when they change something, so the stop inside ``detach`` and
-    the detach inside ``close`` do not show up as second calls."""
+    the detach inside ``close`` do not show up as second calls. A stop told
+    to fail logs that it failed, and fails once."""
 
     def __init__(self, clock, log):
         super().__init__(clock, shape=SHAPE)

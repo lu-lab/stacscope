@@ -53,9 +53,11 @@ will do its part where it is listed, so a camera listing Recording before
 ImageStreaming would open its file after capture starts and close it before
 capture stops. Choosing the order is choosing when each part happens.
 
-If an arm fails, each role undoes its own part before the error goes on:
-Recording disarms what armed after it, ImageStreaming detaches the frame
-memory. A failed arm is never followed by a disarm, so nothing else will.
+If an arm fails, the roles undo what they can before the error goes on,
+because a failed arm is never followed by a disarm: Recording, when its file
+will not open, disarms what armed after it; ImageStreaming detaches the frame
+memory. One case is not yet covered: a capture that fails to start leaves
+armed whatever armed after ImageStreaming.
 
 If a disarm fails, everything listed after the failing step still disarms,
 so a file is still closed and the hardware still reaches its safe state. A

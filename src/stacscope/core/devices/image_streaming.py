@@ -152,10 +152,13 @@ class ImageStreaming:
         laid out when the hardware is armed and no frame can arrive ahead of
         its acquisition. With a capture, attaches the slots to it before
         everything after this class arms, and starts it after. If any of that
-        fails, the slots are detached before the error is raised.
+        fails, the slots are detached before the error is raised; if only the
+        start fails, everything after this class is left armed.
         """
-        # Before, not after: a driver is pointed at the slot memory as it arms
-        # (DCAM attaches the slot pointers), so the layout must already be there.
+        # Laid out before anything can see the slots: the capture is attached
+        # to them below, and a device without one may point its own driver at
+        # them in its arm (DCAM attaches slot pointers), so the layout and the
+        # new acquisition must already be in the header.
         layout = self.layout()
         self.writer.configure(layout, self.metadata())
         self.acquisition_id = self.writer.start_acquisition()
@@ -169,8 +172,11 @@ class ImageStreaming:
         except BaseException:
             # A failed arm is not followed by a disarm, and the next arm lays
             # the segment out again: the hardware must not keep these slots.
+            # Known gap: if start() is what failed, everything after this class
+            # armed and is not disarmed here (a Recording's file stays open).
             await self.capture.detach()
             raise
+        # Capture is running: publish what it delivers until disarm says stop.
         self._capture_stopping = False
         self._publisher = asyncio.create_task(self._publish_frames(layout))
 
@@ -186,6 +192,8 @@ class ImageStreaming:
         if self._publisher is None:
             await super().disarm()
             return
+        # Read by the publisher before each wait: once set, its next pass is
+        # its last, and waits for nothing.
         self._capture_stopping = True
         try:
             await self.capture.stop()
@@ -218,11 +226,12 @@ class ImageStreaming:
 
     async def close(self) -> None:
         """Releases the capture, then the segment, then whatever is below.
-        Each runs even if one before it failed; the first failure is raised
-        afterwards, with any later one added to it as a note.
+        Whatever is below is released even if the capture or the segment
+        failed; the first failure is raised afterwards, with any later one
+        added to it as a note.
 
-        If the capture failed to release, the segment is left mapped, since
-        its hardware may still be writing into it. ``BufferError`` from the
+        If the capture failed to release, the segment is not closed but left
+        mapped, since its hardware may still be writing into it. ``BufferError`` from the
         segment means this process still holds a view of it (``frames``,
         ``slots``, ``meta``, or a slice of them).
 
@@ -232,7 +241,7 @@ class ImageStreaming:
         producer has finished writing."""
         errors: list[Exception] = []
         publisher, self._publisher = self._publisher, None
-        if publisher is not None:  # still running only if disarm never ran, or failed
+        if publisher is not None:  # set only if disarm never ran, or its stop failed
             publisher.cancel()
             await asyncio.gather(publisher, return_exceptions=True)
         released = True
@@ -285,13 +294,15 @@ class ImageStreaming:
         """Stamps and publishes frames ``seen`` to ``delivered - 1`` of this
         acquisition, and returns ``delivered``. Raises ``FramesLost`` if the
         hardware may already be writing into the slot of any of them."""
-        if delivered <= seen:
+        if delivered <= seen:  # a wait that timed out with nothing new
             return seen
         # The hardware may be writing up to in_flight frames past the newest
         # it reported, into the slots of frames one ring earlier.
         oldest = delivered + layout.in_flight - layout.n_slots
         if seen < oldest:
             raise FramesLost(seen, oldest - seen)
+        # Stamp every frame before publishing any: a consumer may read a frame
+        # the moment the count covers it, and must find its metadata there.
         first = self.writer.acquisition_start + seen
         for offset, stamp in enumerate(self.capture.stamps(seen, delivered - seen)):
             self.writer.stamp(

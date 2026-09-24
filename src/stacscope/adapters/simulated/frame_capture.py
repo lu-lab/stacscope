@@ -2,9 +2,10 @@
 given, as a camera driver's DMA would.
 
 Triggers reach it on the simulated wire (``TriggerBus``), never through a
-message. Each frame shows a bar that moves a few columns per frame, so a
-viewer shows steady motion. It writes pixels and nothing else: publishing the
-frames is the job of whatever gave it the memory.
+message. Each frame shows a bar that moves one column further per frame
+(or more, if asked), so a viewer shows steady motion. It writes pixels and
+nothing else: publishing the frames is the job of whatever gave it the
+memory.
 """
 
 import asyncio
@@ -107,12 +108,16 @@ class SimulatedFrameCapture:
             raise ValueError("slots must be writable")
         self._slots = slots
         self._frames = _typed(slots, fmt)
+        # One stamp per slot, overwritten with the slot: as on a camera, only
+        # frames still in the slots have stamps to read.
         self._stamps = np.zeros(len(slots), STAMP_DTYPE)
 
     async def start(self) -> None:
         self._open()
         if self._slots is None:
             raise RuntimeError("attach frame memory before starting")
+        # Every capture counts from 0: delivered frames, and the camera's own
+        # frame numbers, which the next delivery checks for a gap.
         self._delivered = 0
         self._hw_frame = 0
         self._next_hw_frame = 0
@@ -124,7 +129,8 @@ class SimulatedFrameCapture:
         try:
             delivered = await self.clock.wait_for(self._arrival(seen), timeout)
         except TimeoutError:
-            delivered = self._delivered
+            delivered = self._delivered  # nothing new in time: report the count so far
+        # A loss is raised on every wait from then on, so a caller cannot miss it.
         if self._lost is not None:
             raise self._lost
         return delivered
@@ -133,6 +139,7 @@ class SimulatedFrameCapture:
         self._open()
         if self._stamps is None:
             raise RuntimeError("no frame memory is attached")
+        # Frames older than one ring have had their slots, and stamps, reused.
         held = len(self._stamps)
         if n < 0 or first < max(0, self._delivered - held) or first + n > self._delivered:
             raise ValueError(
@@ -146,6 +153,7 @@ class SimulatedFrameCapture:
         self._wake()
 
     async def detach(self) -> None:
+        # Stopped first: memory is never taken back from a running capture.
         await self.stop()
         self._slots = None
         self._frames = None
@@ -189,8 +197,12 @@ class SimulatedFrameCapture:
             self._dropping -= 1
             self._hw_frame += 1
             return
+        # A gap in the camera's numbering since the last delivery: frames were
+        # exposed and never delivered. The first gap is the loss reported, and
+        # this frame is still delivered, as a driver's would be.
         if self._hw_frame != self._next_hw_frame and self._lost is None:
             self._lost = FramesLost(self._delivered, self._hw_frame - self._next_hw_frame)
+        # Written as DMA would: pixels into slot i mod n, then its stamp.
         slot = self._delivered % len(self._frames)
         frame = self._frames[slot]
         frame[...] = 0
@@ -207,6 +219,7 @@ class SimulatedFrameCapture:
         self._wake()
 
     async def _arrival(self, seen: int) -> int:
+        # Until there is something new, the capture stops, or a loss is found.
         while self._capturing and self._delivered <= seen and self._lost is None:
             await self._changed.wait()
         return self._delivered
@@ -224,7 +237,7 @@ class SimulatedFrameCapture:
     def _set_format(self) -> None:
         settings = self._settings
         shape, dtype = tuple(settings["shape"]), np.dtype(settings["dtype"])
-        self._bright = np.iinfo(dtype).max if dtype.kind in "iu" else 1
+        self._bright = np.iinfo(dtype).max if dtype.kind in "iu" else 1  # the bar: full scale
         row_bytes = settings["row_bytes"] or shape[1] * dtype.itemsize
         self._format = FrameFormat(
             shape=shape,

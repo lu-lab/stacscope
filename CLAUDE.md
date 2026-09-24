@@ -106,7 +106,18 @@ section explains why.
   Recording, TimedDevice)` arms as attach, arm camera, open file, start, and
   disarms as stop, publish, close file, disarm camera, detach (DCAM's order).
   `ImageStreaming.disarm` is now `arm` mirrored, and a file that fails to
-  open disarms what armed below it. Start from
+  open disarms what armed below it. A capture that will not stop still lets
+  the file close and the camera disarm. **5b is done.** **Next, for a new
+  session: the "Handover" entry at the top of the plan's "Milestone 5"
+  status block.** First a known gap (a capture that fails to *start*
+  leaves armed what armed after `ImageStreaming`), then 5c: the DCAM ctypes
+  layer against a fake DLL, and a test that measures the in-flight depth,
+  written against the fake and run on the camera in 5d by the user. Time
+  stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
+  SDK licence forbids distributing any of the SDK**: never copy its headers,
+  samples or `dcamapi4.py` into this repository, and put "For end use and
+  not for commercial purposes." in a comment in the DCAM adapter's files.
+  The plan's "The DCAM SDK licence" has the rest. Start from
   the status block at the top of the plan's "Milestone 5": it has the ordered
   next steps. The plan's "5b — the image-streaming role and its capture port"
   has the decisions, the tests, and a survey of the dev box camera.

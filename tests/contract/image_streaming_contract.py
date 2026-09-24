@@ -362,8 +362,9 @@ async def test_disarm_gives_the_frame_memory_back(rig):
 
 async def test_death_mid_acquisition_lets_go_of_the_frame_memory_before_the_segment_closes(rig):
     """The death path: the device stops while frames are arriving, with no
-    StopDevice to disarm it in order first. The hardware must still let go
-    of the slots before the segment closes. If the segment closed first, the
+    StopDevice; its teardown disarms and closes it, as it would after a
+    crash in its mailbox. The hardware must still let go of the slots before
+    the segment closes. If the segment closed first, the
     close would be refused (the pin), the segment would be left behind, and
     the device would die with an error."""
     await _start(rig)

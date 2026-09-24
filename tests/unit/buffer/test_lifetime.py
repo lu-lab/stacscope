@@ -78,6 +78,26 @@ def test_closing_the_producer_removes_the_segment(name):
     assert not exists(name)
 
 
+def test_closing_the_producer_again_does_nothing(name):
+    """A second close is harmless on every OS, and above all it never removes
+    a segment that is no longer its own.
+
+    POSIX removes by name, so a second unlink would remove whatever holds the
+    name now: here a producer restarted under it, whose readers would lose
+    their buffer to a close that belonged to its predecessor. Windows cannot
+    show this (removal there is by last handle), so only the Linux leg of CI
+    is red without the fix. Closing twice is also what cleanup code does when
+    a test closed the producer itself, and that raised on POSIX alone."""
+    old = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
+    old.close()
+    successor = ImageBuffer.create(name, capacity_bytes=4096, max_slots=4)
+    try:
+        old.close()
+        assert exists(name), "the successor's segment survives its predecessor's second close"
+    finally:
+        successor.close()
+
+
 def test_a_restarted_producer_takes_over_the_crashed_ones_segment(name):
     crashed = CrashingProducer(name, """
         writer.configure(Layout(shape=(2, 2), dtype="<u2", n_slots=3))

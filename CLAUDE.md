@@ -116,8 +116,11 @@ section explains why.
   stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,
   samples or `dcamapi4.py` into this repository, and put "For end use and
-  not for commercial purposes." in a comment in the DCAM adapter's files.
-  The plan's "The DCAM SDK licence" has the rest. Start from
+  not for commercial purposes." in a comment in the DCAM adapter's files
+  and its fake. **No copyright line or licence on those files**: the
+  licence forbids claiming copyright in a derivative work. Keep the layer
+  thin (property IDs looked up by name at runtime). The plan's "The DCAM
+  SDK licence" has the policy the user decided, and the reasons. Start from
   the status block at the top of the plan's "Milestone 5": it has the ordered
   next steps. The plan's "5b — the image-streaming role and its capture port"
   has the decisions, the tests, and a survey of the dev box camera.

@@ -85,12 +85,15 @@ section explains why.
   (2026-09-24): `ImageStreaming` is a device role whose primary
   responsibility is the buffer, and hardware sits under it behind a
   `FrameCapture` port. Camera settings are each device's own messages, not
-  port methods. **Next is 5b's tests, red/green in simulation** — K1–K8, then
-  F1–F6. Start from the status block at the top of the plan's
-  "Milestone 5": it says where the last session stopped and suggests how to
-  begin K1, which the user has not yet confirmed. The plan's "5b — the
-  image-streaming role and its capture port" has the decisions, the tests,
-  and a survey of the dev box camera.
+  port methods. **K1–K8 (the port contract) are green in simulation, not yet
+  committed**: `core/ports/frame_capture.py`, `SimulatedFrameCapture`, and
+  `tests/contract/frame_capture_contract.py`. **Next is a buffer fix found
+  while writing K6**: numpy views made with `np.ndarray(buffer=shm.buf)` do
+  not pin the segment, so closing it under a live view unmaps memory the view
+  still points at (a segfault, not a `BufferError`). Then F1–F6. Start from
+  the status block at the top of the plan's "Milestone 5": it has the ordered
+  next steps. The plan's "5b — the image-streaming role and its capture port"
+  has the decisions, the tests, and a survey of the dev box camera.
   What 5a leaves open is in the plan's "Open items".
   `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`
   and against an NI MAX simulated PCI-6733 named **`Dev1-sim`**. Step 1 is

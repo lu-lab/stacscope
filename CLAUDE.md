@@ -114,11 +114,26 @@ section explains why.
   then dies (`TimedDevice._undo_arm`): it has failed in both directions. **The base-class
   order is enforced**: `TimedDevice.__init_subclass__` raises `TypeError`
   for roles out of order or listed after the adapter. **5b is done.**
-  **Next, for a new session: the "Sixth session" entry at the top of the
-  plan's "Milestone 5" status block**, then 5c: the DCAM ctypes
-  layer against a fake DLL, and a test that measures the in-flight depth,
-  written against the fake and run on the camera in 5d by the user. Time
-  stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
+  **5c is green in simulation** (Q1–Q10). **The DCAM adapter targets
+  Windows only** (user): its tests live in `tests/adapters/dcam/`, stay out
+  of CI and the default run, and are run by name,
+  `uv run pytest tests/adapters/dcam`.
+  - The pieces:
+    - `DcamFrameCapture` (`adapters/dcam/capture.py`), over a private
+      ctypes binding (`_api.py`);
+    - a fake of the DLL's function table (`fake_dcam.py`), which numbers
+      properties unlike the header, so an ID hard-coded in the adapter fails;
+    - `measure_in_flight` (`adapters/in_flight.py`), which works through
+      the port alone.
+  - Set `STACSCOPE_DCAM_SDK` to the SDK folder and the conformance test
+    checks our structs against the installed headers.
+  - Stamps come from stamp buffers attached one per slot, and lost frames
+    are caught both by DCAM's error and by gaps in the frame stamps (user).
+  - **Next, for a new session: the 5c entry at the top of the plan's
+    "Milestone 5" status block.** It lists what 5d must settle and what is
+    not written yet.
+
+  Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,
   samples or `dcamapi4.py` into this repository, and put "For end use and
   not for commercial purposes." in a comment in the DCAM adapter's files

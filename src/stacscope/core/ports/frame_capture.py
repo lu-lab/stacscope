@@ -41,10 +41,12 @@ class FrameFormat:
 
 class FramesLost(RuntimeError):
     """Frames were exposed but never delivered. ``after`` is how many frames of
-    this acquisition arrived before the gap, and ``lost`` how many are missing."""
+    this acquisition arrived before the gap, and ``lost`` how many are missing,
+    or ``None`` if the hardware reported a loss without saying how many."""
 
-    def __init__(self, after: int, lost: int) -> None:
-        super().__init__(f"{lost} frame(s) lost after frame {after}")
+    def __init__(self, after: int, lost: int | None) -> None:
+        how_many = "an unknown number of frames" if lost is None else f"{lost} frame(s)"
+        super().__init__(f"{how_many} lost after frame {after}")
         self.after = after
         self.lost = lost
 

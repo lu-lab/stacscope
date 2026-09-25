@@ -76,10 +76,15 @@ class DeviceLaunched:
 @dataclass(frozen=True, slots=True)
 class StartDevice:
     """Prepare for acquisition, then reply ``DeviceReady``. ``cycles`` matters
-    only to the timing source; other participants ignore it."""
+    only to the timing source; other participants ignore it. ``frames`` is
+    how many pulses the device's trigger line will carry this acquisition,
+    as the timing source counted them at the start, or -1 if that is not
+    known (an acquisition until stopped, a device with no trigger line, a
+    source that cannot count)."""
 
     root_filename: str
     cycles: int
+    frames: int = -1
 
 
 @message
@@ -124,6 +129,28 @@ class Go:
 @dataclass(frozen=True, slots=True)
 class Finish:
     """Leave Run for Cooldown at the source's next safe boundary."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class CountPulses:
+    """Ask the timing source how many pulses each of its lines will carry
+    in an acquisition of ``cycles``. Replied ``PulseCounts``, or
+    ``Rejected`` by a source that cannot count."""
+
+    cycles: int
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class PulseCounts:
+    """Each line's pulses (rising edges) over an acquisition, by the line's
+    label: ``counts[i]`` is for ``lines[i]``, -1 where it cannot be known
+    (an acquisition until stopped). Counted from the waveforms as they stand;
+    one changed during the acquisition changes what actually plays."""
+
+    lines: tuple[str, ...]
+    counts: tuple[int, ...]
 
 
 @message

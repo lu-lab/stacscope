@@ -25,11 +25,13 @@ from stacscope.core.actors import (
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
+    CountPulses,
     DeviceLaunched,
     DeviceReady,
     DeviceStopped,
     Finish,
     Go,
+    PulseCounts,
     Relaunch,
     SourceFinished,
     SourcePhase,
@@ -67,13 +69,20 @@ class DeviceSpec:
     later one until the device is relaunched. Default true,
     so the safe answer is the one nobody has to remember. An optional device is
     a deliberate choice: an experiment worth finishing without it."""
+    trigger: str | None = None
+    """The label of the timing source's line that triggers this device, if
+    one does. Each start tells the device how many pulses that line will
+    carry (``StartDevice.frames``)."""
 
 
 class Coordinator(Actor):
     """Idle → Starting → Running → Stopping → Idle, plus Faulted.
 
-    - ``StartAcquisition``: ``StartDevice`` to every participant and the
-      source, concurrently, each with its own timeout. All ``DeviceReady`` →
+    - ``StartAcquisition``: asks the source to count each line's pulses
+      (``CountPulses``), then ``StartDevice`` to every participant and the
+      source, concurrently, each with its own timeout, telling each
+      participant its trigger line's count. A source that cannot count
+      leaves every count -1, and the start goes on. All ``DeviceReady`` →
       ``Go`` to the source, reply ``AcquisitionStarted``. Otherwise abort:
       reply ``Rejected``, publish a non-fatal ``Fault``, ``StopDevice`` to
       everyone (laggards included, so none is left armed), back to Idle.
@@ -141,7 +150,7 @@ class Coordinator(Actor):
                         f"required device lost: {', '.join(lost)}; Relaunch it to start"
                     )
                     return
-                await self._start(StartDevice(root_filename, cycles))
+                await self._start(root_filename, cycles)
             case StopAcquisition():
                 if self._refuse(msg, CoordinatorState.RUNNING):
                     return
@@ -167,11 +176,19 @@ class Coordinator(Actor):
             case _:
                 self._reject(f"{type(msg).__name__} is not understood by the Coordinator")
 
-    async def _start(self, start: StartDevice) -> None:
+    async def _start(self, root_filename: str, cycles: int) -> None:
         self.state = CoordinatorState.STARTING
+        counts = await self._pulse_counts(cycles)
         devices = self._devices()
         ready = await asyncio.gather(
-            *(self._ready(ref, start, spec.ready_timeout) for spec, ref in devices)
+            *(
+                self._ready(
+                    ref,
+                    StartDevice(root_filename, cycles, counts.get(spec.trigger, -1)),
+                    spec.ready_timeout,
+                )
+                for spec, ref in devices
+            )
         )
         laggards = [spec.name for (spec, _), ok in zip(devices, ready) if not ok]
         if laggards:
@@ -184,6 +201,22 @@ class Coordinator(Actor):
         self.source.tell(Go())
         self.state = CoordinatorState.RUNNING
         self.reply(AcquisitionStarted())
+
+    async def _pulse_counts(self, cycles: int) -> dict[str, int]:
+        """Each line's pulses this acquisition, by label; empty if the source
+        cannot say. Bounded by the source's own ready timeout, which its
+        StartDevice would spend anyway."""
+        # Asked of the source because only it holds the waveforms: the
+        # Coordinator still never looks at one.
+        try:
+            reply = await ask(
+                self.source, CountPulses(cycles), timeout=self._source_spec.ready_timeout, clock=self.clock
+            )
+        except AskTimeout:
+            return {}
+        if not isinstance(reply, PulseCounts):
+            return {}
+        return dict(zip(reply.lines, reply.counts, strict=True))
 
     async def _ready(self, ref: ActorRef, start: StartDevice, timeout: float) -> bool:
         try:

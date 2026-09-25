@@ -1,5 +1,6 @@
 """A timing source whose phases do nothing but take time."""
 
+from stacscope.core.protocol import CountPulses, PulseCounts
 from stacscope.core.timing import TimingSource
 
 
@@ -7,7 +8,9 @@ class SimulatedTimingSource(TimingSource):
     """Records every hook call; each cycle lasts ``cycle_period`` on the clock,
     and ``drain`` takes ``drain_time`` — as a real buffered output keeps playing
     what was already committed. ``arm`` takes ``arm_time``. ``fail_on_cycle``
-    makes that cycle raise, killing the source.
+    makes that cycle raise, killing the source. ``pulses_per_cycle``, by
+    line label, makes it answer ``CountPulses`` as a source with trigger
+    lines would; without it, it cannot count, like a camera as the source.
 
     Deliberately assumes nothing about AO: it is what proves the Coordinator
     works with any source, including a camera.
@@ -19,15 +22,26 @@ class SimulatedTimingSource(TimingSource):
         drain_time: float = 0.0,
         arm_time: float = 0.0,
         fail_on_cycle: int | None = None,
+        pulses_per_cycle: dict[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.cycle_period = cycle_period
         self.drain_time = drain_time
         self.arm_time = arm_time
         self.fail_on_cycle = fail_on_cycle
+        self.pulses_per_cycle = pulses_per_cycle
         self.calls: list[object] = []
         self.cycles_started = 0
         self.cycles_completed = 0
+
+    async def handle(self, msg: object) -> None:
+        match msg:
+            case CountPulses(cycles) if self.pulses_per_cycle is not None:
+                lines = tuple(self.pulses_per_cycle)
+                counts = tuple(n * cycles if cycles >= 0 else -1 for n in self.pulses_per_cycle.values())
+                self.reply(PulseCounts(lines, counts))
+            case _:
+                await super().handle(msg)
 
     async def arm(self, root_filename: str, cycles: int) -> None:
         if self.arm_time:

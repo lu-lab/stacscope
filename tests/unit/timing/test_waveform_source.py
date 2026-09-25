@@ -23,6 +23,7 @@ from stacscope.core.actors import (
 )
 from stacscope.core.ports import Channel, OutputConfig, Underflow
 from stacscope.core.protocol import (
+    CountPulses,
     DeviceReady,
     Finish,
     Go,
@@ -641,3 +642,64 @@ async def test_n12_when_stop_and_close_both_fail_neither_is_lost():
     report = describe(rig.source.exit_error)
     assert "refused to stop" in report
     assert "refused to close" in report
+
+
+# --- W14: each line's pulses over an acquisition ----------------------------------------
+
+
+def _counts(reply):
+    return dict(zip(reply.lines, reply.counts, strict=True))
+
+
+async def test_w14_each_lines_pulses_are_counted_over_the_whole_acquisition():
+    """A device on a trigger line learns from this how many frames an
+    acquisition will give it (user, 2026-09-25). A pulse is a rising edge,
+    from the line's low before output: WARMUP once, MAIN once per cycle,
+    COOLDOWN once. A line held high across the joins is one pulse."""
+    rig = Rig()
+    await rig.load()
+
+    reply = await rig.ask(CountPulses(3))
+
+    # camera_trigger: a pulse every 4 samples; laser_enable: high throughout;
+    # ueye_trigger: one pulse per MAIN.
+    assert _counts(reply) == {"camera_trigger": 1 + 3 * 2 + 1, "laser_enable": 1, "ueye_trigger": 3}
+
+
+async def test_w14_a_pulse_across_the_join_between_cycles_is_counted_once():
+    rig = Rig()
+    await rig.load()
+    ao, do = waveform(8, 1.0)
+    do[0] = [True, False, False, False, False, False, False, True]  # high from sample 7 to the next 0
+    assert await rig.ask(SetWaveform(Waveform.MAIN, ao, do)) == Accepted()
+
+    reply = await rig.ask(CountPulses(3))
+
+    # WARMUP's pulse; MAIN's first sample rises once, and each sample 7
+    # rises and runs on into the next cycle's sample 0; the last one runs on
+    # into COOLDOWN's first sample, so COOLDOWN adds none.
+    assert _counts(reply)["camera_trigger"] == 1 + 1 + 3 + 0
+
+
+async def test_w14_queued_mains_are_counted_in_order_then_the_last_one_repeats():
+    """As they will play: each queued MAIN for one cycle, then the last one
+    taken for every cycle after; MAINs queued beyond the acquisition's
+    cycles never play."""
+    rig = Rig()
+    await rig.load()
+    for tag, pulses in [("a", 1), ("b", 4), ("c", 3)]:
+        ao, do = waveform(8, 1.0)
+        do[0] = False
+        do[0, : 2 * pulses : 2] = True
+        assert await rig.ask(QueueMain(tag, ao, do)) == Accepted()
+
+    assert _counts(await rig.ask(CountPulses(5)))["camera_trigger"] == 1 + (1 + 4 + 3 + 3 + 3) + 1
+    assert _counts(await rig.ask(CountPulses(1)))["camera_trigger"] == 1 + 1 + 1
+
+
+async def test_w14_an_acquisition_until_stopped_or_without_a_main_has_no_count():
+    rig = Rig()
+
+    assert set(_counts(await rig.ask(CountPulses(3))).values()) == {-1}, "no MAIN yet"
+    await rig.load()
+    assert set(_counts(await rig.ask(CountPulses(-1))).values()) == {-1}

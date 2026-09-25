@@ -64,6 +64,11 @@ class TimedDevice(Actor):
 
     _arm_undo_failed: bool = False
 
+    expected_frames: int = -1
+    """How many pulses this device's trigger line will carry in the
+    acquisition being armed, as the timing source counted them, or -1 if
+    that is not known. Set from ``StartDevice`` before ``arm`` is called."""
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Refuses, with ``TypeError``, a device whose roles are listed out of
         the order ``SoftwareTimed, ImageStreaming, Recording``, or listed
@@ -108,7 +113,8 @@ class TimedDevice(Actor):
         for its first trigger. Raise ``NotReady`` to refuse.
 
         ``cycles`` is what the acquisition asked for (negative means until
-        stopped). Most devices ignore it; a recorder may use it to bound a file.
+        stopped). Most devices ignore it. A recorder bounding a file wants
+        ``expected_frames``, already set when this is called.
         """
 
     async def disarm(self) -> None:
@@ -140,8 +146,8 @@ class TimedDevice(Actor):
 
     async def handle(self, msg: object) -> None:
         match msg:
-            case StartDevice(root_filename, cycles):
-                await self._start(msg, root_filename, cycles)
+            case StartDevice(root_filename, cycles, frames):
+                await self._start(msg, root_filename, cycles, frames)
             case StopDevice():
                 if self.state is DeviceState.ARMED:
                     await self._disarm()
@@ -151,10 +157,13 @@ class TimedDevice(Actor):
             case _:
                 self._reject(f"{type(msg).__name__} is not understood by {type(self).__name__}")
 
-    async def _start(self, msg: object, root_filename: str, cycles: int) -> None:
+    async def _start(self, msg: object, root_filename: str, cycles: int, frames: int) -> None:
         if self.state is not DeviceState.IDLE:
             self._reject(f"{type(msg).__name__} is not valid while {self.state.name}")
             return
+        # An attribute, not an argument to arm: every role's arm would change
+        # for what one kind of role (a recorder) uses.
+        self.expected_frames = frames
         try:
             await self.arm(root_filename, cycles)
         except NotReady as exc:

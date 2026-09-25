@@ -10,6 +10,8 @@ from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
 from stacscope.core.actors import Accepted, Rejected
 from stacscope.core.protocol import (
     AcquisitionStarted,
+    CountPulses,
+    PulseCounts,
     AcquisitionStopped,
     DeviceLaunched,
     Phase,
@@ -260,3 +262,83 @@ async def test_relaunch_is_refused_unless_the_device_is_gone_and_nothing_is_runn
     await rig.start()
     assert isinstance(await rig.call(Relaunch("shutter")), Rejected), "not mid-acquisition"
     assert len(shutter.made) == 1
+
+
+# --- C6: each device's frame count ------------------------------------------------
+
+
+def _counting(**pulses_per_cycle):
+    return SimulatedTimingSource(cycle_period=PERIOD, pulses_per_cycle=pulses_per_cycle)
+
+
+async def test_c6_a_triggered_device_is_started_with_its_lines_pulse_count():
+    """A recorder sizes its file from the acquisition's length (user,
+    2026-09-25). Only the timing source knows its pulse trains, and config
+    names the line that triggers each device, so the Coordinator asks the
+    one and tells the other. A device with no line is told -1."""
+    rig = Rig(
+        source=_counting(camera_trigger=4, ueye_trigger=1),
+        camera=Dev(SimulatedDevice(), trigger="camera_trigger"),
+        shutter=SimulatedDevice(),
+    )
+
+    assert await rig.start(cycles=10) == AcquisitionStarted()
+
+    assert rig.devices["camera"].started_with[0].frames == 40
+    assert rig.devices["shutter"].started_with[0].frames == -1
+
+
+async def test_c6_an_acquisition_until_stopped_has_no_count():
+    rig = Rig(source=_counting(camera_trigger=4), camera=Dev(SimulatedDevice(), trigger="camera_trigger"))
+
+    assert await rig.start(cycles=-1) == AcquisitionStarted()
+
+    assert rig.devices["camera"].started_with[0].frames == -1
+
+
+async def test_c6_a_source_that_cannot_count_leaves_the_count_unknown_and_starts():
+    """A count is a convenience to a recorder, not a condition of running:
+    a camera as the source, say, has none to give."""
+    rig = Rig(camera=Dev(SimulatedDevice(), trigger="camera_trigger"))
+
+    assert await rig.start(cycles=10) == AcquisitionStarted()
+
+    assert rig.devices["camera"].started_with[0].frames == -1
+    assert rig.listener.faults() == []
+
+
+async def test_c6_a_line_the_source_does_not_have_is_unknown():
+    rig = Rig(source=_counting(camera_trigger=4), camera=Dev(SimulatedDevice(), trigger="camera_trigger_2"))
+
+    assert await rig.start(cycles=10) == AcquisitionStarted()
+
+    assert rig.devices["camera"].started_with[0].frames == -1
+
+
+def test_c6_a_pulse_count_crosses_the_codec():
+    from stacscope.core.protocol import MESSAGES
+    from stacscope.core.transport import Codec
+
+    counts = PulseCounts(("camera_trigger", "ueye_trigger"), (40, -1))
+    codec = Codec(MESSAGES)
+
+    assert codec.decode(codec.encode(counts)) == counts
+
+
+class _Silent(SimulatedTimingSource):
+    """A source that never answers ``CountPulses``, but starts."""
+
+    async def handle(self, msg):
+        if isinstance(msg, CountPulses):
+            return
+        await super().handle(msg)
+
+
+async def test_c6_a_source_that_never_answers_the_count_delays_the_start_by_its_timeout():
+    rig = Rig(source=_Silent(cycle_period=PERIOD), camera=Dev(SimulatedDevice(), trigger="camera_trigger"))
+
+    starting = rig.request(StartAcquisition(10, "run-01"))
+    await rig.clock.advance(READY_TIMEOUT)
+
+    assert await starting == AcquisitionStarted()
+    assert rig.devices["camera"].started_with[0].frames == -1

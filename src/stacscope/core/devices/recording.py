@@ -62,7 +62,8 @@ class Recording:
     def target(self, root_filename: str) -> Path | None:
         """This acquisition's file for this device, or ``None`` for an
         acquisition that is not being saved. Override to name it differently —
-        returning ``None`` still means record nothing."""
+        returning ``None`` still means record nothing. Called before anything
+        arms; raising refuses the arm."""
         if not root_filename:
             return None
         return self.save_directory / f"{root_filename}_{self.name}{self.file_suffix}"
@@ -87,8 +88,11 @@ class Recording:
         # once fixed that point for every device; DCAM needs it between attach
         # and start, inside ImageStreaming's arm, which a fixed point could not
         # express (user, 2026-09-24).
-        await super().arm(root_filename, cycles)
+        # Named before anything arms: a device's target may refuse (no
+        # directory set), and a refusal after the arm below would leave it
+        # armed, since a failed arm is never followed by a disarm.
         path = self.target(root_filename)
+        await super().arm(root_filename, cycles)
         if path is None:
             return
         try:

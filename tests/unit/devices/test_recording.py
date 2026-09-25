@@ -232,3 +232,27 @@ async def test_a_recorder_that_cannot_open_disarms_what_it_armed():
     assert await rig.ask(StopDevice()) == DeviceStopped()
     assert rig.device.closed == 0, "no file was opened, so none is closed"
     assert rig.device.calls == ["arm", "open", "disarm"], "and it is not disarmed twice"
+
+
+class Unnamed(FakeRecorder):
+    """A device that cannot name a file yet: no directory has been set."""
+
+    def target(self, root_filename):
+        raise RuntimeError("no save directory is set")
+
+
+async def test_a_file_that_cannot_be_named_fails_the_arm_before_anything_arms():
+    """A device's own ``target`` may refuse (the Flash has no directory until
+    one is set). Named after the device below had armed, that refusal left
+    it armed with no disarm to follow: the file is named first, so a
+    refusal arms nothing."""
+    rig = Rig(cls=Unnamed)
+
+    assert isinstance(await rig.ask(StartDevice("run-01", 10)), Rejected)
+    await rig.clock.advance(0)
+
+    assert rig.device.calls == []
+    [fault] = rig.faults()
+    assert "no save directory" in fault.reason
+    assert await rig.ask(StopDevice()) == DeviceStopped()
+    assert rig.device.calls == []

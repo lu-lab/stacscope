@@ -14,12 +14,19 @@ Windows only, like the adapter, and not part of the default run:
 
 import asyncio
 import pathlib
+import shutil
 import sys
 import threading
 import uuid
 
 import pytest
-from fake_dcam import ERR_ACCESSDENY, ERR_NOTWRITABLE, FakeDcam, error_text
+from fake_dcam import (
+    ERR_NOTWRITABLE,
+    RECORD_PER_FILE,
+    RECORD_PER_SESSION,
+    FakeDcam,
+    error_text,
+)
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 
@@ -29,9 +36,13 @@ from stacscope.adapters.dcam import (  # noqa: E402
     GetProperty,
     OrcaFlash,
     PropertyValue,
+    SaveDirectory,
     SetProperty,
     SetPropertyLabel,
+    SetSaveDirectory,
+    _api,
 )
+from stacscope.adapters.dcam import camera as camera_module  # noqa: E402
 from stacscope.core.actors import (  # noqa: E402
     Actor,
     Fault,
@@ -61,6 +72,14 @@ SHAPE = (24, 40)  # the fake's default image
 @pytest.fixture
 def fake():
     return FakeDcam()
+
+
+@pytest.fixture(autouse=True)
+def roomy_disk(monkeypatch):
+    """Every disk reports 4 TiB, 3 free, so no test depends on the disk it
+    runs on; the O9 tests set their own."""
+    usage = shutil._ntuple_diskusage(4 << 40, 1 << 40, 3 << 40)
+    monkeypatch.setattr(camera_module, "disk_usage", lambda path: usage)
 
 
 @pytest.fixture
@@ -234,7 +253,7 @@ async def test_o3_while_armed_a_setting_that_reshapes_the_frame_is_refused(launc
     await _trigger(fake, 1)
 
     assert isinstance(answer, Rejected)
-    assert error_text(ERR_ACCESSDENY) in answer.reason
+    assert error_text(_api.ERR_BUSY) in answer.reason
     assert _faults(listener) == []
     assert device.writer.published() - device.writer.acquisition_start == 1
     assert await _ask(ref, StopDevice()) == DeviceStopped()
@@ -438,6 +457,8 @@ async def test_o6_a_device_cancelled_while_dcam_opens_still_closes_the_camera(la
         GetProperty("TRIGGER SOURCE"),
         PropertyValue("TRIGGER SOURCE", 52.0, "EXTERNAL"),
         PropertyValue("EXPOSURE TIME", 0.01, None),
+        SetSaveDirectory("E:/data"),
+        SaveDirectory("E:/data"),
     ],
     ids=lambda m: type(m).__name__,
 )
@@ -447,3 +468,326 @@ def test_o7_the_settings_messages_cross_a_process_boundary(msg):
     codec = Codec(MESSAGES)
 
     assert codec.decode(codec.encode(msg)) == msg
+
+
+# --- O8: recording an acquisition to DCIMG ---------------------------------------------------
+
+
+def _published(device) -> int:
+    return device.writer.published() - device.writer.acquisition_start
+
+
+async def test_o8_an_acquisition_with_a_stem_is_recorded_to_the_devices_own_file(launch, fake, tmp_path):
+    """The Coordinator's stem, joined to the device's directory and name,
+    is where the driver's recorder writes: every frame published is in
+    the file, and the file is closed with the acquisition."""
+    device, ref, listener = await launch(fake, save_directory=tmp_path)
+
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    await _trigger(fake, 3)
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+    await asyncio.sleep(GRACE)
+
+    [file] = fake.recordings
+    assert file.path == str(tmp_path / "run-01_camera0.dcimg")
+    assert file.closed and len(file.frames) == 3 == _published(device)
+    assert _faults(listener) == []
+
+
+async def test_o8_an_acquisition_without_a_stem_records_nothing(launch, fake, tmp_path):
+    _, ref, listener = await launch(fake, save_directory=tmp_path)
+
+    assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
+    await _trigger(fake, 2)
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+
+    assert fake.recordings == []
+    assert not any(call.startswith("dcamrec") for call in fake.calls)
+    assert _faults(listener) == []
+
+
+async def test_o8_each_acquisition_gets_its_own_file(launch, fake, tmp_path):
+    """dcamcap_record binds a file to one capture only (the reference).
+    Each file is held to its own acquisition's frames, not the buffer's
+    running count."""
+    _, ref, listener = await launch(fake, save_directory=tmp_path)
+
+    for stem, frames in [("run-01", 2), ("run-02", 3)]:
+        assert await _ask(ref, StartDevice(stem, -1)) == DeviceReady()
+        await _trigger(fake, frames)
+        assert await _ask(ref, StopDevice()) == DeviceStopped()
+
+    assert [(pathlib.Path(f.path).name, len(f.frames)) for f in fake.recordings] == [
+        ("run-01_camera0.dcimg", 2),
+        ("run-02_camera0.dcimg", 3),
+    ]
+    await asyncio.sleep(GRACE)
+    assert _faults(listener) == []
+
+
+async def test_o8_a_device_that_dies_recording_closes_its_file(launch, fake, tmp_path):
+    """The reference: a file not closed may lose data. A device stopped
+    while armed closes the file before DCAM is uninitialized (the fake
+    records the reverse as misuse, which the fixture checks)."""
+    device, ref, _ = await launch(fake, save_directory=tmp_path)
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    await _trigger(fake, 2)
+
+    device.stop()
+    await device.stopped.wait()
+
+    assert fake.open_recordings == []
+    assert len(fake.recordings[0].frames) == 2
+
+
+# --- O9: how many frames a file may hold ------------------------------------------------------
+
+GIB = 1 << 30
+
+
+@pytest.fixture
+def disk(monkeypatch):
+    """``disk(free, total)`` makes every disk report these bytes."""
+
+    def set_(free: int, total: int) -> None:
+        usage = shutil._ntuple_diskusage(total, total - free, free)
+        monkeypatch.setattr(camera_module, "disk_usage", lambda path: usage)
+
+    return set_
+
+
+def _room(fake, frames: int) -> int:
+    """Free bytes that leave room for exactly ``frames`` frames, beyond the
+    headroom of a disk of 500 GiB (100 GiB, which is more than its 10%)."""
+    per_frame = int(fake._value("RECORD FIXED BYTES PER FRAME"))
+    return 100 * GIB + RECORD_PER_FILE + RECORD_PER_SESSION + frames * per_frame + per_frame - 1
+
+
+async def _limit(ref, fake, frames: int = -1) -> int:
+    stem = f"run-{len(fake.recordings):02d}"  # a file is never recorded over
+    assert await _ask(ref, StartDevice(stem, 10, frames)) == DeviceReady()
+    limit = fake.recordings[-1].max_frames
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+    return limit
+
+
+async def test_o9_a_file_holds_the_acquisitions_frames_when_they_are_known(launch, fake, tmp_path, disk):
+    """The acquisition's length comes first (user, 2026-09-25): the file
+    reserves its whole size at open (V4), so a file no larger than the
+    acquisition claims no more of the disk than it will use."""
+    disk(_room(fake, 1000), 500 * GIB)
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    assert await _limit(ref, fake, frames=37) == 37
+
+
+async def test_o9_without_a_known_length_a_file_may_fill_the_disk_but_its_headroom(
+    launch, fake, tmp_path, disk
+):
+    """An acquisition until stopped may use the disk, less headroom for the
+    file system and for anything else writing to the disk (user,
+    2026-09-25): the larger of 100 GiB, the legacy's constant, and 10%."""
+    disk(_room(fake, 1000), 500 * GIB)
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    assert await _limit(ref, fake) == 1000
+
+
+async def test_o9_on_a_large_disk_the_headroom_is_a_tenth_of_it(launch, fake, tmp_path, disk):
+    per_frame = int(fake._value("RECORD FIXED BYTES PER FRAME"))
+    total = 4096 * GIB
+    disk(total // 10 + RECORD_PER_FILE + RECORD_PER_SESSION + 1000 * per_frame + per_frame - 1, total)
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    assert await _limit(ref, fake) == 1000
+
+
+async def test_o9_a_count_the_camera_is_not_triggered_by_is_not_its_length(launch, fake, tmp_path, disk):
+    """The count is of the line's pulses. A Flash on its internal or
+    software trigger takes frames the line never pulsed, and a file sized
+    to the pulses would stop short."""
+    disk(_room(fake, 1000), 500 * GIB)
+    _, ref, _ = await launch(fake, save_directory=tmp_path, settings=[("TRIGGER SOURCE", "INTERNAL")])
+
+    assert await _limit(ref, fake, frames=37) == 1000
+
+
+async def test_o9_config_can_lower_the_limit(launch, fake, tmp_path, disk):
+    disk(_room(fake, 1000), 500 * GIB)
+    _, ref, _ = await launch(fake, save_directory=tmp_path, max_record_frames=5)
+
+    assert await _limit(ref, fake) == 5
+    assert await _limit(ref, fake, frames=37) == 5
+
+
+async def test_o9_an_acquisition_of_no_frames_still_opens_a_file_dcam_accepts(launch, fake, tmp_path, disk):
+    disk(_room(fake, 1000), 500 * GIB)
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    assert await _limit(ref, fake, frames=0) == 1
+
+
+async def test_o9_a_limit_beyond_what_dcam_can_count_is_dcams_largest(launch, fake, tmp_path, disk):
+    disk(1 << 62, 1 << 62)
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    assert await _limit(ref, fake) == 2**31 - 1
+
+
+async def test_o9_a_disk_without_room_for_a_frame_refuses_the_acquisition(launch, fake, tmp_path, disk):
+    """Recording nothing while the acquisition runs would look like a
+    success. The arm is refused, naming the directory, and the camera is
+    left as it was: memory detached, nothing capturing, no file open."""
+    disk(_room(fake, 0) - int(fake._value("RECORD FIXED BYTES PER FRAME")), 500 * GIB)
+    _, ref, listener = await launch(fake, save_directory=tmp_path)
+
+    answer = await _ask(ref, StartDevice("run-01", -1))
+    await asyncio.sleep(GRACE)
+
+    assert isinstance(answer, Rejected)
+    assert tmp_path.name in answer.reason and "no room" in answer.reason
+    assert fake.recordings == []
+    assert not fake.attached and not fake.capturing
+    assert [f.fatal for f in _faults(listener)] == [True]
+
+
+async def test_o9_a_known_length_the_disk_cannot_hold_refuses_the_acquisition(
+    launch, fake, tmp_path, disk
+):
+    """Found before the first frame, not when the disk fills partway."""
+    disk(_room(fake, 1000), 500 * GIB)
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    answer = await _ask(ref, StartDevice("run-01", 10, 1001))
+
+    assert isinstance(answer, Rejected)
+    assert "1001 frames" in answer.reason and "room for 1000" in answer.reason
+    assert fake.recordings == [] and not fake.attached
+
+
+# --- O10: a file that falls short is fatal -----------------------------------------------------
+
+
+async def test_o10_a_file_that_reached_its_limit_before_the_stop_is_a_fatal_fault(
+    launch, fake, tmp_path
+):
+    """Streaming goes on after the recorder stops at its limit, so the
+    acquisition looks whole while the file is not. Found at the stop,
+    fatal (user, 2026-09-25), and the stop is still confirmed."""
+    _, ref, listener = await launch(fake, save_directory=tmp_path, max_record_frames=2)
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    await _trigger(fake, 3)
+
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+    await asyncio.sleep(GRACE)
+
+    [fault] = _faults(listener)
+    assert fault.fatal
+    assert "2 of the 3" in fault.reason and "run-01_camera0.dcimg" in fault.reason
+
+
+async def test_o10_frames_the_recorder_missed_are_a_fatal_fault(launch, fake, tmp_path):
+    _, ref, listener = await launch(fake, save_directory=tmp_path)
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    fake.miss_recording(1)
+    await _trigger(fake, 3)
+
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+    await asyncio.sleep(GRACE)
+
+    [fault] = _faults(listener)
+    assert fault.fatal and "missed 1" in fault.reason
+
+
+async def test_o10_a_recorder_still_writing_at_the_close_is_a_fatal_fault(
+    launch, fake, tmp_path, monkeypatch
+):
+    """A file closed under a recorder that had not finished may be missing
+    its end, whatever its count said."""
+    monkeypatch.setattr(camera_module, "RECORDER_FINISH", 0.2)
+    fake.recorder_lag = -1
+    _, ref, listener = await launch(fake, save_directory=tmp_path)
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    await _trigger(fake, 2)
+
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+    await asyncio.sleep(GRACE)
+
+    [fault] = _faults(listener)
+    assert fault.fatal and "still writing" in fault.reason
+    assert fake.open_recordings == []
+
+
+# --- O11: where the files go ---------------------------------------------------------------------
+
+
+async def test_o11_the_save_directory_is_set_by_message(launch, fake, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    assert await _ask(ref, SetSaveDirectory(str(other))) == SaveDirectory(str(other))
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+
+    assert fake.recordings[0].path == str(other / "run-01_camera0.dcimg")
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+
+
+async def test_o11_a_directory_that_does_not_exist_is_refused(launch, fake, tmp_path):
+    """Refused rather than created: a mistyped path would otherwise put an
+    acquisition somewhere nobody looks."""
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    answer = await _ask(ref, SetSaveDirectory(str(tmp_path / "typo")))
+
+    assert isinstance(answer, Rejected) and "typo" in answer.reason
+    assert not (tmp_path / "typo").exists()
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    assert fake.recordings[0].path == str(tmp_path / "run-01_camera0.dcimg")
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+
+
+async def test_o11_the_directory_does_not_change_during_an_acquisition(launch, fake, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+
+    assert isinstance(await _ask(ref, SetSaveDirectory(str(other))), Rejected)
+
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+    assert await _ask(ref, SetSaveDirectory(str(other))) == SaveDirectory(str(other))
+
+
+async def test_o11_a_stem_with_no_directory_set_refuses_the_acquisition(launch, fake):
+    """No directory is no place to record, not the working directory."""
+    _, ref, _ = await launch(fake)
+
+    answer = await _ask(ref, StartDevice("run-01", -1))
+
+    assert isinstance(answer, Rejected) and "save directory" in answer.reason
+    assert fake.recordings == [] and not fake.attached
+    assert await _ask(ref, StartDevice("", -1)) == DeviceReady(), "streaming alone still works"
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+
+
+async def test_o11_an_existing_file_is_never_overwritten(launch, fake, tmp_path):
+    """A repeated stem would otherwise replace an acquisition already
+    taken. The arm is refused and the file left as it was."""
+    existing = tmp_path / "run-01_camera0.dcimg"
+    existing.write_bytes(b"an earlier acquisition")
+    _, ref, _ = await launch(fake, save_directory=tmp_path)
+
+    answer = await _ask(ref, StartDevice("run-01", -1))
+
+    assert isinstance(answer, Rejected) and "run-01_camera0.dcimg" in answer.reason
+    assert existing.read_bytes() == b"an earlier acquisition"
+    assert fake.recordings == [] and not fake.attached
+
+
+async def test_o11_the_directory_from_config_is_checked_at_launch(launch, fake, tmp_path):
+    device, _, _ = await launch(fake, save_directory=tmp_path / "typo")
+
+    assert not device.started.is_set()
+    assert "typo" in str(device.exit_error)
+    assert not fake._initialized

@@ -73,6 +73,8 @@ CAPSTART_SEQUENCE = -1
 CAPEVENT_FRAMEREADY = 0x0002
 CAPEVENT_STOPPED = 0x0010
 
+RECSTATUSFLAG_RECORDING = 0x00000001
+
 PROPOPTION_SUPPORT = 0x00000000
 PROPOPTION_NEXT = 0x01000000
 PROPOPTION_PRIOR = _signed(0xFF000000)
@@ -167,6 +169,38 @@ class DCAMWAIT_START(_Sized):
     ]
 
 
+class DCAMREC_OPENW(_Sized):
+    # The wide-character form: a path is passed as Windows holds it, so any
+    # name the file system allows can be recorded to.
+    _fields_ = [
+        ("size", c_int32),
+        ("reserved", c_int32),
+        ("hrec", c_void_p),
+        ("path", ctypes.c_wchar_p),
+        ("ext", ctypes.c_wchar_p),
+        ("maxframepersession", c_int32),
+        ("userdatasize", c_int32),
+        ("userdatasize_session", c_int32),
+        ("userdatasize_file", c_int32),
+        ("usertextsize", c_int32),
+        ("usertextsize_session", c_int32),
+        ("usertextsize_file", c_int32),
+    ]
+
+
+class DCAMREC_STATUS(_Sized):
+    _fields_ = [
+        ("size", c_int32),
+        ("currentsession_index", c_int32),
+        ("maxframecount_per_session", c_int32),
+        ("currentframe_index", c_int32),
+        ("missingframe_count", c_int32),
+        ("flags", c_int32),
+        ("totalframecount", c_int32),
+        ("reserved", c_int32),
+    ]
+
+
 # --- functions ---------------------------------------------------------------------
 
 FUNCTIONS = {
@@ -188,10 +222,14 @@ FUNCTIONS = {
     "dcamcap_stop": [c_void_p],
     "dcamcap_transferinfo": [c_void_p, POINTER(DCAMCAP_TRANSFERINFO)],
     "dcamcap_firetrigger": [c_void_p, c_int32],
+    "dcamcap_record": [c_void_p, c_void_p],
     "dcamwait_open": [POINTER(DCAMWAIT_OPEN)],
     "dcamwait_close": [c_void_p],
     "dcamwait_start": [c_void_p, POINTER(DCAMWAIT_START)],
     "dcamwait_abort": [c_void_p],
+    "dcamrec_openW": [POINTER(DCAMREC_OPENW)],
+    "dcamrec_status": [c_void_p, POINTER(DCAMREC_STATUS)],
+    "dcamrec_close": [c_void_p],
 }
 """Every function the adapter calls, with its argument types. Each returns a
 DCAMERR as a signed 32-bit int."""

@@ -6,7 +6,8 @@ also collects each frame's frame number and time stamp from the driver. It is
 the FrameCapture port under the image-streaming role, which publishes what
 arrives. It also reads and changes the camera's settings, by the names and
 value labels the camera itself uses (such as "SENSOR MODE" and
-"PROGRESSIVE"), and sends software triggers.
+"PROGRESSIVE"), sends software triggers, and records a capture to a DCIMG
+file through the driver's own recorder.
 
 Windows only, and DCAM-API must be installed. DCAM-API allows one session per
 process, so open at most one DcamFrameCapture in a process: give the camera a
@@ -16,8 +17,11 @@ process of its own, which is where a vendor driver belongs anyway.
 
 import asyncio
 import ctypes
+import os
 import time
 from ctypes import POINTER, c_double, c_int32, c_void_p
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -49,6 +53,23 @@ WAIT_SLICE = 0.1
 """The longest single DCAM wait, in seconds. A stop that lands just before a
 wait begins is not seen by that wait, so this bounds how long it can go
 unnoticed."""
+
+
+RECORDER_FINISH = 5.0
+"""The longest ``close_recording`` waits by default, in seconds, for the
+recorder to finish writing once the capture has stopped."""
+
+
+@dataclass(frozen=True)
+class RecordingStatus:
+    """What DCAM's recorder says of a file: ``frames`` written to it,
+    ``missing`` frames it failed to write, the file's ``max_frames``, and
+    whether it was still ``recording``."""
+
+    frames: int
+    missing: int
+    max_frames: int
+    recording: bool
 
 
 class DcamError(RuntimeError):
@@ -115,6 +136,8 @@ class DcamFrameCapture:
         self._has_timestamps = False
         self._has_framestamps = False
         self._ids: dict[str, int] = {}
+        self._hrec = None
+        self._record_open: _api.DCAMREC_OPENW | None = None
         try:
             self._open(camera)
         except BaseException as exc:
@@ -286,6 +309,8 @@ class DcamFrameCapture:
         errors: list[DcamError] = []
         self._stop(errors)
         await self._join_waiter()
+        if self._hrec is not None and not self._capturing:
+            self._close_file(errors)
         self._release(errors)
         _raise_first(errors)
 
@@ -372,6 +397,68 @@ class DcamFrameCapture:
         self._require_open()
         self._call("dcamcap_firetrigger", self._hdcam, 0)
 
+    # --- recording: DCAM's own DCIMG writer --------------------------------------------
+
+    def record(self, path: str | os.PathLike, max_frames: int) -> None:
+        """Record the next capture to the DCIMG file ``path``, extension
+        included (normally ".dcimg"), holding at most ``max_frames`` frames;
+        the recorder stops by itself at that many. Call between ``attach``
+        and ``start``, and ``close_recording`` after ``stop``. The file is
+        DCAM's to create. Raises ``RuntimeError`` if memory is not attached,
+        a capture is running or a file is already open, ``ValueError`` for
+        a path without an extension or a limit out of range, and
+        ``DcamError`` if DCAM refuses."""
+        self._require_open()
+        path = Path(path)
+        if not path.suffix:
+            raise ValueError(f"{path} has no extension; DCAM needs one (.dcimg)")
+        if not 1 <= max_frames < 2**31:
+            raise ValueError(f"a file must hold 1 to {2**31 - 1} frames, not {max_frames}")
+        if self._hrec is not None:
+            raise RuntimeError("a recording is already open; close it first")
+        if self._slots is None:
+            raise RuntimeError("attach frame memory before recording")
+        if self._capturing:
+            raise RuntimeError("a capture is running; record before it starts")
+        # DCAM takes the path without its extension, and the extension
+        # without its dot (the sample: "testrec", "dcimg").
+        request = _api.DCAMREC_OPENW.new(
+            path=str(path.with_suffix("")), ext=path.suffix[1:], maxframepersession=max_frames
+        )
+        self._call("dcamrec_openW", ctypes.pointer(request))
+        self._hrec = request.hrec
+        self._record_open = request  # holds the path strings DCAM was given
+        try:
+            self._call("dcamcap_record", self._hdcam, self._hrec)
+        except BaseException as exc:
+            errors: list[DcamError] = []
+            self._close_file(errors)
+            for error in errors:
+                exc.add_note(f"closing the file again also failed: {error}")
+            raise
+
+    async def close_recording(self, timeout: float = RECORDER_FINISH) -> RecordingStatus:
+        """Finish the file opened by ``record`` and return what the recorder
+        says it holds. Call after ``stop``. Waits up to ``timeout`` seconds
+        for the recorder to finish writing; if it has not, the file is
+        closed anyway and the status says it was still ``recording``.
+        Raises ``RuntimeError`` if no file is open or the capture is still
+        running, and ``DcamError`` if DCAM refuses."""
+        self._require_open()
+        if self._hrec is None:
+            raise RuntimeError("no recording is open")
+        if self._capturing:
+            raise RuntimeError("stop the capture before closing its recording")
+        deadline = time.monotonic() + timeout
+        # The recorder can still be writing after the capture stops, and a
+        # count read then is short.
+        while (status := self._recording_status()).recording and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        errors: list[DcamError] = []
+        self._close_file(errors)
+        _raise_first(errors)
+        return status
+
     # --- opening and closing --------------------------------------------------------
 
     def _open(self, camera: int) -> None:
@@ -417,6 +504,22 @@ class DcamFrameCapture:
             self._call("dcamprop_getname", self._hdcam, current.value, name, len(name))
             ids[name.value.decode()] = current.value
 
+    def _recording_status(self) -> RecordingStatus:
+        status = _api.DCAMREC_STATUS.new()
+        self._call("dcamrec_status", self._hrec, ctypes.pointer(status))
+        return RecordingStatus(
+            frames=status.totalframecount,
+            missing=status.missingframe_count,
+            max_frames=status.maxframecount_per_session,
+            recording=bool(status.flags & _api.RECSTATUSFLAG_RECORDING),
+        )
+
+    def _close_file(self, errors: list) -> None:
+        """Close the open DCIMG file; forget it only once DCAM has."""
+        if self._attempt(errors, "dcamrec_close", self._hrec):
+            self._hrec = None
+            self._record_open = None
+
     def _stop(self, errors: list) -> None:
         """Stop capture and abort any wait, attempting both."""
         if self._capturing and self._attempt(errors, "dcamcap_stop", self._hdcam):
@@ -445,6 +548,10 @@ class DcamFrameCapture:
     def _teardown(self, errors: list) -> None:
         """Release, close the wait handle and the camera, and uninitialize,
         attempting every step whatever fails before it."""
+        # The file first, as the sample closes it before releasing: a file
+        # left open may be unreadable.
+        if self._hrec is not None:
+            self._close_file(errors)
         if self._pointers:
             self._release(errors)
         if self._hwait is not None:

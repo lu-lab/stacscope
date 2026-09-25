@@ -29,11 +29,23 @@ the reading that is harder on the adapter, and says so beside the code:
   succeeds whatever the trigger source, and fires only in SOFTWARE
   (documented: "only effective" then; untried on the Flash).
 - A change to a setting that shapes the frame (``SENSOR MODE``, ``SUBARRAY
-  VSIZE``) is refused with ``DCAMERR_ACCESSDENY`` while frame memory is
-  attached: the reference says such changes are refused then, and the
-  header describes ACCESSDENY as "cannot access during this DCAM STATUS".
+  VSIZE``) is refused while frame memory is attached: with
+  ``DCAMERR_BUSY`` while capturing, as the Flash refuses one (V3), and
+  otherwise with ``DCAMERR_ACCESSDENY``, which the header describes as
+  "cannot access during this DCAM STATUS" (untried on the Flash).
   ``refused_while_attached`` can be emptied to make a driver that lets one
   through.
+- The DCIMG recorder (``dcamrec_*``) keeps what it records in
+  ``recordings`` rather than writing DCIMG; it only creates the file.
+  ``dcamcap_record`` binds a file to the next capture only (documented: "a
+  one time function"), and needs frame memory attached and no capture
+  running (documented: "during READY state"). Recording stops by itself at
+  the file's frame limit (documented). After a stop the recorder may go on
+  writing for a while (``recorder_lag``), reporting fewer frames until it
+  is done: undocumented, and harder on the adapter than a recorder that is
+  done at once. Closing a file while a capture records into it, or
+  uninitializing with one open, is misuse: the reference says data "may be
+  lost" when a file is not closed.
 
 Every call is logged in ``calls``, and any use the reference forbids -- a
 call after ``dcamapi_uninit``, closing a wait handle while a wait is running
@@ -60,6 +72,8 @@ ERR_INVALIDPROPERTYID = _api._signed(0x80000825)
 ERR_ACCESSDENY = _api._signed(0x8000082C)
 ERR_NOVALUETEXT = _api._signed(0x8000082D)
 ERR_INVALIDWAITHANDLE = _api._signed(0x84002001)
+ERR_FAILEDOPENRECFILE = _api._signed(0x84001001)
+ERR_INVALIDRECHANDLE = _api._signed(0x84001002)
 
 PIXEL_TYPES = {"MONO8": 21, "MONO16": 22, "MONO12": 23, "MONO12P": 25}
 """Value numbers for BUFFER PIXEL TYPE, deliberately not dcamapi4.h's."""
@@ -75,6 +89,10 @@ FRAME_PERIOD_US = 10_000
 FRAME_PERIOD_US`` microseconds, as seconds and microseconds."""
 
 
+_REC_BASE = 0x7000
+"""Recording handles are this plus the file's index in ``recordings``."""
+
+
 def error_text(code: int) -> str:
     """What the fake's ``dcamdev_getstring`` says about an error code."""
     return f"fake DCAM text for {code & 0xFFFFFFFF:#010x}"
@@ -84,7 +102,31 @@ EXPOSURE_STEP = 1e-4
 """The fake's exposure time rounds to whole multiples of this, in seconds,
 as the Flash's rounds to whole line intervals."""
 
+RECORD_PER_FILE = 256
+RECORD_PER_SESSION = 1016
+RECORD_PER_FRAME_EXTRA = 64
+"""The recorder's fixed sizes, as the dev box Flash states them (survey): a
+file and a session cost these many bytes, and a frame its BUFFER FRAMEBYTES
+plus 64."""
+
 WRITABLE = {"SENSOR MODE", "TRIGGER SOURCE", "EXPOSURE TIME", "SUBARRAY VSIZE"}
+
+
+@dataclass
+class FakeRecording:
+    """One file opened with ``dcamrec_openW``, and what was recorded to it."""
+
+    path: str
+    """The file's full path, as DCAM makes it from ``path`` and ``ext``."""
+    max_frames: int
+    frames: list[bytes] = field(default_factory=list)
+    """Every frame recorded, as the bytes the grabber wrote for it."""
+    framestamps: list[int] = field(default_factory=list)
+    missing: int = 0
+    recording: bool = False
+    closed: bool = False
+    lag: int = 0
+    """Status reads left before a stopped recorder reports itself done."""
 
 
 @dataclass
@@ -146,6 +188,13 @@ class FakeDcam:
         self.linger = 0.0
         """Seconds a wait stays inside ``dcamwait_start`` after it has its
         answer, as a driver's thread may before it returns."""
+        self.recordings: list[FakeRecording] = []
+        """Every file opened, in order."""
+        self.recorder_lag = 0
+        """How many ``dcamrec_status`` reads after a stop still find the
+        recorder writing, one frame short; -1 for a recorder that never
+        finishes."""
+        self._miss_recording = 0
 
         # IMAGE ROWBYTES and friends describe the image as the camera sends it;
         # BUFFER ROWBYTES and friends describe it in memory the adapter
@@ -171,6 +220,12 @@ class FakeDcam:
             _ID_BASE + 0x10 * len(self._properties), 0.01, step=EXPOSURE_STEP
         )
         self._properties["SUBARRAY VSIZE"] = _Property(_ID_BASE + 0x10 * len(self._properties), height)
+        for name, value in [
+            ("RECORD FIXED BYTES PER FILE", RECORD_PER_FILE),
+            ("RECORD FIXED BYTES PER SESSION", RECORD_PER_SESSION),
+            ("RECORD FIXED BYTES PER FRAME", frame_bytes + RECORD_PER_FRAME_EXTRA),
+        ]:
+            self._properties[name] = _Property(_ID_BASE + 0x10 * len(self._properties), value)
 
         self._lock = threading.Condition()
         self._scripted: dict[str, list[tuple[str, int]]] = {}
@@ -188,6 +243,8 @@ class FakeDcam:
         self._newest = -1
         self._framestamp = framestamp_start
         self._begun: list[int] = []  # frames the grabber has begun but not finished
+        self._record_next: FakeRecording | None = None  # bound by dcamcap_record
+        self._recorder: FakeRecording | None = None  # recording this capture
 
     # --- controls ------------------------------------------------------------------
 
@@ -222,6 +279,7 @@ class FakeDcam:
             ("IMAGE HEIGHT", height),
             ("IMAGE FRAMEBYTES", rows * height),
             ("BUFFER FRAMEBYTES", top + pitch * height + self._padding),
+            ("RECORD FIXED BYTES PER FRAME", top + pitch * height + self._padding + RECORD_PER_FRAME_EXTRA),
         ]:
             self._properties[name].value = value
 
@@ -263,6 +321,16 @@ class FakeDcam:
                 self._lost_pending = True
             self._lock.notify_all()
 
+    def miss_recording(self, n: int = 1) -> None:
+        """The recorder fails to write the next ``n`` frames the grabber
+        delivers, and counts them missing."""
+        with self._lock:
+            self._miss_recording += n
+
+    @property
+    def open_recordings(self) -> list[FakeRecording]:
+        return [r for r in self.recordings if not r.closed]
+
     @property
     def attached(self) -> bool:
         return self._frames is not None
@@ -296,6 +364,16 @@ class FakeDcam:
             stamp.sec, stamp.microsec = divmod(micros, 1_000_000)
         if self._framestamps is not None:
             ctypes.c_int32.from_address(self._framestamps[slot]).value = _as_int32(self._framestamp)
+        recorder = self._recorder
+        if recorder is not None and recorder.recording:
+            if self._miss_recording:
+                self._miss_recording -= 1
+                recorder.missing += 1
+            else:
+                recorder.frames.append(image.tobytes())
+                recorder.framestamps.append(self._framestamp)
+                if len(recorder.frames) >= recorder.max_frames:
+                    recorder.recording = False  # documented: stops by itself
         self._framestamp += 1
         self._count += 1
         self._newest = slot
@@ -355,6 +433,8 @@ class FakeDcam:
         with self._lock:
             if (scripted := self._call("dcamapi_uninit")) and scripted[0] == "fail":
                 return scripted[1]
+            for recording in self.open_recordings:
+                self.misuse.append(f"dcamapi_uninit with {recording.path} still open")
             if self._hdcam is not None:
                 self._close_device()
             self._initialized = False
@@ -386,6 +466,7 @@ class FakeDcam:
         # Documented: "forcibly terminates active capturing and waiting
         # sessions, and releases attached or allocated buffers".
         self._busy = False
+        self._recorder = self._record_next = None
         for hwait, waiting in self._waits.items():
             if waiting:
                 self._events.append(("abort", hwait))
@@ -490,7 +571,7 @@ class FakeDcam:
             if name not in WRITABLE:
                 return ERR_NOTWRITABLE
             if name in self.refused_while_attached and self._frames is not None:
-                return ERR_ACCESSDENY
+                return _api.ERR_BUSY if self._busy else ERR_ACCESSDENY
             prop = self._properties[name]
             value = pointer.contents.value
             if prop.texts and value not in prop.texts:
@@ -602,6 +683,9 @@ class FakeDcam:
             if mode != _api.CAPSTART_SEQUENCE:
                 self.misuse.append(f"dcamcap_start in mode {mode}, not SEQUENCE")
             self._busy = True
+            if self._record_next is not None:
+                self._recorder, self._record_next = self._record_next, None
+                self._recorder.recording = True
             self._count = 0
             self._newest = -1
             self._begun = []
@@ -617,6 +701,11 @@ class FakeDcam:
             if self._busy:
                 self._busy = False
                 self._begun = []  # frames cut short by the stop are never delivered
+                if self._recorder is not None:
+                    if self._recorder.recording:
+                        self._recorder.lag = self.recorder_lag
+                    self._recorder.recording = False
+                    self._recorder = None
                 self._events.append(("stopped", None))
                 self._lock.notify_all()
             return _api.SUCCESS
@@ -645,6 +734,90 @@ class FakeDcam:
             p.nNewestFrameIndex = self._newest
             p.nFrameCount = self._count
             return _api.SUCCESS
+
+    def dcamcap_record(self, hdcam, hrec):
+        with self._lock:
+            if (scripted := self._call("dcamcap_record")) and scripted[0] == "fail":
+                return scripted[1]
+            if error := self._device("dcamcap_record", hdcam):
+                return error
+            recording = self._recording("dcamcap_record", hrec)
+            if recording is None:
+                return ERR_INVALIDRECHANDLE
+            if self._busy:
+                return _api.ERR_BUSY
+            if self._frames is None:
+                return _api.ERR_NOTREADY  # documented: only in the READY state
+            self._record_next = recording
+            return _api.SUCCESS
+
+    def dcamrec_openW(self, param):
+        with self._lock:
+            if (scripted := self._call("dcamrec_openW")) and scripted[0] == "fail":
+                return scripted[1]
+            p = param.contents
+            if p.size != ctypes.sizeof(_api.DCAMREC_OPENW):
+                self.misuse.append("DCAMREC_OPENW.size not set")
+            if p.maxframepersession < 1:
+                return ERR_INVALIDPARAM
+            path = f"{p.path}.{p.ext}"
+            try:
+                open(path, "wb").close()
+            except OSError:
+                return ERR_FAILEDOPENRECFILE
+            self.recordings.append(FakeRecording(path, p.maxframepersession))
+            p.hrec = _REC_BASE + len(self.recordings) - 1
+            return _api.SUCCESS
+
+    def dcamrec_status(self, hrec, param):
+        with self._lock:
+            if (scripted := self._call("dcamrec_status")) and scripted[0] == "fail":
+                return scripted[1]
+            recording = self._recording("dcamrec_status", hrec)
+            if recording is None:
+                return ERR_INVALIDRECHANDLE
+            p = param.contents
+            if p.size != ctypes.sizeof(_api.DCAMREC_STATUS):
+                self.misuse.append("DCAMREC_STATUS.size not set")
+            written = len(recording.frames)
+            flags = _api.RECSTATUSFLAG_RECORDING if recording.recording else 0
+            if recording.lag:
+                # Stopped, but still writing: the last frame is not in yet.
+                flags = _api.RECSTATUSFLAG_RECORDING
+                written = max(0, written - 1)
+                if recording.lag > 0:
+                    recording.lag -= 1
+            p.currentsession_index = 0
+            p.maxframecount_per_session = recording.max_frames
+            p.currentframe_index = written - 1
+            p.missingframe_count = recording.missing
+            p.flags = flags
+            p.totalframecount = written
+            return _api.SUCCESS
+
+    def dcamrec_close(self, hrec):
+        with self._lock:
+            if (scripted := self._call("dcamrec_close")) and scripted[0] == "fail":
+                return scripted[1]
+            recording = self._recording("dcamrec_close", hrec)
+            if recording is None:
+                return ERR_INVALIDRECHANDLE
+            if recording is self._recorder:
+                self.misuse.append(f"dcamrec_close on {recording.path} while a capture records to it")
+                self._recorder = None
+            if recording is self._record_next:
+                self._record_next = None
+            recording.recording = False
+            recording.lag = 0
+            recording.closed = True
+            return _api.SUCCESS
+
+    def _recording(self, name: str, hrec) -> FakeRecording | None:
+        index = (hrec or 0) - _REC_BASE
+        if not 0 <= index < len(self.recordings) or self.recordings[index].closed:
+            self.misuse.append(f"{name} with a recording handle that is not open: {hrec!r}")
+            return None
+        return self.recordings[index]
 
     def dcamwait_open(self, param):
         with self._lock:

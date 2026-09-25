@@ -148,11 +148,12 @@ section explains why.
   - The Flash declares `in_flight=2`: measured 1, plus a margin (user,
     2026-09-25). `fire_trigger` stays synchronous; fast acquisitions are
     DAQ-triggered (user).
-  - **The `OrcaFlash` device is green over the fake** (O1–O7, and the
-    role contract F1–F6 in `tests/adapters/dcam/test_role_contract.py`):
-    `OrcaFlash(ImageStreaming, TimedDevice)` in `adapters/dcam/camera.py`;
-    `Recording` joins it in 5e, with DCIMG (user). Its settings messages
-    are in `adapters/dcam/messages.py` (user, 2026-09-25):
+  - **The `OrcaFlash` device is green over the fake and on the camera**
+    (O1–O12, the role contract F1–F6 in
+    `tests/adapters/dcam/test_role_contract.py`, and V1–V6 in
+    `tests/hardware/dcam/`): `OrcaFlash(ImageStreaming, Recording,
+    TimedDevice)` in `adapters/dcam/camera.py`. Its messages are in
+    `adapters/dcam/messages.py` (user, 2026-09-25):
     - `SetProperty(name, value)`, `SetPropertyLabel(name, label)` and
       `GetProperty(name)`, each answered `PropertyValue(name, value,
       label)` or `Rejected`. The value and label are separate because
@@ -163,13 +164,40 @@ section explains why.
       launch, and a refusal fails the launch.
     - DCAM is opened in a worker thread, so heartbeats are answered while
       it starts.
+    - **5e, DCIMG recording** (user, 2026-09-25): an acquisition with a
+      stem records through the driver (`record` / `close_recording` on
+      the capture, `dcamrec_*`) to `<save_directory>/<stem>_<name>.dcimg`.
+      The directory comes from config and from `SetSaveDirectory`
+      (answered `SaveDirectory`; refused while armed or if missing). A
+      file is never overwritten. A file short of the frames published,
+      with missed frames, or still being written at close is a fatal
+      `Fault` at the stop.
+    - **DCIMG reserves a file's whole size at open (V4)**, so the frame
+      limit, in order (user, 2026-09-25): the acquisition's frames when
+      known and the Flash is on EXTERNAL trigger; else the free space less
+      the larger of 100 GiB and 10% of the disk; `max_record_frames` caps
+      either. A known length the disk cannot hold refuses the arm.
+  - **Each device is told its frame count** (core, user, 2026-09-25):
+    `DeviceSpec.trigger` names the DO line (its label) that triggers a
+    device. At each start the Coordinator asks the source `CountPulses`
+    (answered `PulseCounts`: each line's rising edges over the whole
+    acquisition, -1 until stopped), and sends
+    `StartDevice(root, cycles, frames)`. `TimedDevice.expected_frames`
+    holds it before `arm`. A source that cannot count leaves every count
+    -1. `WaveformSource` counts; `SimulatedTimingSource` counts with
+    `pulses_per_cycle`.
+    - Test files go to `E:/stacscope_tests` on the dev box
+      (`STACSCOPE_RECORD_DIR`), and are deleted after. They are read back
+      with `tests/adapters/dcam/dcimg_reader.py` over `dcimgapi.dll`.
+      `STACSCOPE_DCIMG_SDK` names the DCIMG SDK for its conformance test;
+      the DCIMG SDK's licence has the DCAM SDK's terms, and the same policy
+      applies.
   - **An adapter's own messages cross processes**: the codec checks a type
     registered after it was built the first time it meets one (a child
     builds its codec before unpickling the device).
-  - **Next, for a new session: the 5d entry at the top of the plan's
-    "Milestone 5" status block.** Its camera run of the device
-    (`tests/hardware/dcam/test_device.py`, V1–V3) is the user's to make,
-    then 5e.
+  - **5e is done**, on the camera and the DAQ (V4–V6). **Next, for a new
+    session: the 5e entry at the top of the plan's "Milestone 5" status
+    block**, then 5f or Milestone 6 (user's choice).
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

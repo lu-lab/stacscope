@@ -9,8 +9,10 @@ import sys
 
 import pytest
 
-# The port contract's tests, which test_contract.py runs on the camera.
+# The port contract's tests, which test_contract.py runs on the camera, and
+# the DCIMG reader, which test_recording.py reads its files back with.
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
+sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "adapters" / "dcam"))
 
 CAMERA = os.environ.get("STACSCOPE_CAMERA", "")
 """The DCAM index of the camera under test. The suite skips without it."""

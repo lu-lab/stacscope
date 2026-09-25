@@ -810,3 +810,210 @@ async def test_q12_a_software_trigger_after_close_is_refused(open_capture, fake)
 
     with pytest.raises(RuntimeError, match="closed"):
         capture.fire_trigger()
+
+
+# --- Q13: recording to a DCIMG file ------------------------------------------------------------
+
+
+async def recording(capture, segments, path, max_frames=100, n_slots=N_SLOTS):
+    """Attach, bind ``path`` to the next capture, and start it."""
+    writer = segments(capture.frame_format(), n_slots)
+    await capture.attach(writer.slots)
+    capture.record(path, max_frames)
+    await capture.start()
+    return writer
+
+
+async def test_q13_a_recorded_capture_writes_every_frame_to_the_file(open_capture, fake, segments, tmp_path):
+    """DCAM's order (the reference's "Recording control" and its sample):
+    open the file, bind it to the capture with dcamcap_record while READY,
+    then start. The status read back at close says what the file holds,
+    which is what the device checks a recording against."""
+    capture = open_capture(fake)
+    path = tmp_path / "run-01_camera.dcimg"
+    await recording(capture, segments, path, max_frames=7)
+    fake.pulse(3)
+    fake.settle()
+    await capture.stop()
+
+    status = await capture.close_recording()
+
+    [file] = fake.recordings
+    assert file.path == str(path) and path.exists()
+    assert file.max_frames == 7 and file.closed
+    assert len(file.frames) == 3
+    assert (status.frames, status.missing, status.max_frames) == (3, 0, 7)
+    order = [c for c in fake.calls if c in ("dcamrec_openW", "dcamcap_record", "dcamcap_start")]
+    assert order == ["dcamrec_openW", "dcamcap_record", "dcamcap_start"]
+
+
+async def test_q13_close_waits_for_the_recorder_to_finish_writing(open_capture, fake, segments, tmp_path):
+    """The recorder may still be writing when the capture has stopped, and
+    a count read then is short: a complete file would be reported
+    truncated. Close waits until DCAM says it has stopped recording."""
+    fake.recorder_lag = 3
+    capture = open_capture(fake)
+    await recording(capture, segments, tmp_path / "a.dcimg")
+    fake.pulse(4)
+    fake.settle()
+    await capture.stop()
+
+    status = await capture.close_recording()
+
+    assert status.frames == 4
+    assert not status.recording
+
+
+async def test_q13_a_recorder_that_never_finishes_is_closed_anyway(open_capture, fake, segments, tmp_path):
+    """A recorder stuck writing must not hold the device's stop forever.
+    Close gives up waiting, closes the file, and says it was still
+    recording, so the caller can report the file as suspect."""
+    fake.recorder_lag = -1
+    capture = open_capture(fake)
+    await recording(capture, segments, tmp_path / "a.dcimg")
+    fake.pulse(2)
+    fake.settle()
+    await capture.stop()
+
+    status = await capture.close_recording(timeout=0.2)
+
+    assert status.recording
+    assert fake.open_recordings == []
+
+
+async def test_q13_frames_the_recorder_missed_are_counted(open_capture, fake, segments, tmp_path):
+    capture = open_capture(fake)
+    await recording(capture, segments, tmp_path / "a.dcimg")
+    fake.pulse(1)
+    fake.miss_recording(2)
+    fake.pulse(3)
+    fake.settle()
+    await capture.stop()
+
+    status = await capture.close_recording()
+
+    assert (status.frames, status.missing) == (2, 2)
+
+
+async def test_q13_a_file_is_closed_only_after_the_capture_stops(open_capture, fake, segments, tmp_path):
+    """Closing under a running capture cuts the recording short; the sample
+    stops first. Refused, and the file stays open for a proper close."""
+    capture = open_capture(fake)
+    await recording(capture, segments, tmp_path / "a.dcimg")
+
+    with pytest.raises(RuntimeError, match="stop"):
+        await capture.close_recording()
+    assert len(fake.open_recordings) == 1
+
+    await capture.stop()
+    await capture.close_recording()
+    assert fake.open_recordings == []
+
+
+@pytest.mark.parametrize("state", ["not attached", "capturing", "already recording"])
+async def test_q13_a_recording_is_bound_only_while_ready(open_capture, fake, segments, tmp_path, state):
+    """dcamcap_record works only in DCAM's READY state: memory attached, no
+    capture running. The adapter refuses anything else before opening a
+    file, so no file is left open and unbound."""
+    capture = open_capture(fake)
+    if state != "not attached":
+        writer = segments(capture.frame_format())
+        await capture.attach(writer.slots)
+    if state == "capturing":
+        await capture.start()
+    if state == "already recording":
+        capture.record(tmp_path / "first.dcimg", 10)
+    opened = len(fake.recordings)
+
+    with pytest.raises(RuntimeError):
+        capture.record(tmp_path / "a.dcimg", 10)
+
+    assert len(fake.recordings) == opened
+
+
+@pytest.mark.parametrize(
+    "name, max_frames", [("no-extension", 10), ("a.dcimg", 0), ("a.dcimg", 2**31)]
+)
+def test_q13_a_file_without_an_extension_or_a_limit_out_of_range_is_refused(
+    open_capture, fake, tmp_path, name, max_frames
+):
+    capture = open_capture(fake)
+
+    with pytest.raises(ValueError):
+        capture.record(tmp_path / name, max_frames)
+
+    assert fake.recordings == []
+
+
+async def test_q13_a_refused_bind_closes_the_file_it_opened(open_capture, fake, segments, tmp_path):
+    fake.fail("dcamcap_record", ERR_ACCESSDENY)
+    capture = open_capture(fake)
+    writer = segments(capture.frame_format())
+    await capture.attach(writer.slots)
+
+    with pytest.raises(DcamError) as caught:
+        capture.record(tmp_path / "a.dcimg", 10)
+
+    assert caught.value.call == "dcamcap_record"
+    assert fake.open_recordings == []
+    capture.record(tmp_path / "b.dcimg", 10)  # and it can record again
+
+
+async def test_q13_a_file_dcam_cannot_open_is_its_error(open_capture, fake, segments, tmp_path):
+    capture = open_capture(fake)
+    writer = segments(capture.frame_format())
+    await capture.attach(writer.slots)
+
+    with pytest.raises(DcamError) as caught:
+        capture.record(tmp_path / "missing" / "a.dcimg", 10)
+
+    assert caught.value.call == "dcamrec_openW"
+    await capture.start()  # nothing was bound
+    assert fake.recordings == []
+
+
+@pytest.mark.parametrize("ending", ["close", "detach"])
+async def test_q13_close_and_detach_close_an_open_file_first(fake, segments, tmp_path, ending):
+    """A file left open may be unreadable (the reference: data "may be
+    lost"). Closing the capture, as a dying device does, and detaching,
+    which gives the memory back, each close the file first."""
+    capture = DcamFrameCapture(library=fake, in_flight=1)
+    try:
+        await recording(capture, segments, tmp_path / "a.dcimg")
+        fake.pulse(2)
+        fake.settle()
+
+        await getattr(capture, ending)()
+
+        assert fake.open_recordings == []
+        calls = [c for c in fake.calls if c in ("dcamcap_stop", "dcamrec_close", "dcambuf_release")]
+        assert calls[:2] == ["dcamcap_stop", "dcamrec_close"]
+        assert "dcambuf_release" in calls[2:]
+    finally:
+        await capture.close()
+    assert fake.misuse == []
+
+
+async def test_q13_close_recording_with_no_file_open_is_refused(open_capture, fake):
+    capture = open_capture(fake)
+
+    with pytest.raises(RuntimeError, match="no recording"):
+        await capture.close_recording()
+
+
+async def test_q13_a_file_that_will_not_close_is_closed_again_at_close(fake, segments, tmp_path):
+    """The file stays the capture's until DCAM has let go of it, so a close
+    that failed is attempted again when the capture closes, not forgotten."""
+    capture = DcamFrameCapture(library=fake, in_flight=1)
+    try:
+        await recording(capture, segments, tmp_path / "a.dcimg")
+        await capture.stop()
+        fake.fail("dcamrec_close", ERR_ACCESSDENY)
+
+        with pytest.raises(DcamError):
+            await capture.close_recording()
+        assert len(fake.open_recordings) == 1
+    finally:
+        await capture.close()
+    assert fake.open_recordings == []
+    assert fake.misuse == []

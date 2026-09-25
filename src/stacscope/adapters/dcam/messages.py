@@ -5,6 +5,9 @@ and set either to a number or to one of the camera's own labels for its
 values ("PROGRESSIVE"). Every request is answered with a PropertyValue
 holding what the camera applied, which may be rounded from what was asked,
 or with Rejected, carrying the camera's reason.
+
+SetSaveDirectory chooses where recorded acquisitions go, and is answered with
+SaveDirectory.
 """
 # For end use and not for commercial purposes.
 
@@ -53,3 +56,21 @@ class PropertyValue:
     name: str
     value: float
     label: str | None
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class SetSaveDirectory:
+    """Record later acquisitions into the existing directory ``path``.
+    Replied ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
+    directory that does not exist."""
+
+    path: str
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class SaveDirectory:
+    """The directory acquisitions are recorded into."""
+
+    path: str

@@ -37,25 +37,33 @@ SIZES = {
     "char": 1,
     "double": 8,
     "DCAM_PIXELTYPE": 4,  # an enum
+    "DCIMG_PIXELTYPE": 4,  # an enum
 }
-HANDLES = {"HDCAM", "HDCAMWAIT", "HDCAMREC"}
+HANDLES = {"HDCAM", "HDCAMWAIT", "HDCAMREC", "HDCIMG", "LPCSTR", "LPCWSTR"}
 
 
 def _header(name: str) -> str:
     return (pathlib.Path(SDK) / "inc" / name).read_text(encoding="latin-1")
 
 
-def _strip_comments(text: str) -> str:
+def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     return re.sub(r"//[^\n]*", "", text)
 
 
 def _structs() -> dict[str, list[tuple[str, str, int]]]:
     """Every struct in dcamapi4.h, as (type, field, array length) in order."""
-    text = _strip_comments(_header("dcamapi4.h"))
+    return structs_in(_header("dcamapi4.h"), "DCAM")
+
+
+def structs_in(header: str, prefix: str) -> dict[str, list[tuple[str, str, int]]]:
+    """Every struct declared in ``header`` with ``<prefix>_DECLARE_BEGIN``."""
+    text = strip_comments(header)
     structs = {}
     for name, body in re.findall(
-        r"DCAM_DECLARE_BEGIN\(\s*struct\s*,\s*(\w+)\s*\)\s*\{(.*?)\}\s*DCAM_DECLARE_END", text, re.S
+        rf"{prefix}_DECLARE_BEGIN\(\s*struct\s*,\s*(\w+)\s*\)\s*\{{(.*?)\}}\s*{prefix}_DECLARE_END",
+        text,
+        re.S,
     ):
         fields = []
         for declaration in body.split(";"):
@@ -70,7 +78,7 @@ def _structs() -> dict[str, list[tuple[str, str, int]]]:
     return structs
 
 
-def _layout(name: str, structs) -> tuple[int, int, dict[str, tuple[int, int]]]:
+def layout(name: str, structs) -> tuple[int, int, dict[str, tuple[int, int]]]:
     """Size, alignment, and each field's (offset, size), of ``name`` as MSVC
     lays it out."""
     offset, alignment, fields = 0, 1, {}
@@ -80,7 +88,7 @@ def _layout(name: str, structs) -> tuple[int, int, dict[str, tuple[int, int]]]:
         elif kind in SIZES:
             size = align = SIZES[kind]
         else:
-            size, align, _ = _layout(kind, structs)
+            size, align, _ = layout(kind, structs)
         offset = -(-offset // align) * align
         fields[field] = (offset, size * length)
         offset += size * length
@@ -99,6 +107,8 @@ BOUND = [
     _api.DCAMCAP_TRANSFERINFO,
     _api.DCAMWAIT_OPEN,
     _api.DCAMWAIT_START,
+    _api.DCAMREC_OPENW,
+    _api.DCAMREC_STATUS,
 ]
 
 
@@ -108,7 +118,7 @@ def test_each_struct_matches_the_header(struct):
     bytes, or writes over the next field: silently, until a camera behaves
     oddly or the process crashes."""
     structs = _structs()
-    size, _, fields = _layout(struct.__name__, structs)
+    size, _, fields = layout(struct.__name__, structs)
 
     assert ctypes.sizeof(struct) == size
     assert [name for name, _ in struct._fields_] == [field for _, field, _ in structs[struct.__name__]]
@@ -140,6 +150,7 @@ CONSTANTS = {
     "CAPEVENT_FRAMEREADY": "DCAMWAIT_CAPEVENT_FRAMEREADY",
     "CAPEVENT_STOPPED": "DCAMWAIT_CAPEVENT_STOPPED",
     "PROPOPTION_SUPPORT": "DCAMPROP_OPTION_SUPPORT",
+    "RECSTATUSFLAG_RECORDING": "DCAMREC_STATUSFLAG_RECORDING",
 }
 
 
@@ -147,7 +158,7 @@ def _enum_values() -> dict[str, int]:
     values = {}
     for header in ("dcamapi4.h", "dcamprop.h"):
         for name, value in re.findall(
-            r"^\s*(DCAM\w+)\s*=\s*(-?0x[0-9A-Fa-f]+|-?\d+)\s*,?", _strip_comments(_header(header)), re.M
+            r"^\s*(DCAM\w+)\s*=\s*(-?0x[0-9A-Fa-f]+|-?\d+)\s*,?", strip_comments(_header(header)), re.M
         ):
             values[name] = _api._signed(int(value, 0) & 0xFFFFFFFF)
     return values
@@ -168,7 +179,7 @@ def test_every_error_name_is_the_headers_name_for_its_code():
 
 def _declarations() -> dict[str, int]:
     """Each function in dcamapi4.h, with its number of arguments."""
-    text = _strip_comments(_header("dcamapi4.h"))
+    text = strip_comments(_header("dcamapi4.h"))
     found = {}
     for name, arguments in re.findall(r"DCAMERR\s+DCAMAPI\s+(\w+)\s*\(([^)]*)\)", text):
         arguments = arguments.strip()

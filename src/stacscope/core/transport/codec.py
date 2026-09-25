@@ -40,16 +40,34 @@ class CodecError(Exception):
 class Codec:
     def __init__(self, registry: MessageRegistry) -> None:
         """Checks every registered type up front: a field the codec cannot
-        carry is a definition error, not a runtime surprise."""
+        carry is a definition error, not a runtime surprise. A type
+        registered later, as an adapter's messages are when its module is
+        imported, is checked the same way the first time it is encoded or
+        decoded."""
         self._registry = registry
         self._hints: dict[type, dict[str, Any]] = {}
         for cls in registry.types():
-            if not dataclasses.is_dataclass(cls):
-                raise CodecError(f"{cls.__name__} is not a dataclass")
-            hints = get_type_hints(cls)
-            for field in dataclasses.fields(cls):
-                self._check(hints[field.name], f"{cls.__name__}.{field.name}")
-            self._hints[cls] = hints
+            self._learn(cls)
+
+    def _learn(self, cls: type) -> dict[str, Any]:
+        """Check a registered type's fields, and keep its annotations."""
+        if not dataclasses.is_dataclass(cls):
+            raise CodecError(f"{cls.__name__} is not a dataclass")
+        hints = get_type_hints(cls)
+        for field in dataclasses.fields(cls):
+            self._check(hints[field.name], f"{cls.__name__}.{field.name}")
+        self._hints[cls] = hints
+        return hints
+
+    def _hints_for(self, cls: type) -> dict[str, Any] | None:
+        """The annotations of ``cls``, or ``None`` if it is not registered."""
+        hints = self._hints.get(cls)
+        if hints is None and self._registry.lookup(cls.__name__) is cls:
+            # Registered after this codec was built: a process child builds
+            # its codec before unpickling the device, whose module registers
+            # the device's own messages.
+            hints = self._learn(cls)
+        return hints
 
     def encode(self, msg: object) -> bytes:
         return msgpack.packb(self._encode_message(msg), use_bin_type=True)
@@ -84,7 +102,7 @@ class Codec:
 
     def _encode_message(self, msg: object) -> dict[str, Any]:
         cls = type(msg)
-        if cls not in self._hints:
+        if self._hints_for(cls) is None:
             raise CodecError(f"{cls.__name__} is not a registered message")
         encoded = {_TYPE: cls.__name__}
         for field in dataclasses.fields(cls):
@@ -111,7 +129,7 @@ class Codec:
             return value.address
         if isinstance(value, tuple):
             return [self._encode_value(v) for v in value]
-        if type(value) in self._hints:
+        if self._hints_for(type(value)) is not None:
             return self._encode_message(value)
         raise CodecError(f"{type(value).__name__} cannot cross a boundary")
 
@@ -125,7 +143,7 @@ class Codec:
             raise CodecError(f"unknown message type {raw[_TYPE]!r}")
         if expected is not None and cls is not expected:
             raise CodecError(f"expected {expected.__name__}, got {cls.__name__}")
-        hints = self._hints[cls]
+        hints = self._hints_for(cls)
         return cls(
             **{
                 f.name: self._decode_value(raw[f.name], hints[f.name], resolve)

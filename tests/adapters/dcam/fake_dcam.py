@@ -28,6 +28,12 @@ the reading that is harder on the adapter, and says so beside the code:
   ``DCAMERR_NOTBUSY``, as the Flash refuses it (S6). While capturing it
   succeeds whatever the trigger source, and fires only in SOFTWARE
   (documented: "only effective" then; untried on the Flash).
+- A change to a setting that shapes the frame (``SENSOR MODE``, ``SUBARRAY
+  VSIZE``) is refused with ``DCAMERR_ACCESSDENY`` while frame memory is
+  attached: the reference says such changes are refused then, and the
+  header describes ACCESSDENY as "cannot access during this DCAM STATUS".
+  ``refused_while_attached`` can be emptied to make a driver that lets one
+  through.
 
 Every call is logged in ``calls``, and any use the reference forbids -- a
 call after ``dcamapi_uninit``, closing a wait handle while a wait is running
@@ -78,7 +84,7 @@ EXPOSURE_STEP = 1e-4
 """The fake's exposure time rounds to whole multiples of this, in seconds,
 as the Flash's rounds to whole line intervals."""
 
-WRITABLE = {"SENSOR MODE", "TRIGGER SOURCE", "EXPOSURE TIME"}
+WRITABLE = {"SENSOR MODE", "TRIGGER SOURCE", "EXPOSURE TIME", "SUBARRAY VSIZE"}
 
 
 @dataclass
@@ -120,6 +126,10 @@ class FakeDcam:
         row_bytes = row_bytes or int(width * pixel)
         frame_bytes = frame_bytes or top_offset + height * row_bytes
         self.pixel_type = pixel_type
+        self._padding = frame_bytes - (top_offset + height * row_bytes)
+        """Bytes the grabber adds after the last row, kept by ``reshape``."""
+        self.refused_while_attached = {"SENSOR MODE", "SUBARRAY VSIZE"}
+        """Settings ``dcamprop_setgetvalue`` refuses while frames are attached."""
         self.cameras = cameras
         self.stamps = stamps
         self.in_flight = in_flight
@@ -160,6 +170,7 @@ class FakeDcam:
         self._properties["EXPOSURE TIME"] = _Property(
             _ID_BASE + 0x10 * len(self._properties), 0.01, step=EXPOSURE_STEP
         )
+        self._properties["SUBARRAY VSIZE"] = _Property(_ID_BASE + 0x10 * len(self._properties), height)
 
         self._lock = threading.Condition()
         self._scripted: dict[str, list[tuple[str, int]]] = {}
@@ -199,6 +210,20 @@ class FakeDcam:
         """The label of a property's current value, as the camera holds it."""
         prop = self._properties[name]
         return prop.texts[prop.value]
+
+    def reshape(self, height: int) -> None:
+        """Make the image ``height`` rows, as a subarray setting would, with
+        the grabber's row padding, top offset and trailing bytes as before."""
+        rows = int(self._value("IMAGE ROWBYTES"))
+        pitch = int(self._value("BUFFER ROWBYTES"))
+        top = int(self._value("BUFFER TOP OFFSET BYTES"))
+        for name, value in [
+            ("SUBARRAY VSIZE", height),
+            ("IMAGE HEIGHT", height),
+            ("IMAGE FRAMEBYTES", rows * height),
+            ("BUFFER FRAMEBYTES", top + pitch * height + self._padding),
+        ]:
+            self._properties[name].value = value
 
     def remove_property(self, name: str) -> None:
         """Make the camera one that lacks ``name``."""
@@ -464,12 +489,16 @@ class FakeDcam:
                 return ERR_INVALIDPROPERTYID
             if name not in WRITABLE:
                 return ERR_NOTWRITABLE
+            if name in self.refused_while_attached and self._frames is not None:
+                return ERR_ACCESSDENY
             prop = self._properties[name]
             value = pointer.contents.value
             if prop.texts and value not in prop.texts:
                 return ERR_INVALIDPARAM  # documented, for a value without AUTOROUNDING
             if prop.step:
                 value = round(value / prop.step) * prop.step
+            if name == "SUBARRAY VSIZE":
+                self.reshape(int(value))
             prop.value = value
             pointer.contents.value = value
             return _api.SUCCESS

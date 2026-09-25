@@ -148,9 +148,28 @@ section explains why.
   - The Flash declares `in_flight=2`: measured 1, plus a margin (user,
     2026-09-25). `fire_trigger` stays synchronous; fast acquisitions are
     DAQ-triggered (user).
+  - **The `OrcaFlash` device is green over the fake** (O1–O7, and the
+    role contract F1–F6 in `tests/adapters/dcam/test_role_contract.py`):
+    `OrcaFlash(ImageStreaming, TimedDevice)` in `adapters/dcam/camera.py`;
+    `Recording` joins it in 5e, with DCIMG (user). Its settings messages
+    are in `adapters/dcam/messages.py` (user, 2026-09-25):
+    - `SetProperty(name, value)`, `SetPropertyLabel(name, label)` and
+      `GetProperty(name)`, each answered `PropertyValue(name, value,
+      label)` or `Rejected`. The value and label are separate because
+      the codec carries no `float | str`.
+    - While armed, DCAM decides what it takes. A change that moves the
+      frame format anyway is put back and made a fatal `Fault`.
+    - `settings=[(name, value), ...]` in config is applied in order at
+      launch, and a refusal fails the launch.
+    - DCAM is opened in a worker thread, so heartbeats are answered while
+      it starts.
+  - **An adapter's own messages cross processes**: the codec checks a type
+    registered after it was built the first time it meets one (a child
+    builds its codec before unpickling the device).
   - **Next, for a new session: the 5d entry at the top of the plan's
-    "Milestone 5" status block.** It has the results, the answers to the
-    open questions, and what comes next (the `OrcaFlash` device).
+    "Milestone 5" status block.** Its camera run of the device
+    (`tests/hardware/dcam/test_device.py`, V1–V3) is the user's to make,
+    then 5e.
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

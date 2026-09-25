@@ -184,6 +184,45 @@ def test_a_message_type_with_an_uncarriable_field_is_rejected_by_the_codec():
         Codec(bad)
 
 
+def test_a_type_registered_after_the_codec_was_built_still_crosses():
+    """An adapter's own messages are registered when its module is imported,
+    and a process child imports the device's module only when it unpickles
+    the factory, after its codec is built. A codec that knew only the types
+    registered before it would refuse every settings reply the device sends,
+    and every request it is sent."""
+    registry = MessageRegistry()
+    codec = Codec(registry)
+
+    @registry.register
+    @dataclasses.dataclass(frozen=True)
+    class Late:
+        name: str
+        value: float
+        label: str | None
+
+    assert codec.decode(codec.encode(Late("EXPOSURE TIME", 0.01, None))) == Late(
+        "EXPOSURE TIME", 0.01, None
+    )
+
+
+def test_a_late_type_with_an_uncarriable_field_is_rejected_when_first_met():
+    """A type registered late is checked as strictly as one registered
+    early, only later: at its first encode or decode, not at its first
+    field that happens to hold something odd."""
+    registry = MessageRegistry()
+    codec = Codec(registry)
+
+    @registry.register
+    @dataclasses.dataclass(frozen=True)
+    class HoldsAnything:
+        payload: object
+
+    with pytest.raises(CodecError, match="HoldsAnything.payload"):
+        codec.encode(HoldsAnything(1))
+    with pytest.raises(CodecError, match="HoldsAnything.payload"):
+        codec.decode(msgpack.packb({"type": "HoldsAnything", "payload": 1}))
+
+
 def test_duplicate_message_names_are_rejected():
     registry = MessageRegistry()
 

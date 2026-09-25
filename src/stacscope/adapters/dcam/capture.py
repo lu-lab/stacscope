@@ -69,8 +69,11 @@ class DcamFrameCapture:
 
     ``in_flight`` is how many frames past the newest one reported the grabber
     may already be writing; it is measured on each camera, not known in
-    advance, so there is no default. ``slot_alignment`` is the boundary each
-    slot starts on. ``library`` replaces ``dcamapi.dll``, for tests.
+    advance, so there is no default. ``slot_alignment`` is a boundary each
+    slot must start on; by default there is none, and slots follow one
+    another at DCAM's own ``BUFFER FRAMEBYTES``, which already includes any
+    padding the camera needs. ``library`` replaces ``dcamapi.dll``, for
+    tests.
 
     Opening initializes DCAM-API, opens the camera and checks it describes
     its frames. Raises ``DcamUnavailable`` if DCAM-API or a property the
@@ -83,7 +86,7 @@ class DcamFrameCapture:
         camera: int = 0,
         *,
         in_flight: int,
-        slot_alignment: int = 4096,
+        slot_alignment: int = 1,
         library=None,
     ) -> None:
         self._lib = library if library is not None else _api.load()
@@ -158,51 +161,61 @@ class DcamFrameCapture:
         )
 
     async def attach(self, slots: np.ndarray) -> None:
-        self._require_open()
-        if self._slots is not None:
-            raise RuntimeError("frame memory is already attached; detach it first")
-        fmt = self.frame_format()
-        if slots.dtype != np.uint8 or slots.ndim != 2 or slots.strides[1] != 1:
-            raise ValueError("slots must be an (n_slots, slot_bytes) array of contiguous bytes")
-        if slots.shape[1] < fmt.frame_bytes:
-            raise ValueError(f"slots of {slots.shape[1]} bytes cannot hold {fmt.frame_bytes}")
-        if slots.ctypes.data % fmt.slot_alignment or slots.strides[0] % fmt.slot_alignment:
-            raise ValueError(f"slots must start on {fmt.slot_alignment}-byte boundaries")
-        if not slots.flags.writeable:
-            raise ValueError("slots must be writable")
-        # DCAM checks none of these addresses, and writes wherever they point
-        # ("the system may hang up"), which is why the checks above come first.
-        n = len(slots)
-        self._slots = slots
-        memory = [(_api.ATTACHKIND_FRAME, slots.ctypes.data, slots.strides[0])]
-        if self._has_timestamps:
-            self._timestamps = np.zeros(n, _TIMESTAMP)
-            memory.append((_api.ATTACHKIND_TIMESTAMP, self._timestamps.ctypes.data, _TIMESTAMP.itemsize))
-        if self._has_framestamps:
-            self._framestamps = np.zeros(n, "<i4")
-            memory.append((_api.ATTACHKIND_FRAMESTAMP, self._framestamps.ctypes.data, 4))
         try:
-            for kind, base, step in memory:
-                pointers = (c_void_p * n)(*(base + i * step for i in range(n)))
-                attach = _api.DCAMBUF_ATTACH.new(
-                    iKind=kind, buffer=ctypes.cast(pointers, POINTER(c_void_p)), buffercount=n
-                )
-                self._pointers[kind] = pointers
-                try:
-                    self._call("dcambuf_attach", self._hdcam, ctypes.pointer(attach))
-                except DcamError:
-                    del self._pointers[kind]  # refused, so nothing to release
-                    raise
-        except BaseException as exc:
-            # Half-attached memory is memory DCAM writes into and the role
-            # believes free: release whatever went in.
-            errors: list[DcamError] = []
-            self._release(errors)
-            for kind, _, _ in memory:
-                if kind not in self._pointers:  # never attached, or released
-                    self._forget(kind)
-            for error in errors:
-                exc.add_note(f"releasing it again also failed: {error}")
+            self._require_open()
+            if self._slots is not None:
+                raise RuntimeError("frame memory is already attached; detach it first")
+            fmt = self.frame_format()
+            if slots.dtype != np.uint8 or slots.ndim != 2 or slots.strides[1] != 1:
+                raise ValueError("slots must be an (n_slots, slot_bytes) array of contiguous bytes")
+            if slots.shape[1] < fmt.frame_bytes:
+                raise ValueError(f"slots of {slots.shape[1]} bytes cannot hold {fmt.frame_bytes}")
+            if slots.ctypes.data % fmt.slot_alignment or slots.strides[0] % fmt.slot_alignment:
+                raise ValueError(f"slots must start on {fmt.slot_alignment}-byte boundaries")
+            if not slots.flags.writeable:
+                raise ValueError("slots must be writable")
+            # DCAM checks none of these addresses, and writes wherever they point
+            # ("the system may hang up"), which is why the checks above come first.
+            n = len(slots)
+            self._slots = slots
+            memory = [(_api.ATTACHKIND_FRAME, slots.ctypes.data, slots.strides[0])]
+            if self._has_timestamps:
+                self._timestamps = np.zeros(n, _TIMESTAMP)
+                memory.append((_api.ATTACHKIND_TIMESTAMP, self._timestamps.ctypes.data, _TIMESTAMP.itemsize))
+            if self._has_framestamps:
+                self._framestamps = np.zeros(n, "<i4")
+                memory.append((_api.ATTACHKIND_FRAMESTAMP, self._framestamps.ctypes.data, 4))
+            try:
+                for kind, base, step in memory:
+                    pointers = (c_void_p * n)(*(base + i * step for i in range(n)))
+                    attach = _api.DCAMBUF_ATTACH.new(
+                        iKind=kind, buffer=ctypes.cast(pointers, POINTER(c_void_p)), buffercount=n
+                    )
+                    self._pointers[kind] = pointers
+                    try:
+                        self._call("dcambuf_attach", self._hdcam, ctypes.pointer(attach))
+                    except DcamError:
+                        del self._pointers[kind]  # refused, so nothing to release
+                        raise
+            except BaseException as exc:
+                # Half-attached memory is memory DCAM writes into and the role
+                # believes free: release whatever went in.
+                errors: list[DcamError] = []
+                self._release(errors)
+                for kind, _, _ in memory:
+                    if kind not in self._pointers:  # never attached, or released
+                        self._forget(kind)
+                for error in errors:
+                    exc.add_note(f"releasing it again also failed: {error}")
+                raise
+        except BaseException:
+            # This frame, and so the slots, stay alive for as long as anyone
+            # holds the error, through its traceback, and the segment cannot
+            # close while a view of it is alive: a caller closing it in a
+            # finally would get BufferError in place of this error (K9).
+            # Nothing else in this frame refers to the slots' memory: keep
+            # it that way, or delete that too.
+            del slots
             raise
 
     async def start(self) -> None:

@@ -42,6 +42,7 @@ __all__ = [
     "buffers",
     "test_a_closed_capture_refuses_to_be_used",
     "test_a_lost_frame_raises_frames_lost",
+    "test_a_refused_attach_does_not_hold_the_segment_open",
     "test_after_detach_no_reference_to_any_slot_remains",
     "test_attach_accepts_slots_laid_out_for_the_format",
     "test_attach_over_memory_already_attached_is_refused",
@@ -571,3 +572,29 @@ async def test_start_with_nothing_attached_is_refused(rig):
     lost frames at the first trigger."""
     with pytest.raises(RuntimeError):
         await rig.capture.start()
+
+
+# --- K9: a refusal lets go of the slots ------------------------------------------------
+
+
+@pytest.mark.parametrize("refusal", ["does not fit", "already attached"])
+async def test_a_refused_attach_does_not_hold_the_segment_open(rig, buffers, refusal):
+    """K9. A refused call's error keeps the call's arguments alive, through
+    its traceback, for as long as anyone holds the error, and a segment
+    cannot close while a view of it is alive. So a caller closing its
+    segment in a ``finally``, or a notebook keeping the last error, would
+    get ``BufferError`` in place of the refusal, and a segment that stays
+    mapped. An adapter drops the slots it was offered before its error
+    leaves ``attach``. Both refusals here are ones every adapter makes."""
+    fmt = rig.capture.frame_format()
+    if refusal == "already attached":
+        await rig.capture.attach(buffers(fmt, rig.n_slots).slots)
+    writer = buffers(fmt, rig.n_slots)
+    offered = writer.slots if refusal == "already attached" else writer.slots[:, : fmt.frame_bytes - 1]
+
+    with pytest.raises((ValueError, RuntimeError)) as caught:
+        await rig.capture.attach(offered)
+    del offered
+
+    buffers.close(writer)  # raises BufferError if the error holds the slots
+    assert caught.value is not None  # still held: that is the case under test

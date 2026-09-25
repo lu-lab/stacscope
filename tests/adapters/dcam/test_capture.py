@@ -116,6 +116,23 @@ def test_q2_the_frame_format_comes_from_the_buffer_properties(open_capture):
     assert fmt.slot_alignment == 512
 
 
+def test_q2_slots_are_packed_at_dcams_own_frame_size_by_default(open_capture, segments):
+    """DCAM states no alignment for attached memory: it asks only for
+    ``BUFFER FRAMEBYTES`` per frame, and pads that itself where the
+    hardware needs it. So by default the adapter asks for nothing more, and
+    one slot follows another at exactly that size (user, 2026-09-25). The
+    frame size here is a multiple of neither a page nor a cache line, so
+    any alignment added on top would show in the stride."""
+    fake = FakeDcam(width=40, height=24, row_bytes=96, top_offset=64, frame_bytes=64 + 24 * 96 + 32)
+    capture = open_capture(fake)
+
+    fmt = capture.frame_format()
+    writer = segments(fmt)
+
+    assert fmt.slot_alignment == 1
+    assert writer.slots.strides[0] == fmt.frame_bytes == 2400
+
+
 def test_q2_eight_bit_pixels_are_described_as_bytes(open_capture):
     fmt = open_capture(FakeDcam(pixel_type="MONO8")).frame_format()
 
@@ -199,7 +216,6 @@ async def test_q3_an_error_without_a_name_here_is_reported_by_number(open_captur
         await capture.attach(writer.slots)
 
     got, message = caught.value.code, str(caught.value)
-    del caught  # its traceback holds the slots, which would keep the segment open
     assert got == code
     assert "0x83001002" in message
     assert error_text(code) in message
@@ -219,8 +235,29 @@ async def test_q3_an_error_whose_text_cannot_be_read_is_still_reported(
         await capture.attach(writer.slots)
 
     code = caught.value.code
-    del caught  # its traceback holds the slots, which would keep the segment open
     assert code == _api.ERR_BUSY
+
+
+@pytest.mark.parametrize("refused", ["dcambuf_attach", "stamp attach"])
+async def test_q3_a_refused_attach_does_not_hold_the_segment_open(open_capture, fake, segments, refused):
+    """The contract's K9 covers the refusals every adapter makes itself;
+    this is DCAM refusing, including after the frame memory went in and a
+    stamp buffer did not, where the adapter has already let go of what was
+    attached. A caller that closes its segment while the refusal is
+    propagating, in a ``finally`` or a ``with``, must get DCAM's error, not
+    ``BufferError``."""
+    capture = open_capture(fake)
+    writer = segments(capture.frame_format())
+    if refused == "dcambuf_attach":
+        fake.fail("dcambuf_attach", _api.ERR_BUSY)
+    else:
+        fake.fail("dcambuf_attach", _api.ERR_BUSY, after=1)
+
+    with pytest.raises(DcamError) as caught:
+        await capture.attach(writer.slots)
+
+    writer.close()  # BufferError if the error still reaches the slots
+    assert caught.value.code == _api.ERR_BUSY
 
 
 async def test_q3_any_positive_return_is_success(open_capture, fake, segments):

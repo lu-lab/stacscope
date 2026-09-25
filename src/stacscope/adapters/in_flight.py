@@ -57,35 +57,43 @@ async def measure_in_flight(
     ``sentinel`` is the byte every slot is filled with first. Gives up after
     ``max_polls`` looks.
     """
-    if len(slots) < frames + 2 * scan:
-        raise ValueError(
-            f"{len(slots)} slots are too few: {frames} frames and a scan of {scan} "
-            f"need at least {frames + 2 * scan}, so that nothing wraps"
-        )
-    first_row, last_row = _rows(capture.frame_format())
-    slots[...] = sentinel
-    depth = partial = polls = delivered = 0
-    await capture.attach(slots)
     try:
-        await capture.start()
-        while delivered < frames and polls < max_polls:
-            await fire()
-            delivered = await capture.wait_frames(delivered, 0)
-            polls += 1
-            # Slot ``delivered`` holds the frame after the newest reported,
-            # one ahead; nothing has wrapped, so any written byte there is
-            # a frame the grabber began and has not reported.
-            for slot in range(delivered, min(delivered + scan, len(slots))):
-                began = bool(np.any(slots[slot, first_row] != sentinel))
-                ended = bool(np.any(slots[slot, last_row] != sentinel))
-                if began or ended:
-                    depth = max(depth, slot - delivered + 1)
-                if began and not ended:
-                    partial += 1
-    finally:
-        await capture.stop()
-        await capture.detach()
-    return InFlight(depth=depth, partial=partial, frames=delivered, polls=polls)
+        if len(slots) < frames + 2 * scan:
+            raise ValueError(
+                f"{len(slots)} slots are too few: {frames} frames and a scan of {scan} "
+                f"need at least {frames + 2 * scan}, so that nothing wraps"
+            )
+        first_row, last_row = _rows(capture.frame_format())
+        slots[...] = sentinel
+        depth = partial = polls = delivered = 0
+        await capture.attach(slots)
+        try:
+            await capture.start()
+            while delivered < frames and polls < max_polls:
+                await fire()
+                delivered = await capture.wait_frames(delivered, 0)
+                polls += 1
+                # Slot ``delivered`` holds the frame after the newest reported,
+                # one ahead; nothing has wrapped, so any written byte there is
+                # a frame the grabber began and has not reported.
+                for slot in range(delivered, min(delivered + scan, len(slots))):
+                    began = bool(np.any(slots[slot, first_row] != sentinel))
+                    ended = bool(np.any(slots[slot, last_row] != sentinel))
+                    if began or ended:
+                        depth = max(depth, slot - delivered + 1)
+                    if began and not ended:
+                        partial += 1
+        finally:
+            await capture.stop()
+            await capture.detach()
+        return InFlight(depth=depth, partial=partial, frames=delivered, polls=polls)
+    except BaseException:
+        # The error's traceback keeps this frame, and the slots, alive, and
+        # the caller's segment cannot close while a view of it is alive: a
+        # script closing it in a finally would get BufferError in place of
+        # the camera's error.
+        del slots
+        raise
 
 
 def _rows(fmt) -> tuple[slice, slice]:

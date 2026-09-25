@@ -21,7 +21,7 @@ import uuid
 import pytest
 from fake_dcam import FakeDcam
 
-from stacscope.adapters.dcam import DcamFrameCapture
+from stacscope.adapters.dcam import DcamError, DcamFrameCapture, _api
 from stacscope.adapters.in_flight import measure_in_flight
 from stacscope.core.buffer import ImageBuffer
 from stacscope.core.devices.image_streaming import layout_for
@@ -126,3 +126,27 @@ async def test_q10_too_few_slots_to_scan_past_the_burst_are_refused(rig, segment
 
     with pytest.raises(ValueError, match="slots"):
         await measure_in_flight(capture, small.slots, frames=FRAMES, fire=fire, sentinel=SENTINEL, scan=SCAN)
+
+
+@pytest.mark.parametrize("failure", ["start refused", "trigger fails"])
+async def test_q10_a_failed_measurement_does_not_hold_the_segment_open(rig, failure):
+    """The measurement is run from a script (5d), which closes its segment
+    in a ``finally``. Its error's traceback keeps the measurement's own
+    arguments alive, the slots among them, and a segment cannot close while
+    a view of it is alive: the script would get ``BufferError`` in place of
+    the camera's error, and a segment left mapped. A failure after the
+    attach is the case here; the capture's own refusals are the contract's
+    K9."""
+    capture, writer, fire = rig(1)
+    if failure == "start refused":
+        capture._lib.fail("dcamcap_start", _api.ERR_NOTREADY)
+    else:
+
+        async def fire():
+            raise RuntimeError("the trigger line is not connected")
+
+    with pytest.raises((DcamError, RuntimeError)) as caught:
+        await measure_in_flight(capture, writer.slots, frames=FRAMES, fire=fire, sentinel=SENTINEL, scan=SCAN)
+
+    writer.close()  # BufferError if the error still reaches the slots
+    assert caught.value is not None  # still held: that is the case under test

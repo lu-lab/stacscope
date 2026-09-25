@@ -34,16 +34,20 @@ GRACE = 0.25
 """Seconds allowed for a DCAM wait's thread to return and its caller to run."""
 
 FORMATS = {
-    "plain": dict(),
-    "padded": dict(row_bytes=96, top_offset=64),
-    "mono8": dict(pixel_type="MONO8"),
+    "plain": (dict(), dict()),
+    "padded": (dict(row_bytes=96, top_offset=64), dict(slot_alignment=4096)),
+    "mono8": (dict(pixel_type="MONO8"), dict()),
 }
+"""The fake's options, then the adapter's. By default the adapter asks for
+no alignment, so one format asks for some, or the contract's refusal of
+unaligned slots would never run against DCAM."""
 
 
 @pytest.fixture(params=FORMATS.values(), ids=FORMATS.keys())
 async def rig(request):
-    fake = FakeDcam(**request.param)
-    capture = DcamFrameCapture(library=fake, in_flight=1)
+    fake_options, capture_options = request.param
+    fake = FakeDcam(**fake_options)
+    capture = DcamFrameCapture(library=fake, in_flight=1, **capture_options)
 
     async def trigger(n: int) -> None:
         fake.pulse(n)

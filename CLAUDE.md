@@ -90,12 +90,14 @@ section explains why.
   (2026-09-24): `ImageStreaming` is a device role whose primary
   responsibility is the buffer, and hardware sits under it behind a
   `FrameCapture` port. Camera settings are each device's own messages, not
-  port methods. **K1–K8 (the port contract) are green in simulation**:
+  port methods. **K1–K9 (the port contract) are green in simulation**:
   `core/ports/frame_capture.py`, `SimulatedFrameCapture`, and
   `tests/contract/frame_capture_contract.py`. **Buffer views now pin the
   segment**: every view is built over `np.frombuffer`, so closing a buffer
   while a caller still holds a view (`frames`, `slots`, a `Frame`) raises
   `BufferError`. Tests must drop their frames before closing a reader.
+  An error's traceback holds its frames' arguments too, so a function
+  that takes slots `del`s them before its error leaves (K9).
   **F1–F6 (the role contract) are green in simulation**:
   `ImageStreaming` takes an optional `capture` and publishes what it
   delivers, and `SimulatedCamera` is now that role over
@@ -129,6 +131,8 @@ section explains why.
     checks our structs against the installed headers.
   - Stamps come from stamp buffers attached one per slot, and lost frames
     are caught both by DCAM's error and by gaps in the frame stamps (user).
+  - Slots are packed at DCAM's own `BUFFER FRAMEBYTES`: `slot_alignment`
+    defaults to 1 (user, 2026-09-25).
   - **Next, for a new session: the 5c entry at the top of the plan's
     "Milestone 5" status block.** It lists what 5d must settle and what is
     not written yet.

@@ -92,25 +92,31 @@ class SimulatedFrameCapture:
         return self._metadata
 
     async def attach(self, slots: np.ndarray) -> None:
-        self._open()
-        if self._slots is not None:
-            raise RuntimeError("frame memory is already attached; detach it first")
-        fmt = self._format
-        if slots.dtype != np.uint8 or slots.ndim != 2 or slots.strides[1] != 1:
-            raise ValueError("slots must be an (n_slots, slot_bytes) array of contiguous bytes")
-        if slots.shape[1] < fmt.frame_bytes:
-            raise ValueError(f"slots of {slots.shape[1]} bytes cannot hold {fmt.frame_bytes}")
-        # Every slot, not only the first: a stride off the alignment puts the
-        # second slot off it too.
-        if slots.ctypes.data % fmt.slot_alignment or slots.strides[0] % fmt.slot_alignment:
-            raise ValueError(f"slots must start on {fmt.slot_alignment}-byte boundaries")
-        if not slots.flags.writeable:
-            raise ValueError("slots must be writable")
-        self._slots = slots
-        self._frames = _typed(slots, fmt)
-        # One stamp per slot, overwritten with the slot: as on a camera, only
-        # frames still in the slots have stamps to read.
-        self._stamps = np.zeros(len(slots), STAMP_DTYPE)
+        try:
+            self._open()
+            if self._slots is not None:
+                raise RuntimeError("frame memory is already attached; detach it first")
+            fmt = self._format
+            if slots.dtype != np.uint8 or slots.ndim != 2 or slots.strides[1] != 1:
+                raise ValueError("slots must be an (n_slots, slot_bytes) array of contiguous bytes")
+            if slots.shape[1] < fmt.frame_bytes:
+                raise ValueError(f"slots of {slots.shape[1]} bytes cannot hold {fmt.frame_bytes}")
+            # Every slot, not only the first: a stride off the alignment puts the
+            # second slot off it too.
+            if slots.ctypes.data % fmt.slot_alignment or slots.strides[0] % fmt.slot_alignment:
+                raise ValueError(f"slots must start on {fmt.slot_alignment}-byte boundaries")
+            if not slots.flags.writeable:
+                raise ValueError("slots must be writable")
+            self._slots = slots
+            self._frames = _typed(slots, fmt)
+            # One stamp per slot, overwritten with the slot: as on a camera, only
+            # frames still in the slots have stamps to read.
+            self._stamps = np.zeros(len(slots), STAMP_DTYPE)
+        except BaseException:
+            # The error's traceback keeps this frame, and the slots, alive:
+            # while anyone holds it the segment cannot close (K9).
+            del slots
+            raise
 
     async def start(self) -> None:
         self._open()

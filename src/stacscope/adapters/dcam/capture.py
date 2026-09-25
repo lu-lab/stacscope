@@ -4,7 +4,9 @@ DcamFrameCapture hands the camera's driver the slots of an image buffer, and
 the driver writes each frame straight into the next slot, with no copy. It
 also collects each frame's frame number and time stamp from the driver. It is
 the FrameCapture port under the image-streaming role, which publishes what
-arrives.
+arrives. It also reads and changes the camera's settings, by the names and
+value labels the camera itself uses (such as "SENSOR MODE" and
+"PROGRESSIVE"), and sends software triggers.
 
 Windows only, and DCAM-API must be installed. DCAM-API allows one session per
 process, so open at most one DcamFrameCapture in a process: give the camera a
@@ -128,7 +130,7 @@ class DcamFrameCapture:
         self._require_open()
         width = int(self._value("IMAGE WIDTH"))
         height = int(self._value("IMAGE HEIGHT"))
-        pixel_type = self._value_text("BUFFER PIXEL TYPE")
+        pixel_type = self._label("BUFFER PIXEL TYPE", self._value("BUFFER PIXEL TYPE"))
         dtype = _DTYPES.get(pixel_type)
         if dtype is None:
             raise ValueError(
@@ -299,6 +301,77 @@ class DcamFrameCapture:
         self._teardown(errors)
         _raise_first(errors)
 
+    # --- settings: the camera device's own, not the port's ---------------------------
+
+    def get(self, name: str) -> float:
+        """The current value of the property the camera calls ``name``, such
+        as "EXPOSURE TIME". Raises ``ValueError`` if it has no such property."""
+        self._require_open()
+        return self._value(name)
+
+    def label(self, name: str) -> str:
+        """The camera's label for the current value of ``name``, such as
+        "PROGRESSIVE" for "SENSOR MODE". Raises ``ValueError`` if ``name``
+        is a plain number, with no labels."""
+        self._require_open()
+        return self._label(name, self._value(name))
+
+    def labels(self, name: str) -> dict[str, float]:
+        """Every value of ``name`` the camera has, by its label, in order of
+        value. Raises ``ValueError`` if ``name`` is a plain number."""
+        self._require_open()
+        current = self._value(name)
+        found = {self._label(name, current): current}
+        # DCAM lists values only relative to a given one, so walk both ways.
+        for option, further in (
+            (_api.PROPOPTION_PRIOR, lambda new, old: new < old),
+            (_api.PROPOPTION_NEXT, lambda new, old: new > old),
+        ):
+            value = c_double(current)
+            while True:
+                last = value.value
+                code = self._lib.dcamprop_queryvalue(
+                    self._hdcam, self._id(name), ctypes.pointer(value), option
+                )
+                # The Flash ends a walk with OUTOFRANGE; the reference says
+                # DCAMERR_OUTOFVALUE, which no header defines.
+                if code == _api.ERR_OUTOFRANGE:
+                    break
+                self._check("dcamprop_queryvalue", code)
+                if not further(value.value, last):  # a walk that stalls would never end
+                    break
+                found[self._label(name, value.value)] = value.value
+        return dict(sorted(found.items(), key=lambda item: item[1]))
+
+    def set(self, name: str, value: float | str) -> float | str:
+        """Set ``name`` to ``value``, a number or one of the camera's labels
+        for it, and return what the camera applied: it may round a number
+        (exposure to whole line intervals, say), and a label comes back as
+        a label. Raises ``ValueError`` for a property or label the camera
+        does not have, and ``DcamError`` if DCAM refuses; it refuses a
+        change to the frame's shape or readout (sensor mode, subarray,
+        binning) while memory is attached."""
+        self._require_open()
+        if isinstance(value, str):
+            labels = self.labels(name)
+            if value not in labels:
+                raise ValueError(
+                    f"{name} has no value {value!r}; the camera has {', '.join(labels)}"
+                )
+            number = c_double(labels[value])
+        else:
+            number = c_double(value)
+        self._call("dcamprop_setgetvalue", self._hdcam, self._id(name), ctypes.pointer(number), 0)
+        if isinstance(value, str):
+            return self._label(name, number.value)
+        return number.value
+
+    def fire_trigger(self) -> None:
+        """Expose one frame, in a capture running with "TRIGGER SOURCE" set to
+        "SOFTWARE". Raises ``DcamError`` if no capture is running."""
+        self._require_open()
+        self._call("dcamcap_firetrigger", self._hdcam, 0)
+
     # --- opening and closing --------------------------------------------------------
 
     def _open(self, camera: int) -> None:
@@ -445,21 +518,27 @@ class DcamFrameCapture:
 
     # --- properties and calls -----------------------------------------------------------
 
+    def _id(self, name: str) -> int:
+        try:
+            return self._ids[name]
+        except KeyError:
+            raise ValueError(f"the camera has no {name} property") from None
+
     def _value(self, name: str) -> float:
         value = c_double()
-        self._call("dcamprop_getvalue", self._hdcam, self._ids[name], ctypes.pointer(value))
+        self._call("dcamprop_getvalue", self._hdcam, self._id(name), ctypes.pointer(value))
         return value.value
 
-    def _value_text(self, name: str) -> str:
-        """The label DCAM gives the property's current value, such as MONO16."""
+    def _label(self, name: str, value: float) -> str:
+        """The label DCAM gives ``value`` of the property, such as MONO16."""
         text = ctypes.create_string_buffer(64)
         request = _api.DCAMPROP_VALUETEXT.new(
-            iProp=self._ids[name],
-            value=self._value(name),
-            text=ctypes.addressof(text),
-            textbytes=len(text),
+            iProp=self._id(name), value=value, text=ctypes.addressof(text), textbytes=len(text)
         )
-        self._call("dcamprop_getvaluetext", self._hdcam, ctypes.pointer(request))
+        code = self._lib.dcamprop_getvaluetext(self._hdcam, ctypes.pointer(request))
+        if code == _api.ERR_NOVALUETEXT:
+            raise ValueError(f"{name} has no value labels")
+        self._check("dcamprop_getvaluetext", code)
         return text.value.decode()
 
     def _call(self, name: str, *args) -> int:

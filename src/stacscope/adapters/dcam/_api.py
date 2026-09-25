@@ -34,7 +34,9 @@ ERR_TIMEOUT = _signed(0x80000106)
 ERR_LOSTFRAME = _signed(0x80000301)
 ERR_MISSINGFRAME_TROUBLE = _signed(0x80000F06)
 ERR_NOCAMERA = _signed(0x80000206)
+ERR_OUTOFRANGE = _signed(0x80000822)
 ERR_NOPROPERTY = _signed(0x80000828)
+ERR_NOVALUETEXT = _signed(0x8000082D)
 ERR_NOTSUPPORT = _signed(0x80000F03)
 
 ERROR_NAMES = {
@@ -45,7 +47,9 @@ ERROR_NAMES = {
     ERR_LOSTFRAME: "DCAMERR_LOSTFRAME",
     ERR_MISSINGFRAME_TROUBLE: "DCAMERR_MISSINGFRAME_TROUBLE",
     ERR_NOCAMERA: "DCAMERR_NOCAMERA",
+    ERR_OUTOFRANGE: "DCAMERR_OUTOFRANGE",
     ERR_NOPROPERTY: "DCAMERR_NOPROPERTY",
+    ERR_NOVALUETEXT: "DCAMERR_NOVALUETEXT",
     ERR_NOTSUPPORT: "DCAMERR_NOTSUPPORT",
 }
 """Names for the codes the adapter acts on. Any other code is reported by
@@ -70,6 +74,8 @@ CAPEVENT_FRAMEREADY = 0x0002
 CAPEVENT_STOPPED = 0x0010
 
 PROPOPTION_SUPPORT = 0x00000000
+PROPOPTION_NEXT = 0x01000000
+PROPOPTION_PRIOR = _signed(0xFF000000)
 
 
 # --- structures ----------------------------------------------------------------------
@@ -174,11 +180,14 @@ FUNCTIONS = {
     "dcamprop_getname": [c_void_p, c_int32, ctypes.c_char_p, c_int32],
     "dcamprop_getvalue": [c_void_p, c_int32, POINTER(c_double)],
     "dcamprop_getvaluetext": [c_void_p, POINTER(DCAMPROP_VALUETEXT)],
+    "dcamprop_setgetvalue": [c_void_p, c_int32, POINTER(c_double), c_int32],
+    "dcamprop_queryvalue": [c_void_p, c_int32, POINTER(c_double), c_int32],
     "dcambuf_attach": [c_void_p, POINTER(DCAMBUF_ATTACH)],
     "dcambuf_release": [c_void_p, c_int32],
     "dcamcap_start": [c_void_p, c_int32],
     "dcamcap_stop": [c_void_p],
     "dcamcap_transferinfo": [c_void_p, POINTER(DCAMCAP_TRANSFERINFO)],
+    "dcamcap_firetrigger": [c_void_p, c_int32],
     "dcamwait_open": [POINTER(DCAMWAIT_OPEN)],
     "dcamwait_close": [c_void_p],
     "dcamwait_start": [c_void_p, POINTER(DCAMWAIT_START)],

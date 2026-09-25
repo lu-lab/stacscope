@@ -10,13 +10,24 @@ does, which only 5d can. Where the documentation is silent, the fake takes
 the reading that is harder on the adapter, and says so beside the code:
 
 - ``dcamwait_start`` sees only events that happen while it waits, and
-  ``dcamwait_abort`` with nobody waiting does nothing (documented).
+  ``dcamwait_abort`` with nobody waiting does nothing (documented). The
+  Flash latches FRAMEREADY, so a frame that lands between waits ends the
+  next one at once (M4); the adapter must not depend on it.
 - Frame stamps run on across captures from an arbitrary number, rather than
-  restarting at 0 (D12 is still open for the Flash).
+  restarting at 0. The Flash restarts them at 0 for every capture (M3); a
+  camera need not.
 - A lost frame is reported by a gap in the frame stamps, by
   ``DCAMERR_LOSTFRAME`` from the next wait, or both (``loss_report``).
-- Property IDs are numbered unlike dcamprop.h, and pixel types unlike
-  dcamapi4.h, so an adapter that hard-coded either fails here.
+- Property IDs are numbered unlike dcamprop.h, and pixel types, sensor
+  modes and trigger sources unlike the headers, so an adapter that
+  hard-coded any of them fails here.
+- ``dcamprop_queryvalue`` ends a walk through a property's values with
+  ``DCAMERR_OUTOFRANGE``, as the Flash does (the reference says
+  ``DCAMERR_OUTOFVALUE``, which no header defines).
+- ``dcamcap_firetrigger`` with no capture running is refused with
+  ``DCAMERR_NOTBUSY``, as the Flash refuses it (S6). While capturing it
+  succeeds whatever the trigger source, and fires only in SOFTWARE
+  (documented: "only effective" then; untried on the Flash).
 
 Every call is logged in ``calls``, and any use the reference forbids -- a
 call after ``dcamapi_uninit``, closing a wait handle while a wait is running
@@ -34,9 +45,13 @@ import numpy as np
 
 from stacscope.adapters.dcam import _api
 
+ERR_NOTBUSY = _api._signed(0x80000107)
 ERR_INVALIDHANDLE = _api._signed(0x80000807)
 ERR_INVALIDPARAM = _api._signed(0x80000808)
+ERR_OUTOFRANGE = _api._signed(0x80000822)
+ERR_NOTWRITABLE = _api._signed(0x80000823)
 ERR_INVALIDPROPERTYID = _api._signed(0x80000825)
+ERR_ACCESSDENY = _api._signed(0x8000082C)
 ERR_NOVALUETEXT = _api._signed(0x8000082D)
 ERR_INVALIDWAITHANDLE = _api._signed(0x84002001)
 
@@ -59,11 +74,20 @@ def error_text(code: int) -> str:
     return f"fake DCAM text for {code & 0xFFFFFFFF:#010x}"
 
 
+EXPOSURE_STEP = 1e-4
+"""The fake's exposure time rounds to whole multiples of this, in seconds,
+as the Flash's rounds to whole line intervals."""
+
+WRITABLE = {"SENSOR MODE", "TRIGGER SOURCE", "EXPOSURE TIME"}
+
+
 @dataclass
 class _Property:
     id: int
     value: float
     texts: dict[float, str] = field(default_factory=dict)
+    step: float = 0.0
+    """If set, a value is rounded to a multiple of it when set."""
 
 
 class FakeDcam:
@@ -119,8 +143,8 @@ class FakeDcam:
         types = {number: name for name, number in PIXEL_TYPES.items()}
         self._properties: dict[str, _Property] = {}
         for name, value, texts in [
-            ("SENSOR MODE", 1, {1: "AREA", 12: "PROGRESSIVE"}),
-            ("TRIGGER SOURCE", 2, {1: "INTERNAL", 2: "EXTERNAL", 3: "SOFTWARE"}),
+            ("SENSOR MODE", 31, {31: "AREA", 32: "PROGRESSIVE"}),
+            ("TRIGGER SOURCE", 52, {51: "INTERNAL", 52: "EXTERNAL", 53: "SOFTWARE"}),
             ("IMAGE WIDTH", width, {}),
             ("IMAGE HEIGHT", height, {}),
             ("IMAGE ROWBYTES", int(width * pixel), {}),
@@ -133,6 +157,9 @@ class FakeDcam:
             ("BUFFER PIXEL TYPE", PIXEL_TYPES[pixel_type], types),
         ]:
             self._properties[name] = _Property(_ID_BASE + 0x10 * len(self._properties), value, texts)
+        self._properties["EXPOSURE TIME"] = _Property(
+            _ID_BASE + 0x10 * len(self._properties), 0.01, step=EXPOSURE_STEP
+        )
 
         self._lock = threading.Condition()
         self._scripted: dict[str, list[tuple[str, int]]] = {}
@@ -167,6 +194,11 @@ class FakeDcam:
     def set_property(self, name: str, value: float) -> None:
         """Change a property, as a camera setting would."""
         self._properties[name].value = value
+
+    def label(self, name: str) -> str:
+        """The label of a property's current value, as the camera holds it."""
+        prop = self._properties[name]
+        return prop.texts[prop.value]
 
     def remove_property(self, name: str) -> None:
         """Make the camera one that lacks ``name``."""
@@ -421,6 +453,52 @@ class FakeDcam:
             ctypes.memmove(p.text, data, len(data))
             return _api.SUCCESS
 
+    def dcamprop_setgetvalue(self, hdcam, iprop, pointer, option):
+        with self._lock:
+            if (scripted := self._call("dcamprop_setgetvalue")) and scripted[0] == "fail":
+                return scripted[1]
+            if error := self._device("dcamprop_setgetvalue", hdcam):
+                return error
+            name = self._name(iprop)
+            if name is None:
+                return ERR_INVALIDPROPERTYID
+            if name not in WRITABLE:
+                return ERR_NOTWRITABLE
+            prop = self._properties[name]
+            value = pointer.contents.value
+            if prop.texts and value not in prop.texts:
+                return ERR_INVALIDPARAM  # documented, for a value without AUTOROUNDING
+            if prop.step:
+                value = round(value / prop.step) * prop.step
+            prop.value = value
+            pointer.contents.value = value
+            return _api.SUCCESS
+
+    def dcamprop_queryvalue(self, hdcam, iprop, pointer, option):
+        with self._lock:
+            if (scripted := self._call("dcamprop_queryvalue")) and scripted[0] == "fail":
+                return scripted[1]
+            if error := self._device("dcamprop_queryvalue", hdcam):
+                return error
+            name = self._name(iprop)
+            if name is None:
+                return ERR_INVALIDPROPERTYID
+            values = sorted(self._properties[name].texts)
+            if not values:
+                return _api.ERR_NOTSUPPORT  # plain numbers are not modelled
+            given = pointer.contents.value
+            if option == _api.PROPOPTION_NEXT:
+                found = [v for v in values if v > given][:1]
+            elif option == _api.PROPOPTION_PRIOR:
+                found = [v for v in values if v < given][-1:]
+            else:
+                self.misuse.append(f"dcamprop_queryvalue with option {option:#x}")
+                return ERR_INVALIDPARAM
+            if not found:
+                return ERR_OUTOFRANGE
+            pointer.contents.value = found[0]
+            return _api.SUCCESS
+
     def _name(self, iprop: int) -> str | None:
         for name, prop in self._properties.items():
             if prop.id == iprop:
@@ -512,6 +590,20 @@ class FakeDcam:
                 self._begun = []  # frames cut short by the stop are never delivered
                 self._events.append(("stopped", None))
                 self._lock.notify_all()
+            return _api.SUCCESS
+
+    def dcamcap_firetrigger(self, hdcam, kind):
+        with self._lock:  # a Condition's lock is reentrant, so pulse may take it again
+            if (scripted := self._call("dcamcap_firetrigger")) and scripted[0] == "fail":
+                return scripted[1]
+            if error := self._device("dcamcap_firetrigger", hdcam):
+                return error
+            if kind != 0:
+                self.misuse.append(f"dcamcap_firetrigger with kind {kind}, which is reserved")
+            if not self._busy:
+                return ERR_NOTBUSY
+            if self.label("TRIGGER SOURCE") == "SOFTWARE":
+                self.pulse(1)
             return _api.SUCCESS
 
     def dcamcap_transferinfo(self, hdcam, param):

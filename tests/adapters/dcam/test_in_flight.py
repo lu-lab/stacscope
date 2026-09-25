@@ -106,6 +106,53 @@ async def test_q10_a_frame_begun_and_not_finished_is_counted_as_partial(rig, dep
     assert (result.partial > 0) == (depth > 0)
 
 
+class _Lagging:
+    """The capture, with frames that finish after the tool has read the
+    count and before it scans: what a camera at hundreds of frames a second
+    does to a tool that is not fast enough to see each frame alone. After
+    each trigger, the first count read is followed by ``extra`` more pulses
+    before the tool can look; the grabber finishes frames as it always does,
+    leaving its own depth in flight."""
+
+    def __init__(self, capture, fake, extra):
+        self._capture = capture
+        self._fake = fake
+        self._extra = extra
+        self.fired = False
+
+    def __getattr__(self, name):
+        return getattr(self._capture, name)
+
+    async def wait_frames(self, seen, timeout):
+        delivered = await self._capture.wait_frames(seen, timeout)
+        if self.fired:
+            self.fired = False
+            self._fake.pulse(self._extra)
+        return delivered
+
+
+@pytest.mark.parametrize("depth", [0, 1])
+async def test_q10_frames_that_finish_while_the_tool_looks_are_not_depth(rig, depth):
+    """A frame that finished while the tool was scanning was in flight when
+    the count was read, but it was finished and would have been reported by
+    the time the scan saw it: the tool's own lag, not the grabber's depth. At
+    800 frames a second a scan of a few milliseconds spans several frames,
+    and a tool counting them would have the camera declare a depth it does
+    not have, and the role hold back frames it could publish."""
+    capture, writer, _ = rig(depth)
+    lagging = _Lagging(capture, capture._lib, extra=2)
+
+    async def fire():
+        lagging.fired = True
+        capture._lib.pulse(1)
+
+    result = await measure_in_flight(
+        lagging, writer.slots, frames=FRAMES, fire=fire, sentinel=SENTINEL, scan=SCAN
+    )
+
+    assert result.depth == depth
+
+
 async def test_q10_the_capture_is_stopped_and_detached_afterwards(rig):
     """The measurement runs on a camera that goes on to other work, and on
     memory the caller closes."""

@@ -133,9 +133,24 @@ section explains why.
     are caught both by DCAM's error and by gaps in the frame stamps (user).
   - Slots are packed at DCAM's own `BUFFER FRAMEBYTES`: `slot_alignment`
     defaults to 1 (user, 2026-09-25).
-  - **Next, for a new session: the 5c entry at the top of the plan's
-    "Milestone 5" status block.** It lists what 5d must settle and what is
-    not written yet.
+  - Settings are adapter methods, not port methods: `get`, `label`,
+    `labels`, `set` (by property name, and by the camera's own value
+    labels, never header numbers) and `fire_trigger` (Q11, Q12).
+  - **5d's measurements are done, on the dev box Flash** (2026-09-25).
+    The camera suite is `tests/hardware/dcam/`, gated on
+    `STACSCOPE_CAMERA` (the DCAM index); it captures, and puts back
+    every setting it changes. S1–S6 open the real DLL; K1–K9 pass on
+    the camera in three formats; M1 measured in-flight depth 1 in all
+    nine conditions; M2 streamed 800 frames a second with no loss. The
+    DAQ-triggered condition also needs `STACSCOPE_CAMERA_TRIGGER`
+    (`Dev1/port0/line0`, wired to the camera's BNC input here) and
+    `--extra nidaqmx`.
+  - The Flash declares `in_flight=2`: measured 1, plus a margin (user,
+    2026-09-25). `fire_trigger` stays synchronous; fast acquisitions are
+    DAQ-triggered (user).
+  - **Next, for a new session: the 5d entry at the top of the plan's
+    "Milestone 5" status block.** It has the results, the answers to the
+    open questions, and what comes next (the `OrcaFlash` device).
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

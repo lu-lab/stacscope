@@ -1,5 +1,6 @@
-"""Q2-Q9: DcamFrameCapture over the fake DCAM library, beyond the port
-contract (Q1, test_contract.py): what only a DCAM adapter has to get right.
+"""Q2-Q9, Q11-Q12: DcamFrameCapture over the fake DCAM library, beyond the
+port contract (Q1, test_contract.py): what only a DCAM adapter has to get
+right.
 
 Windows only, like the adapter, and not part of the default run:
 
@@ -16,6 +17,8 @@ import uuid
 import numpy as np
 import pytest
 from fake_dcam import (
+    ERR_ACCESSDENY,
+    ERR_NOTBUSY,
     FRAME_PERIOD_US,
     TIMESTAMP_START_US,
     FakeDcam,
@@ -651,3 +654,159 @@ def test_q9_a_dcam_api_without_a_needed_function_is_named(monkeypatch):
 
     with pytest.raises(DcamUnavailable, match="dcamwait_open"):
         DcamFrameCapture(in_flight=1)
+
+
+# --- Q11: settings, by property name and by value label ----------------------------------------
+
+
+def test_q11_a_setting_is_set_by_name_and_returns_what_dcam_applied(open_capture, fake):
+    """Settings are the camera device's own messages, and reach DCAM through
+    the adapter by property name: the fake numbers its properties unlike
+    dcamprop.h. DCAM rounds a value to one the camera can do (exposure to
+    whole line intervals), so what comes back is what was applied, not what
+    was asked for; a device reporting the request would misstate its
+    exposure."""
+    capture = open_capture(fake)
+
+    applied = capture.set("EXPOSURE TIME", 0.012345)
+
+    assert applied == pytest.approx(0.0123)
+    assert capture.get("EXPOSURE TIME") == applied
+
+
+def test_q11_a_setting_is_set_by_its_label(open_capture, fake):
+    """A mode is chosen by the camera's own label for it. The numbers behind
+    the labels are the header's, which the licence keeps out of this
+    repository, and the fake numbers them differently, so a number written
+    into the adapter would select the wrong mode here."""
+    capture = open_capture(fake)
+
+    assert capture.set("SENSOR MODE", "PROGRESSIVE") == "PROGRESSIVE"
+
+    assert capture.label("SENSOR MODE") == "PROGRESSIVE"
+    assert fake.label("SENSOR MODE") == "PROGRESSIVE"
+
+
+def test_q11_the_labels_are_the_cameras_own_listed_both_ways_from_the_current_value(
+    open_capture, fake
+):
+    """DCAM lists a property's values only relative to a given one, prior
+    and next. The fake's trigger source sits at its middle value, so a list
+    walked in one direction only misses a label."""
+    capture = open_capture(fake)
+
+    assert capture.labels("TRIGGER SOURCE") == {
+        "INTERNAL": 51.0,
+        "EXTERNAL": 52.0,
+        "SOFTWARE": 53.0,
+    }
+
+
+def test_q11_a_walk_that_stops_advancing_still_ends(open_capture, fake, monkeypatch):
+    """How a walk ends is not what the reference says (OUTOFRANGE on the
+    Flash, OUTOFVALUE in the text), so a camera that answers success with
+    the value unchanged must end it too, rather than hang the camera's
+    actor in a settings message."""
+    capture = open_capture(fake)
+    monkeypatch.setattr(fake, "dcamprop_queryvalue", lambda *args: _api.SUCCESS)
+
+    assert capture.labels("TRIGGER SOURCE") == {"EXTERNAL": 52.0}
+
+
+def test_q11_a_label_the_camera_does_not_have_is_refused_naming_those_it_has(open_capture, fake):
+    """Labels differ between cameras, and between the header and a camera
+    ("DUAL LIGHT SHEET" on the Flash, "DUAL LIGHTSHEET" in the header). A
+    mistyped one must be refused before anything is set, with the camera's
+    list to choose from."""
+    capture = open_capture(fake)
+
+    with pytest.raises(ValueError, match="INTERNAL, EXTERNAL, SOFTWARE"):
+        capture.set("TRIGGER SOURCE", "SOFT")
+
+    assert "dcamprop_setgetvalue" not in fake.calls
+    assert fake.label("TRIGGER SOURCE") == "EXTERNAL"
+
+
+def test_q11_a_property_the_camera_does_not_have_is_refused_by_name(open_capture, fake):
+    capture = open_capture(fake)
+
+    with pytest.raises(ValueError, match="no EXPOSURE TIMES property"):
+        capture.set("EXPOSURE TIMES", 0.01)
+    with pytest.raises(ValueError, match="no EXPOSURE TIMES property"):
+        capture.get("EXPOSURE TIMES")
+
+
+def test_q11_a_numeric_property_has_no_labels(open_capture, fake):
+    """Asking for the label of a plain number is a caller's mistake, and says
+    so, rather than surfacing as DCAM's "No Value Text!"."""
+    capture = open_capture(fake)
+
+    with pytest.raises(ValueError, match="EXPOSURE TIME has no value labels"):
+        capture.label("EXPOSURE TIME")
+    with pytest.raises(ValueError, match="EXPOSURE TIME has no value labels"):
+        capture.set("EXPOSURE TIME", "LONG")
+
+
+def test_q11_a_setting_dcam_refuses_raises_dcam_error(open_capture, fake):
+    """The camera decides what may change when (a subarray only with no
+    memory attached, say). The adapter does not second-guess it: DCAM's
+    refusal comes back as it is."""
+    capture = open_capture(fake)
+    fake.fail("dcamprop_setgetvalue", ERR_ACCESSDENY)
+
+    with pytest.raises(DcamError) as caught:
+        capture.set("SENSOR MODE", "PROGRESSIVE")
+
+    assert caught.value.call == "dcamprop_setgetvalue"
+    assert caught.value.code == ERR_ACCESSDENY
+
+
+async def test_q11_settings_are_refused_after_close(open_capture, fake):
+    capture = open_capture(fake)
+    await capture.close()
+
+    for call in (
+        lambda: capture.get("SENSOR MODE"),
+        lambda: capture.set("SENSOR MODE", "AREA"),
+        lambda: capture.set("EXPOSURE TIME", 0.01),  # a number goes straight to DCAM
+    ):
+        with pytest.raises(RuntimeError, match="closed"):
+            call()
+
+
+# --- Q12: the software trigger ---------------------------------------------------------------------
+
+
+async def test_q12_a_software_trigger_makes_a_frame(open_capture, fake, segments):
+    """With the trigger source set to SOFTWARE, each fire_trigger exposes
+    one frame. It is how the camera is triggered with nothing wired to its
+    input, as the 5d suite does."""
+    capture = open_capture(fake)
+    capture.set("TRIGGER SOURCE", "SOFTWARE")
+    await capturing(capture, segments)
+
+    capture.fire_trigger()
+    fake.settle()
+
+    assert await capture.wait_frames(0, 1.0) == 1
+
+
+async def test_q12_a_software_trigger_with_no_capture_running_is_dcams_error(open_capture, fake):
+    """The Flash refuses it with DCAMERR_NOTBUSY (S6). A trigger that
+    arrives before the capture starts, or after it stops, is a sequencing
+    mistake in the caller, and must say so rather than be lost quietly."""
+    capture = open_capture(fake)
+    capture.set("TRIGGER SOURCE", "SOFTWARE")
+
+    with pytest.raises(DcamError) as caught:
+        capture.fire_trigger()
+
+    assert caught.value.code == ERR_NOTBUSY
+
+
+async def test_q12_a_software_trigger_after_close_is_refused(open_capture, fake):
+    capture = open_capture(fake)
+    await capture.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        capture.fire_trigger()

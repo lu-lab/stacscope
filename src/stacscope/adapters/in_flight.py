@@ -8,10 +8,12 @@ it is measured, once per camera and per readout setting.
 
 measure_in_flight fills a set of slots with a sentinel byte, starts a
 capture, and, as frames arrive, looks at the slots past the newest reported
-frame for any that are no longer the sentinel. The furthest one found is the
-observed depth. Choose a sentinel the camera cannot produce at the exposure
-used, and declare the observed depth plus whatever margin you want: a depth
-the camera never showed cannot be ruled out by watching.
+frame for any that are no longer the sentinel. It then asks for the count
+again, so that a frame that finished while it looked is not mistaken for one
+in flight. The furthest written slot past that count is the observed depth.
+Choose a sentinel the camera cannot produce at the exposure used, and
+declare the observed depth plus whatever margin you want: a depth the
+camera never showed cannot be ruled out by watching.
 """
 
 from collections.abc import Awaitable, Callable
@@ -28,7 +30,7 @@ class InFlight:
     reported frame that a written slot was found; ``partial`` counts the
     times a slot past the newest had its first row written and its last not,
     a frame caught mid-write; ``frames`` is how many the capture delivered and
-    ``polls`` how many times it was asked."""
+    ``polls`` how many times the slots were looked at."""
 
     depth: int
     partial: int
@@ -71,14 +73,28 @@ async def measure_in_flight(
             await capture.start()
             while delivered < frames and polls < max_polls:
                 await fire()
-                delivered = await capture.wait_frames(delivered, 0)
+                before = await capture.wait_frames(delivered, 0)
                 polls += 1
-                # Slot ``delivered`` holds the frame after the newest reported,
-                # one ahead; nothing has wrapped, so any written byte there is
-                # a frame the grabber began and has not reported.
-                for slot in range(delivered, min(delivered + scan, len(slots))):
-                    began = bool(np.any(slots[slot, first_row] != sentinel))
-                    ended = bool(np.any(slots[slot, last_row] != sentinel))
+                # Slot ``before`` holds the frame after the newest reported;
+                # nothing has wrapped, so any written byte there is a frame
+                # the grabber had begun.
+                written = [
+                    (
+                        slot,
+                        bool(np.any(slots[slot, first_row] != sentinel)),
+                        bool(np.any(slots[slot, last_row] != sentinel)),
+                    )
+                    for slot in range(before, min(before + scan, len(slots)))
+                ]
+                # Frames go on finishing while the slots are read, and at
+                # hundreds a second a scan spans several. Measured against
+                # the count before it, those would count as depth; against
+                # the count after it, only frames begun and still not
+                # reported do.
+                delivered = await capture.wait_frames(before, 0)
+                for slot, began, ended in written:
+                    if slot < delivered:
+                        continue
                     if began or ended:
                         depth = max(depth, slot - delivered + 1)
                     if began and not ended:

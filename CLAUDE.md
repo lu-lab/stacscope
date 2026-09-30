@@ -221,7 +221,10 @@ section explains why.
     `ShortestTriggerPeriod(seconds)` is in `core/protocol/messages.py`. On
     the camera, `tests/hardware/ueye/test_device.py` (W1–W3) shows 20 fps
     full-frame RAW10 through the device, and too-fast triggers ending an
-    acquisition with a fatal Fault.
+    acquisition with a fatal Fault. **`OrcaFlash` answers the same query**
+    from DCAM's `TIMING MIN TRIGGER INTERVAL` (O12 over the fake). V6 in
+    `tests/hardware/dcam/test_device.py` checks it on the Flash, and the
+    user runs it.
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

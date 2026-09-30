@@ -10,7 +10,9 @@ names and value labels the camera itself uses:
     GetProperty("TRIGGER SOURCE")
 
 Each is answered with what the camera applied, in a PropertyValue, or with
-Rejected and the camera's reason. During an acquisition, a setting that
+Rejected and the camera's reason. GetShortestTriggerPeriod answers with the
+shortest trigger period the current settings allow, as the camera states
+it; keep the trigger slower than that. During an acquisition, a setting that
 would change the frame's size or layout is refused; others, such as the
 exposure time, change at once if the camera accepts them. Settings given in
 the device's configuration are applied, in order, when it launches.
@@ -53,6 +55,7 @@ from stacscope.adapters.dcam.messages import (
     SetSaveDirectory,
 )
 from stacscope.core.devices import DeviceState, ImageStreaming, Recording, TimedDevice
+from stacscope.core.protocol import GetShortestTriggerPeriod, ShortestTriggerPeriod
 from stacscope.core.ports import FrameFormat
 
 IN_FLIGHT = 2
@@ -96,6 +99,9 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     frame format is refused; if the camera accepts one anyway, the device
     puts it back, answers ``Rejected`` and publishes a fatal ``Fault``,
     since frames of the new format may already have been written.
+
+    Answers ``GetShortestTriggerPeriod`` with ``ShortestTriggerPeriod``: the
+    camera's own TIMING MIN TRIGGER INTERVAL, for its current settings.
 
     Answers ``SetSaveDirectory`` with ``SaveDirectory``, or ``Rejected``
     while armed or for a directory that does not exist. An acquisition with
@@ -178,8 +184,20 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
                 self._change(name, value)
             case SetSaveDirectory(path):
                 self._set_save_directory(path)
+            case GetShortestTriggerPeriod():
+                self._shortest_trigger_period()
             case _:
                 await super().handle(msg)
+
+    def _shortest_trigger_period(self) -> None:
+        # DCAM states the floor itself, for the current exposure, readout and
+        # trigger mode; nothing is computed here.
+        try:
+            seconds = self.capture.get("TIMING MIN TRIGGER INTERVAL")
+        except (ValueError, DcamError) as exc:
+            self._reject(str(exc))
+            return
+        self.reply(ShortestTriggerPeriod(seconds))
 
     def _answer(self, name: str) -> None:
         try:

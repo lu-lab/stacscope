@@ -12,6 +12,8 @@ is put back afterwards. It reads what the fake DLL cannot vouch for:
       under a header declaring two frames in flight.
   V3  While armed, which settings the Flash takes: an exposure time, and a
       subarray, which must be refused without ending the acquisition.
+  V6  The shortest trigger period, asked as a client asks every camera: the
+      Flash's own TIMING MIN TRIGGER INTERVAL, moving with the exposure.
 
 Every test adds what it read to a "camera findings" section at the end of
 the run; paste that section back.
@@ -48,7 +50,14 @@ from stacscope.adapters.dcam import (
 )
 from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
 from stacscope.core.buffer import ImageBuffer
-from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
+from stacscope.core.protocol import (
+    DeviceReady,
+    DeviceStopped,
+    GetShortestTriggerPeriod,
+    ShortestTriggerPeriod,
+    StartDevice,
+    StopDevice,
+)
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -179,3 +188,22 @@ async def test_v3_while_armed_the_flash_takes_an_exposure_and_refuses_a_subarray
         assert writer.published() - writer.acquisition_start == 2
         assert await _ask(ref, StopDevice()) == DeviceStopped()
 
+
+
+async def test_v6_the_shortest_trigger_period_is_the_flashs_own_floor(camera, report):
+    """The query every triggered camera answers (user, 2026-09-30), so a
+    client can check its waveform against any camera alike. On the Flash it
+    is TIMING MIN TRIGGER INTERVAL (20.0 ms at full frame and 10 ms
+    exposure, AREA, in the dev box survey), which must move with the
+    exposure."""
+    async with flash(camera, SOFTWARE, report) as (_, ref, _):
+        periods = {}
+        for exposure in (0.001, 0.010):
+            assert isinstance(await _ask(ref, SetProperty("EXPOSURE TIME", exposure)), PropertyValue)
+            answer = await _ask(ref, GetShortestTriggerPeriod())
+            floor = await _ask(ref, GetProperty("TIMING MIN TRIGGER INTERVAL"))
+            assert isinstance(answer, ShortestTriggerPeriod)
+            assert answer.seconds == floor.value
+            periods[exposure] = answer.seconds
+    report(", ".join(f"{e * 1e3:.0f} ms exposure: {p * 1e3:.3f} ms" for e, p in periods.items()))
+    assert periods[0.010] > periods[0.001]

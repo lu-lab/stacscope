@@ -109,6 +109,9 @@ RECORD_PER_FRAME_EXTRA = 64
 file and a session cost these many bytes, and a frame its BUFFER FRAMEBYTES
 plus 64."""
 
+MIN_TRIGGER_INTERVAL = 0.02
+"""Seconds: TIMING MIN TRIGGER INTERVAL, until a test sets it."""
+
 WRITABLE = {"SENSOR MODE", "TRIGGER SOURCE", "EXPOSURE TIME", "SUBARRAY VSIZE"}
 
 
@@ -220,6 +223,12 @@ class FakeDcam:
             _ID_BASE + 0x10 * len(self._properties), 0.01, step=EXPOSURE_STEP
         )
         self._properties["SUBARRAY VSIZE"] = _Property(_ID_BASE + 0x10 * len(self._properties), height)
+        # The Flash's own floor on the trigger period: 20.0 ms at full frame
+        # and 10 ms exposure (dev box survey). Read-only; a test sets it
+        # with set_property, as a change of exposure or readout would.
+        self._properties["TIMING MIN TRIGGER INTERVAL"] = _Property(
+            _ID_BASE + 0x10 * len(self._properties), MIN_TRIGGER_INTERVAL
+        )
         for name, value in [
             ("RECORD FIXED BYTES PER FILE", RECORD_PER_FILE),
             ("RECORD FIXED BYTES PER SESSION", RECORD_PER_SESSION),

@@ -965,8 +965,11 @@ its failure mode is a worse diagnostic rather than a wrong one.
   K1–K9 and Z1–Z4. The driver zeroes memory it is given, so the port now
   says a slot is defined only once a frame is reported in it. **5f-4 is
   done**, over the fake and on the camera: `UEyeCamera`, its messages, and
-  the shared `GetShortestTriggerPeriod` in core. **Next:** the Flash
-  answers the same query.
+  the shared `GetShortestTriggerPeriod` in core. **The Flash answers the
+  same query** (O12 over the fake), from its own `TIMING MIN TRIGGER
+  INTERVAL`. V6 checks it on the Flash, and is the user's to run. **5f is
+  done but for 5f-5** (DAQ-triggered, which Z2, Z3, W2 and W3 already
+  covered) and the user's confirmation of `GetCameraSettings`.
 - **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
   "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
   published a Fault for one. Four tests went red first, one per actor, and
@@ -3677,6 +3680,13 @@ policy, or state the Coordinator shouldn't hold.
   *Noted 2026-09-24:* DCAM reports the floor itself, as
   `TIMING MIN TRIGGER INTERVAL` (20.0 ms at full frame, 10 ms exposure, AREA
   mode on the dev box), so a camera device would not need to compute it.
+  *2026-09-30:* each triggered camera now **answers the floor when asked**:
+  `GetShortestTriggerPeriod` → `ShortestTriggerPeriod(seconds)`, a core
+  message (user: a query of its own). The uEye works it out from the
+  minimum frame time, exposure and trigger delay (exact on the camera,
+  5f-3); the Flash reads it from DCAM. Nothing yet checks a waveform
+  against it: whether the `TimingSource` or the arm handshake should is
+  still this item's question.
 - **Legacy napari viewer (decided 2026-09-19):** left alone; `lightsheet.py`
   cannot read the new header and gets no compatibility layer. It will be
   replaced later by a lightweight buffer viewer that is also usable for

@@ -58,6 +58,8 @@ from stacscope.core.protocol import (  # noqa: E402
     MESSAGES,
     DeviceReady,
     DeviceStopped,
+    GetShortestTriggerPeriod,
+    ShortestTriggerPeriod,
     StartDevice,
     StopDevice,
 )
@@ -749,3 +751,33 @@ async def test_o11_the_directory_from_config_is_checked_at_launch(launch, fake, 
     assert not device.started.is_set()
     assert "typo" in str(device.exit_error)
     assert not fake._initialized
+
+
+# --- O12: the shortest trigger period ------------------------------------------------------
+
+
+async def test_o12_the_shortest_trigger_period_is_the_cameras_own_floor(launch, fake):
+    """A trigger the camera cannot take yet costs the acquisition a frame, so
+    a client checks its waveform against this first. It is the same query
+    the uEye answers (user, 2026-09-30), so a client asks every camera
+    alike. DCAM states the floor itself, as TIMING MIN TRIGGER INTERVAL,
+    and it moves with the exposure and readout, so it is read each time."""
+    _, ref, _ = await launch(fake)
+
+    first = await _ask(ref, GetShortestTriggerPeriod())
+    fake.set_property("TIMING MIN TRIGGER INTERVAL", 0.035)
+    second = await _ask(ref, GetShortestTriggerPeriod())
+
+    assert first == ShortestTriggerPeriod(0.02)
+    assert second == ShortestTriggerPeriod(0.035)
+
+
+async def test_o12_a_camera_that_does_not_state_its_floor_says_so(launch, fake):
+    fake.remove_property("TIMING MIN TRIGGER INTERVAL")
+    _, ref, listener = await launch(fake)
+
+    answer = await _ask(ref, GetShortestTriggerPeriod())
+
+    assert isinstance(answer, Rejected)
+    assert "TIMING MIN TRIGGER INTERVAL" in answer.reason
+    assert _faults(listener) == []

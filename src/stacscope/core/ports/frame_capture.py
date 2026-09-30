@@ -69,7 +69,9 @@ class FrameCapture(Protocol):
         """Hand over the frame memory: a writable ``(n_slots, slot_bytes)``
         ``uint8`` array, one row per slot, laid out for ``frame_format()``.
         Raises ``ValueError`` if the slots are not bytes, are smaller than
-        ``frame_bytes``, or do not start on ``slot_alignment``."""
+        ``frame_bytes``, or do not start on ``slot_alignment``. Attaching may
+        overwrite the slots (the uEye's driver zeroes memory it is given):
+        what a slot holds is defined once a frame is reported in it."""
         ...
 
     async def start(self) -> None:

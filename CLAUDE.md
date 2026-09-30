@@ -210,7 +210,11 @@ section explains why.
     (`adapters/ueye/capture.py`) over a fake pyueye, tests in
     `tests/adapters/ueye/`, run by name. A consumer thread takes each frame
     as it lands, because a memory stays locked until it is handed back.
-    **5f-3, the port on the camera, is next.**
+    **5f-3 is done on the camera** (`tests/hardware/ueye/test_port.py`:
+    K1–K9, Z1–Z4; in-flight depth 1). The driver zeroes memory at attach,
+    so the port says a slot is defined only once a frame is reported in
+    it, and sentinels go down after attach. **5f-4, the `UEyeCamera`
+    device, is next.**
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

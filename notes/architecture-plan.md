@@ -961,8 +961,11 @@ its failure mode is a worse diagnostic rather than a wrong one.
   (user). The shortest trigger period is its own query message, for the
   Flash too (user). **5f-2 is done**: `UEyeFrameCapture` over a fake
   pyueye (U1–U12). The camera counts triggers it ignores, so a missed
-  trigger is now a lost frame (probe). **Next: 5f-3**, the port on the
-  camera.
+  trigger is now a lost frame (probe). **5f-3 is done on the camera**:
+  K1–K9 and Z1–Z4. The driver zeroes memory it is given, so the port now
+  says a slot is defined only once a frame is reported in it. **Next:
+  5f-4**, the `UEyeCamera` device, with the shared shortest-trigger-period
+  query.
 - **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
   "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
   published a Fault for one. Four tests went red first, one per actor, and
@@ -3501,6 +3504,38 @@ gaps in the fake, not the adapter. Run: `uv run pytest tests/adapters/ueye`.
   is `is_ForceTrigger`.
 - Each capture gets a fresh queue (exit and init), so a second capture on
   the same slots does not see the first one's entries.
+
+**5f-3: done on the camera (2026-09-30), run by Claude.**
+`tests/hardware/ueye/test_port.py`: K1–K9 in two formats (256 rows of
+RAW8; full-frame RAW10), and Z1–Z4. It is gated like the survey, and Z1's
+DAQ condition, Z2 and Z3 need `STACSCOPE_UEYE_TRIGGER`. About three
+minutes. All green (101 passed, 4 skipped: the lost-frame contract test
+and the alignment refusal, in each format).
+- **The driver zeroes the image memory it is given.**
+  `is_SetAllocatedImageMem` writes zeros over the whole image; nothing else
+  writes into a memory but a frame, and frames survive a stop and a detach
+  (probe). The contract laid its sentinel down before attach, so every
+  slot looked written. **The port now says attaching may overwrite the
+  slots**, and a slot is defined once a frame is reported in it. The
+  contract and `measure_in_flight` lay down the sentinel after attach.
+  This is harmless to the role: its arm configures the segment and starts
+  a new acquisition before it attaches, so no consumer is still reading
+  the old frames by then. The fake zeroes too.
+- **Z1: in-flight depth 1**, triggered from software and from the DAQ (256
+  rows of RAW8, 1 ms exposure, 1.5 times the shortest period). The device
+  will declare 2, as the Flash does: measured, plus a margin.
+- **Z2: the requirement holds through the adapter.** Full-frame RAW10 at 20
+  fps from the DAQ: 200 pulses, 200 frames, frame numbers in steps of 1,
+  device stamps 50.000 ms apart. The pixel clock was chosen with the
+  adapter's own `shortest_trigger_period()`: 40 MHz, 44.911 ms at 10 ms
+  exposure.
+- **Z3: the shortest period, as the adapter reports it, is right.** At 31
+  MHz and 10 ms (54.971 ms), pulses at 1.03 times it gave 40 of 40; at
+  0.97 times, `FramesLost` after the first frame. With the missed-trigger
+  check taken out, the 0.97 case failed (the mutation check, on the
+  camera).
+- **Z4:** the adapter opened the camera 1.2 s after its capturing process
+  was killed, and captured.
 
 ## Subsequent milestones
 

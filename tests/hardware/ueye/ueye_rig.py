@@ -1,6 +1,8 @@
 """Helpers for the uEye suite: the camera opened for one test and always
 closed, its settings, and a queue-mode sequence of image memories over one
-of our own shared-memory segments, as the adapter will build it.
+of our own shared-memory segments, as the adapter builds it. For the tests
+of the adapter itself: UEyeFrameCapture opened with given settings, and a
+software trigger for the port contract's rig.
 
 Every test opens the camera itself and exits it afterwards. The suite
 changes nothing it must put back: is_InitCamera starts from the camera's
@@ -9,6 +11,7 @@ defaults (Y8), and nothing here writes the camera's EEPROM.
 Run as a script (``python ueye_rig.py <camera>``), it captures freerun until
 it is killed, for Y7."""
 
+import asyncio
 import contextlib
 import ctypes
 import sys
@@ -288,6 +291,74 @@ class Sequence:
         # The segment will not close while a view of it is alive.
         self.slots = None
         self._writer.close()
+
+
+ARRIVAL = 2.0
+"""Seconds a software trigger's frame is waited for before the next."""
+
+GRACE = 0.25
+"""Seconds for a waiting caller to see a frame once it has arrived."""
+
+
+@contextlib.asynccontextmanager
+async def capture_with(
+    camera: int,
+    pixel_format: str = "RAW8",
+    aoi: tuple[int, int, int, int] | None = None,
+    *,
+    pixel_clock: int | None = None,
+    exposure_ms: float | None = None,
+    in_flight: int = 1,
+):
+    """UEyeFrameCapture on ``camera``, with the settings given applied in the
+    camera's order (AOI, pixel clock, exposure); closed afterwards, whatever
+    happened. Nothing needs putting back: the next open starts from the
+    camera's defaults (Y8)."""
+    from stacscope.adapters.ueye import UEyeFrameCapture
+
+    capture = await asyncio.to_thread(UEyeFrameCapture, camera, in_flight=in_flight, pixel_format=pixel_format)
+    try:
+        if aoi is not None:
+            capture.set_aoi(*aoi)
+        if pixel_clock is not None:
+            capture.set_pixel_clock(pixel_clock)
+        if exposure_ms is not None:
+            capture.set_exposure(exposure_ms)
+        yield capture
+    finally:
+        await capture.close()
+
+
+def delivered(capture) -> int:
+    """Frames the capture has counted so far, without waiting."""
+    with capture._state:
+        return capture._delivered
+
+
+def software_trigger(capture):
+    """``trigger(n)`` for a Rig: ``n`` software triggers (is_ForceTrigger),
+    one at a time, each waited for until its frame has arrived (or
+    ``ARRIVAL`` has passed), then ``GRACE`` for a waiting caller to see it,
+    as the contract expects. One at a time, because a trigger that comes
+    while the sensor is busy is ignored. With no capture running, the
+    camera may refuse the trigger; that is a pulse that lands nowhere, as
+    the contract expects."""
+    from stacscope.adapters.ueye import UEyeError
+
+    async def trigger(n: int) -> None:
+        for _ in range(n):
+            if not capture._capturing:
+                with contextlib.suppress(UEyeError):
+                    capture.fire_trigger()
+                continue
+            before = delivered(capture)
+            capture.fire_trigger()
+            deadline = time.monotonic() + ARRIVAL
+            while delivered(capture) <= before and time.monotonic() < deadline:
+                await asyncio.sleep(0.001)
+        await asyncio.sleep(GRACE)
+
+    return trigger
 
 
 def capture_until_killed(camera: int) -> None:

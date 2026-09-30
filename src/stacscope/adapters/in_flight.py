@@ -56,7 +56,7 @@ async def measure_in_flight(
     ``frame_format()``, with at least ``frames + 2 * scan`` slots so that
     nothing wraps. ``fire`` is awaited before each look: have it send one
     trigger, or, if something else is triggering the camera, just yield.
-    ``sentinel`` is the byte every slot is filled with first. Gives up after
+    ``sentinel`` is the byte every slot is filled with once attached. Gives up after
     ``max_polls`` looks.
     """
     try:
@@ -66,9 +66,11 @@ async def measure_in_flight(
                 f"need at least {frames + 2 * scan}, so that nothing wraps"
             )
         first_row, last_row = _rows(capture.frame_format())
-        slots[...] = sentinel
         depth = partial = polls = delivered = 0
         await capture.attach(slots)
+        # After the attach, which may overwrite the slots (the uEye's driver
+        # zeroes memory it is given).
+        slots[...] = sentinel
         try:
             await capture.start()
             while delivered < frames and polls < max_polls:

@@ -26,6 +26,8 @@ What the survey found, and the fake copies:
   ``is_CameraStatus(IS_TRIGGER_MISSED)``, which resets on each read (probe,
   2026-09-30). Pulses outside a capture are not counted.
 - Frames still queued at a stop can be taken after it.
+- ``is_SetAllocatedImageMem`` zeroes the image it is given; nothing else
+  writes into a memory but a frame (probe, 5f-3).
 - A wait cancelled by ``IS_IMAGE_QUEUE_CMD_CANCEL_WAIT`` returns
   ``IS_OPERATION_ABORTED``. A cancel with nobody waiting does nothing here;
   the camera was not asked, and this is the harder reading.
@@ -619,6 +621,9 @@ class FakeUEye:
             mem_id = self._next_id
             self._next_id += MEM_ID_STEP
             self._memories[mem_id] = _Memory(address, _value(width), _value(height), _value(bitspixel))
+            # The camera's driver zeroes the image it is given (5f-3 probe);
+            # no other call writes the memory but a frame.
+            ctypes.memset(address, 0, _value(width) * _value(height) * ((_value(bitspixel) + 7) // 8))
             pid.value = mem_id
             return IS_SUCCESS
 

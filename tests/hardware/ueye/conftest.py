@@ -8,8 +8,10 @@ import sys
 
 import pytest
 
-# The DAQ's pulse train, shared with the DCAM suite.
+# The DAQ's pulse train, shared with the DCAM suite, and the port contract's
+# tests, which test_port.py runs on the camera.
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 
 CAMERA = os.environ.get("STACSCOPE_UEYE", "")
 """The uEye camera ID of the camera under test. The suite skips without it."""

@@ -90,6 +90,9 @@ class _Buffers:
     """Segments laid out for a ``FrameFormat``. ``buffers(fmt, n_slots)``
     returns a ``FrameWriter`` whose ``slots`` are the memory to attach, with
     every byte set to ``SENTINEL`` so a slot the hardware wrote is visible.
+    Attaching may overwrite the slots (the uEye's driver zeroes them), so a
+    test that looks for written slots sets the sentinel again once they are
+    attached (``_blank``).
 
     ``close(writer)`` closes one now. A close that raises ``BufferError``
     means the adapter kept a view of the slots; the segment is unlinked all
@@ -153,9 +156,11 @@ def _blank(writer, *slots: int) -> None:
 
 
 async def _capturing(rig, buffers):
-    """The capture, attached to fresh slots and started. Returns the writer."""
+    """The capture, attached to fresh slots and started, every slot holding
+    the sentinel. Returns the writer."""
     writer = buffers(rig.capture.frame_format(), rig.n_slots)
     await rig.capture.attach(writer.slots)
+    _blank(writer, *range(rig.n_slots))
     await rig.capture.start()
     return writer
 
@@ -303,6 +308,7 @@ async def test_triggers_before_start_and_after_stop_write_nothing(rig, buffers):
     writer = buffers(rig.capture.frame_format(), rig.n_slots)
     await rig.trigger(1)  # not attached
     await rig.capture.attach(writer.slots)
+    _blank(writer, *range(rig.n_slots))
     await rig.trigger(1)  # attached, not started
     await rig.capture.start()
     await rig.capture.stop()
@@ -464,6 +470,7 @@ async def test_attaching_again_with_a_new_layout_works(rig, buffers):
     writer = buffers(rig.capture.frame_format(), n)
 
     await rig.capture.attach(writer.slots)
+    _blank(writer, *range(n))
     await rig.capture.start()
     await rig.trigger(n)
 

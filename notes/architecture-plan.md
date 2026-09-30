@@ -963,9 +963,10 @@ its failure mode is a worse diagnostic rather than a wrong one.
   pyueye (U1–U12). The camera counts triggers it ignores, so a missed
   trigger is now a lost frame (probe). **5f-3 is done on the camera**:
   K1–K9 and Z1–Z4. The driver zeroes memory it is given, so the port now
-  says a slot is defined only once a frame is reported in it. **Next:
-  5f-4**, the `UEyeCamera` device, with the shared shortest-trigger-period
-  query.
+  says a slot is defined only once a frame is reported in it. **5f-4 is
+  done**, over the fake and on the camera: `UEyeCamera`, its messages, and
+  the shared `GetShortestTriggerPeriod` in core. **Next:** the Flash
+  answers the same query.
 - **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
   "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
   published a Fault for one. Four tests went red first, one per actor, and
@@ -3536,6 +3537,43 @@ and the alignment refusal, in each format).
   camera).
 - **Z4:** the adapter opened the camera 1.2 s after its capturing process
   was killed, and captured.
+
+**5f-4: done over the fake and on the camera (2026-09-30).**
+`UEyeCamera(ImageStreaming, TimedDevice)` in `adapters/ueye/camera.py`, its
+messages in `adapters/ueye/messages.py`. No `Recording` (decision 6).
+- **Messages, one per setting** (decision 3): `SetPixelFormat` →
+  `PixelFormat`, `SetAOI` → `AOI`, `SetPixelClock` → `PixelClock`,
+  `SetFrameRate` → `FrameRate`, `SetExposure` (ms) → `Exposure`,
+  `SetTrigger(edge, delay_us)` → `Trigger`, each with what the camera took,
+  or `Rejected`. **Added by Claude, for the user to confirm:**
+  `GetCameraSettings` → `CameraSettings`, which reads every setting and the
+  pixel clocks on offer. Without it a client cannot read a setting without
+  changing it, and a new pixel clock moves the exposure.
+- **`GetShortestTriggerPeriod` → `ShortestTriggerPeriod(seconds)` is in
+  `core/protocol/messages.py`**, as a client → camera message, because
+  every triggered camera can answer it (user: the Flash too).
+- While armed, `SetPixelFormat` and `SetAOI` are refused (the capture
+  refuses them while memory is attached); the others apply at once.
+- Config: `pixel_format`, `aoi`, `pixel_clock`, `frame_rate_fps`,
+  `exposure_ms`, `trigger_edge`, `trigger_delay_us`, applied at launch in
+  the camera's order (AOI, pixel clock, frame rate, exposure, trigger). A
+  refusal fails the launch and exits the camera. `in_flight` defaults to 2
+  (Z1 measured 1).
+- The camera is opened in a worker thread, as DCAM is, so heartbeats are
+  answered meanwhile.
+- Tests: the role contract F1–F6 over the fake (`test_role_contract.py`;
+  its `burst` holds the loop until the capture's thread has taken every
+  frame, which is what a stalled publisher looks like with a thread
+  taking frames), and E1–E6 (`test_ueye_camera.py`). Every mutation tried
+  was caught. On the camera, `tests/hardware/ueye/test_device.py`:
+  - **W1:** settings by message, and `SetAOI` refused while armed, with the
+    acquisition going on.
+  - **W2:** a client chooses the pixel clock by asking the shortest period
+    (40 MHz, 44.911 ms), then 20 fps full-frame RAW10 from the DAQ: 200
+    pulses, 200 frames published to a reader, `TimeSource.CAMERA`, in-flight
+    depth 2.
+  - **W3:** pulses at 0.97 of the shortest period end the acquisition with a
+    fatal `Fault` ("FramesLost ... after frame 1").
 
 ## Subsequent milestones
 

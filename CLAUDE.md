@@ -213,8 +213,15 @@ section explains why.
     **5f-3 is done on the camera** (`tests/hardware/ueye/test_port.py`:
     K1–K9, Z1–Z4; in-flight depth 1). The driver zeroes memory at attach,
     so the port says a slot is defined only once a frame is reported in
-    it, and sentinels go down after attach. **5f-4, the `UEyeCamera`
-    device, is next.**
+    it, and sentinels go down after attach. **5f-4 is done**:
+    `UEyeCamera(ImageStreaming, TimedDevice)` (`adapters/ueye/camera.py`),
+    one message per setting (`adapters/ueye/messages.py`), plus
+    `GetCameraSettings`, which Claude added and the user has yet to
+    confirm. The shared query `GetShortestTriggerPeriod` →
+    `ShortestTriggerPeriod(seconds)` is in `core/protocol/messages.py`. On
+    the camera, `tests/hardware/ueye/test_device.py` (W1–W3) shows 20 fps
+    full-frame RAW10 through the device, and too-fast triggers ending an
+    acquisition with a fatal Fault.
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

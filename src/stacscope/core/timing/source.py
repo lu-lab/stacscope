@@ -116,7 +116,7 @@ class TimingSource(Actor):
             case StopDevice():
                 await self._stop()
             case _:
-                self._reject(f"{type(msg).__name__} is not understood by {type(self).__name__}")
+                pass  # ignored, told or asked, as every actor does (user, 2026-09-30)
 
     async def _next_cycle(self) -> None:
         if self.phase is not Phase.RUN:

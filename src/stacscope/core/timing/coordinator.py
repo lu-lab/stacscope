@@ -165,7 +165,11 @@ class Coordinator(Actor):
             case ChildExited(child, error):
                 await self._child_exited(child, error)
             case _:
-                self._reject(f"{type(msg).__name__} is not understood by the Coordinator")
+                # Ignored, told or asked (user, 2026-09-30). The Coordinator
+                # hears everything its source publishes -- MainApplied and
+                # MainDiscarded are for whoever queued the waveforms -- and a
+                # Fault for each went to every participant and client.
+                pass
 
     async def _start(self, start: StartDevice) -> None:
         self.state = CoordinatorState.STARTING

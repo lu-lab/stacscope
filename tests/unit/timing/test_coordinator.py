@@ -4,10 +4,13 @@ Run against ``SimulatedTimingSource``, whose phases are no-ops: nothing here
 may depend on the source being an AO board.
 """
 
+import asyncio
+
+import pytest
 from timing_support import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
-from stacscope.core.actors import Accepted, Rejected
+from stacscope.core.actors import Accepted, AskTimeout, Rejected, ask
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
@@ -144,6 +147,29 @@ async def test_c4_commands_in_the_wrong_state_are_rejected():
     again = rig.request(StartAcquisition(1, "run-02"))
     await rig.clock.advance(0)
     assert isinstance(await again, Rejected)
+
+
+class Stray:
+    """A message the Coordinator has no use for, as a source's own events are."""
+
+
+async def test_c4_a_message_the_coordinator_has_no_use_for_is_ignored():
+    """Told or asked, it gets no answer and publishes nothing (user,
+    2026-09-30). The Coordinator hears everything its source publishes, so
+    until then every event it had no case for went out to every participant
+    and client as a Fault."""
+    rig = Rig(camera=SimulatedDevice())
+    await rig.clock.advance(0)
+    heard = len(rig.listener.heard)
+
+    rig.ref.tell(Stray())
+    asking = asyncio.create_task(ask(rig.ref, Stray(), timeout=1.0, clock=rig.clock))
+    await rig.clock.advance(2.0)
+
+    with pytest.raises(AskTimeout):
+        await asking
+    assert rig.listener.heard[heard:] == []
+    assert rig.coordinator.state is CoordinatorState.IDLE
 
 
 # --- C5 ------------------------------------------------------------------------

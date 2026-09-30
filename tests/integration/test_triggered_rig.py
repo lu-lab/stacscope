@@ -23,7 +23,7 @@ from stacscope.adapters.simulated import (
     TriggerBus,
     VirtualClock,
 )
-from stacscope.core.actors import Accepted, Actor, Subscribe, ask, spawn
+from stacscope.core.actors import Accepted, Actor, Fault, Subscribe, ask, spawn
 from stacscope.core.buffer import ImageBuffer
 from stacscope.core.ports import Channel, OutputConfig
 from stacscope.core.protocol import (
@@ -144,6 +144,23 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
         del frames, last  # views of the segment: the reader cannot close under them
     finally:
         reader.close()
+
+
+async def test_d12_a_clean_acquisition_raises_no_fault():
+    """The source publishes events the Coordinator has no use for:
+    ``MainApplied`` at cycle 0 of every acquisition. Until 2026-09-30 the
+    Coordinator answered each one with a Fault to every participant and
+    client, on every acquisition."""
+    system = System()
+    await system.load_waveforms()
+
+    starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
+    await system.clock.advance(0.5)
+    assert await starting == AcquisitionStarted()
+    await system.clock.advance(10.0)
+
+    assert system.coordinator.state is CoordinatorState.IDLE
+    assert [m for m in system.listener.heard if isinstance(m, Fault)] == []
 
 
 async def test_d12_nothing_is_produced_before_go_or_after_the_stop():

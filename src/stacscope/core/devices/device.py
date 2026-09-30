@@ -14,14 +14,7 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 
 from stacscope.core.actors import Actor, Fault, Rejected, describe
-from stacscope.core.protocol import (
-    DeviceLaunched,
-    DeviceReady,
-    DeviceStopped,
-    SourcePhase,
-    StartDevice,
-    StopDevice,
-)
+from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
 
 class DeviceState(Enum):
@@ -146,10 +139,12 @@ class TimedDevice(Actor):
                 if self.state is DeviceState.ARMED:
                     await self._disarm()
                 self.reply(DeviceStopped())
-            case Fault() | DeviceLaunched() | SourcePhase():
-                pass  # broadcasts: a device acts only on the ones it subscribed for
             case _:
-                self._reject(f"{type(msg).__name__} is not understood by {type(self).__name__}")
+                # Ignored, told or asked (user, 2026-09-30): much of what
+                # arrives is someone else's broadcast, and a Fault published
+                # for it reaches every subscriber. An asker that sent the
+                # wrong thing learns it from its own timeout.
+                pass
 
     async def _start(self, msg: object, root_filename: str, cycles: int) -> None:
         if self.state is not DeviceState.IDLE:

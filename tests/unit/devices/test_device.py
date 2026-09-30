@@ -5,8 +5,21 @@ class owns the states and the protocol replies, so an adapter supplies only
 ``arm`` and ``disarm`` — what preparing and releasing *this* hardware means.
 """
 
+import asyncio
+
+import pytest
+
 from stacscope.adapters.simulated import VirtualClock
-from stacscope.core.actors import Actor, ChildExited, Fault, Rejected, Subscribe, ask, spawn
+from stacscope.core.actors import (
+    Actor,
+    AskTimeout,
+    ChildExited,
+    Fault,
+    Rejected,
+    Subscribe,
+    ask,
+    spawn,
+)
 from stacscope.core.devices import DeviceState, NotReady, TimedDevice
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
@@ -171,6 +184,28 @@ async def test_a_told_start_that_fails_is_published_rather_than_lost():
 
     (fault,) = rig.listener.faults()
     assert "no MAIN waveform set" in fault.reason
+
+
+class Stray:
+    """A message this device has no use for."""
+
+
+async def test_a_message_the_device_has_no_use_for_is_ignored():
+    """Told or asked, it gets no answer and publishes nothing (user,
+    2026-09-30). A published Fault reaches every subscriber, so answering
+    something another actor broadcast with one is news to everyone, about
+    nothing. An asker that sent the wrong thing learns it from its own
+    timeout."""
+    rig = Rig()
+    rig.ref.tell(Stray())
+    asking = asyncio.create_task(rig.ask(Stray()))
+    await rig.clock.advance(2.0)
+
+    with pytest.raises(AskTimeout):
+        await asking
+    assert rig.listener.heard == []
+    assert rig.device.state is DeviceState.IDLE
+    assert await rig.start() == DeviceReady(), "and it is still in service"
 
 
 # --- D3: release on death -----------------------------------------------------

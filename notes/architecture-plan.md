@@ -307,6 +307,20 @@ Lifecycle mirrors LabVIEW's three hooks (`Pre Launch Init` / `Actor Core` /
 `teardown()`, the last in a `finally`. Blocking driver calls go to a per-device
 thread via `asyncio.to_thread`. This library is called **the actor runtime**.
 
+**An actor ignores a message it has no use for, told or asked (user,
+2026-09-30).** It sends no answer and publishes nothing, and an asker that
+sent the wrong thing learns it from its own timeout. Until then, a told
+message with no case was published as a non-fatal `Fault`, which reaches
+every subscriber. The Coordinator hears everything its source publishes, so
+each `MainApplied` became a Fault to every participant and client, on every
+acquisition. A known command in the wrong state is still refused, with
+`Rejected`, or with a `Fault` if it was told, because it was meant for that
+actor. **Be conservative about sending messages** (user): an actor may keep an
+address book for its own function, for example a source's list of who wants
+its phases. By default it knows its parent, its children, and the sender of
+the message it is handling, and a message may carry an address for
+subscribe and unsubscribe.
+
 ### Coordinator and timing source
 
 *(Decided 2026-09-18.)* The thesis's central timing actor merges two roles;
@@ -938,6 +952,16 @@ its failure mode is a worse diagnostic rather than a wrong one.
 *In progress. Staged 2026-09-19 at the user's request.*
 
 **Status, 2026-09-30 (read this first after a clear):**
+- **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
+  "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
+  published a Fault for one. Four tests went red first, one per actor, and
+  D12's `a_clean_acquisition_raises_no_fault` for the `MainApplied` stray.
+  Suites: default 559 on 3.14t and 3.14; DCAM 297 passed, 83 skipped.
+  - **Still relayed:** the Coordinator republishes `SourcePhase` to
+    participants. The user agrees a software-timed device should subscribe
+    to the source directly. Whether the Coordinator gives the device the
+    source's address, or gives the source the device's, is to be decided
+    later. See "Open items → The communication model".
 - **The frame count told to devices has been taken out (user, 2026-09-30).**
   The approach mixed waveform logic and camera logic too much. The user may
   revisit it later. A recording's length is now always indeterminate: the
@@ -3103,6 +3127,24 @@ is itself STACScope, a proxy suits one needing translation, its own reconnect
 policy, or state the Coordinator shouldn't hold.
 
 ## Open items
+
+- **The communication model (user, 2026-09-30): a deep dive, later.** For
+  now the focus is a system that works.
+  - *Software timing, direct.* A `SoftwareTimed` device should hear the
+    source's phases from the source, not relayed by the Coordinator. Open:
+    whether the Coordinator supplies the device with the source's address,
+    or the source with the device's; and how that survives a relaunch of
+    either (a relaunched source starts with no subscribers).
+  - *Process placement.* On the engine side, each child's link knows only
+    the Coordinator and the runtime's last-word address
+    (`ProcessHost.launch`). A process-placed device therefore cannot reach
+    the source, and a source in its own process cannot reach any other
+    child. The relay works today only because every child can reach the
+    Coordinator. Direct subscription across processes needs the engine to
+    route between links.
+  - *Ordering.* A device that subscribes before it answers `DeviceReady`
+    is subscribed before `Go`, because each link is first-in, first-out and
+    the engine forwards as frames arrive.
 
 - **NI-DAQmx, carried over from 5a (2026-09-23).** None of these blocks
   anything.

@@ -8,8 +8,19 @@ hooks of ``SimulatedTimingSource``, cycling on a virtual clock.
 
 import asyncio
 
+import pytest
+
 from stacscope.adapters.simulated import SimulatedTimingSource, VirtualClock
-from stacscope.core.actors import Actor, Fault, Priority, Rejected, Subscribe, ask, spawn
+from stacscope.core.actors import (
+    Actor,
+    AskTimeout,
+    Fault,
+    Priority,
+    Rejected,
+    Subscribe,
+    ask,
+    spawn,
+)
 from stacscope.core.protocol import (
     DeviceReady,
     DeviceStopped,
@@ -122,6 +133,25 @@ async def test_a_rejected_command_that_was_told_is_published_as_a_fault():
     assert fault.source == rig.ref
     assert not fault.fatal
     assert "Go" in fault.reason
+
+
+class Stray:
+    """A message this source has no use for."""
+
+
+async def test_a_message_the_source_has_no_use_for_is_ignored():
+    """Told or asked, it gets no answer and publishes nothing (user,
+    2026-09-30). Unlike a known command sent at the wrong time, which is
+    still refused, above: that one was meant for this source."""
+    rig = Rig()
+    rig.ref.tell(Stray())
+    asking = asyncio.create_task(rig.ask(Stray()))
+    await rig.clock.advance(2.0)
+
+    with pytest.raises(AskTimeout):
+        await asking
+    assert rig.listener.heard == []
+    assert rig.source.phase is Phase.IDLE
 
 
 async def test_stop_device_when_idle_is_harmless():

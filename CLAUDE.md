@@ -277,6 +277,11 @@ section explains why.
 
   The monitor runs on standard 3.14 beside a `3.14t` engine — which works because it is a pure consumer of shared memory, proven
   by `tests/tools/test_cross_interpreter.py`.
+- **An actor ignores a message it has no use for, told or asked** (user,
+  2026-09-30): no answer, no Fault. Be conservative about sending messages.
+  The Coordinator still relays `SourcePhase`. Direct subscription for
+  software-timed devices, and a deep dive on the communication model, are
+  deferred: the plan's "Open items → The communication model".
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
   on purpose and confirm a test fails. It earns its keep: in Milestone 3 it

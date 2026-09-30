@@ -203,8 +203,14 @@ section explains why.
     ueye`). Decided from it (user): device time is the raw stamp (transfer
     end, `TimeSource.DEVICE`); RAW8 and RAW10 only; full-frame RAW10
     DAQ-triggered at 20 fps must hold (Y9, at 40 MHz). The driver skips a
-    locked slot, and the sensor ignores a trigger it is busy for, both in
-    silence. **5f-2 is next.**
+    locked slot in silence. The sensor ignores a trigger it is busy for,
+    but counts it (`IS_TRIGGER_MISSED`), so the adapter reports it as a
+    lost frame. The shortest trigger period is its own query message,
+    shared with the Flash (user). **5f-2 is done**: `UEyeFrameCapture`
+    (`adapters/ueye/capture.py`) over a fake pyueye, tests in
+    `tests/adapters/ueye/`, run by name. A consumer thread takes each frame
+    as it lands, because a memory stays locked until it is handed back.
+    **5f-3, the port on the camera, is next.**
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

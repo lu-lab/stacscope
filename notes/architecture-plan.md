@@ -958,9 +958,11 @@ its failure mode is a worse diagnostic rather than a wrong one.
   wired, recording later. **5f-1, the survey, is done**
   (Y1–Y9, green on the camera). Device time is the raw stamp; RAW8 and
   RAW10 only; full-frame RAW10 triggered at 20 fps is required and holds
-  (user). **Next: 5f-2**, `UEyeFrameCapture` over a fake pyueye. The
-  question under "What the survey means for 5f-2" (settings answering the
-  shortest trigger period) comes before 5f-4.
+  (user). The shortest trigger period is its own query message, for the
+  Flash too (user). **5f-2 is done**: `UEyeFrameCapture` over a fake
+  pyueye (U1–U12). The camera counts triggers it ignores, so a missed
+  trigger is now a lost frame (probe). **Next: 5f-3**, the port on the
+  camera.
 - **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
   "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
   published a Fault for one. Four tests went red first, one per actor, and
@@ -3408,7 +3410,8 @@ no analog task. pyueye is the `ueye` extra.
   exposure, got every other pulse. No `DEV_MISSED_IMAGES` or any other
   capture error counted the lost triggers. So the trigger period must
   cover the readout (one over the freerun maximum) plus the exposure. The
-  camera cannot report a trigger it missed.
+  camera cannot report a trigger it missed. *(Wrong: it can. See the
+  probes below. Only the capture status counters were read here.)*
 
 **Decided (user, 2026-09-30), from the survey:**
 - **Device time is the raw stamp**: `TimeSource.DEVICE`, the camera's
@@ -3430,6 +3433,74 @@ no analog task. pyueye is the `ueye` extra.
 - *Opening.* After a crash, `is_InitCamera` refuses with
   `IS_DEVICE_IN_USE` for a moment. Opening should retry that code for a few
   seconds before failing the launch.
+
+**Decided (user, 2026-09-30):** the shortest trigger period is **a query
+message of its own**, not an answer to the settings messages. The Flash
+will probably want it too, so the message is shared (see 5f-4).
+
+**Probes on the camera, before 5f-2 (2026-09-30), run by Claude.** Scripts
+in the session's scratchpad, not kept: each question was one the fake had
+to answer.
+- **The camera counts triggers it ignores.** The manual ("Trigger mode")
+  says an internal counter records them. `is_CameraStatus(IS_TRIGGER_MISSED,
+  IS_GET_STATUS)` returns the count since the last read, and the read
+  resets it. It counted every lost pulse exactly (20 of 40 at 0.97 of the
+  shortest period). It counts nothing outside a capture: pulses before
+  `is_CaptureVideo` were not counted. `IS_EXT_TRIGGER_EVENT_CNT` counts
+  only the triggers taken. Y9's "cannot report a trigger it missed" read
+  only the capture status counters.
+- **The shortest trigger period is trigger delay + exposure + the minimum
+  frame time** (`is_GetFrameTimeRange`, which is the readout), and the
+  sum is exact. Full frame RAW10, 10 ms exposure: at 31 MHz (44.97 ms
+  readout) and at 40 MHz (34.91 ms), 1.00× lost nothing and 0.97× lost
+  every other pulse. At 40 MHz, 5 ms exposure: 1.00× clean, 0.98× lost
+  half; with a 5000 µs delay, the sum without it lost half, the sum with
+  it lost nothing. The manual's formula is an image; this is what it
+  measures. No margin is built in: a client should leave its own.
+- **With every memory locked, a frame is lost as a capture status.** Six
+  pulses into four memories, none unlocked: four frames, then two
+  `IS_CAPTURE_STATUS` returns (3) in order, then `IS_TIMED_OUT` (122). The
+  counters said `API_NO_DEST_MEM` twice.
+- **Frames stay in the queue across a stop**, and can be taken after it.
+- **Each capture starts at the sequence's first memory**, whatever memory
+  the last capture ended on.
+- **A cancelled wait returns `IS_OPERATION_ABORTED` (157).**
+- **`is_ForceTrigger` gives one frame in a hardware trigger mode**, so the
+  capture can be driven without the DAQ.
+- `IS_IMAGE_QUEUE_CMD_GET_PENDING` returns the number of queued entries.
+
+**5f-2: done over the fake (2026-09-30).** `adapters/ueye/capture.py`, with
+the fake in `tests/adapters/ueye/fake_ueye.py`. U1 is the port contract
+(K1–K9, three formats); U2–U12 are the uEye's own, in `test_capture.py`.
+Every mutation tried was caught. The two that at first survived were
+gaps in the fake, not the adapter. Run: `uv run pytest tests/adapters/ueye`.
+- **A consumer thread takes each frame as it lands.** The driver locks a
+  memory it fills until it is handed back, and with every memory locked it
+  loses the frame (probe). Taking frames only inside `wait_frames` lost
+  them whenever the caller was slow, and made the grabber depend on being
+  asked, which the port's does not. So `start` runs a thread that waits on
+  the queue, reads each frame's info, unlocks it and counts it. The thread
+  also reads the missed-trigger count after every wait. `wait_frames`
+  waits on the count. `stop` cancels the thread's wait and joins it; the
+  thread first takes whatever was queued before the stop.
+- **Loss, four ways**: a capture status in the queue (consecutive ones are
+  one gap), a gap in `u64FrameNumber`, a missed trigger, and a frame in a
+  slot out of order (a plain `RuntimeError`: nothing was lost, but it was
+  put in the wrong slot). A missed trigger's `after` is the number of
+  frames taken when the count was read, so it may be early but never late.
+- **Device time**: `TimeSource.CAMERA` (the enum has no `DEVICE`; the
+  camera's own clock is `CAMERA`), at 1e7 Hz. Host time is `time.time_ns()`
+  when the frame is taken.
+- **Opening** retries `IS_DEVICE_IN_USE` for `open_timeout` (5 s), sets the
+  pixel format (RAW8 by default) and the rising-edge trigger.
+- **Settings** are methods on the capture, for 5f-4's messages:
+  `pixel_format`, `aoi`, `pixel_clock(s)`, `frame_rate`, `exposure` (ms),
+  `trigger` (edge and delay in µs), each with a `set_`. The pixel format and
+  AOI are refused while memory is attached, because the driver would not
+  refuse them. `shortest_trigger_period()` is in seconds. `fire_trigger()`
+  is `is_ForceTrigger`.
+- Each capture gets a fresh queue (exit and init), so a second capture on
+  the same slots does not see the first one's entries.
 
 ## Subsequent milestones
 

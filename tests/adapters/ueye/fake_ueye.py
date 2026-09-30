@@ -193,6 +193,7 @@ class _Memory:
         self.bits = bits
         self.locked = False
         self.frame_number: int | None = None
+        self.index = 0  # of the frame in it, within its capture
 
 
 class FakeUEye:
@@ -271,6 +272,7 @@ class FakeUEye:
         self._position = 0  # index into the sequence of the next frame
         self._begun: list[int] = []  # memory IDs begun but not finished
         self._frame_number = frame_number_start
+        self._captured = 0  # frames begun in this capture
 
     def __getattr__(self, name: str):
         # The constants, as pyueye's module has them.
@@ -391,10 +393,12 @@ class FakeUEye:
                 f"with the camera at {width}x{height}x{mode_bits}"
             )
         row = width * mode_bits // 8
-        value = self._frame_number % 200 + 1
+        value = self._captured % 200 + 1
         ctypes.memmove(memory.address, bytes([value]) * row, row)  # the first row first
         memory.frame_number = self._frame_number
+        memory.index = self._captured
         self._frame_number += 1
+        self._captured += 1
         self._begun.append(mem_id)
         while len(self._begun) > self.in_flight:
             self._finish(self._begun.pop(0))
@@ -402,7 +406,9 @@ class FakeUEye:
     def _finish(self, mem_id: int) -> None:
         memory = self._memories[mem_id]
         size = memory.width * memory.height * memory.bits // 8
-        image = np.full(size, memory.frame_number % 200 + 1, np.uint8)  # never the contract's sentinel
+        # Every byte of frame i of a capture is i % 200 + 1: never the
+        # contract's sentinel, and known to a rig that asks for image(i).
+        image = np.full(size, memory.index % 200 + 1, np.uint8)
         ctypes.memmove(memory.address, image.ctypes.data, size)
         memory.locked = True
         self._queue.append(("frame", mem_id))
@@ -715,6 +721,7 @@ class FakeUEye:
                 self.misuse.append("is_CaptureVideo with no image queue")
             self._capturing = True
             self._position = 0  # each capture begins at the first memory (probe)
+            self._captured = 0
             return IS_SUCCESS
 
     def is_StopLiveVideo(self, hCam, Wait):

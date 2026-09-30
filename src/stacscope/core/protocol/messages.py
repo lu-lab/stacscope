@@ -212,3 +212,24 @@ class MainDiscarded:
 
     tags: tuple[str, ...]
     reason: str
+
+
+# --- client → a triggered camera, directly ------------------------------------
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class GetShortestTriggerPeriod:
+    """Ask a camera for the shortest time from one trigger to the next that it
+    will not ignore, at its current settings. Replied
+    ``ShortestTriggerPeriod``, or ``Rejected``."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class ShortestTriggerPeriod:
+    """The shortest trigger period a camera takes at its current settings, in
+    seconds. A trigger sooner than this is ignored, and the frame is lost.
+    It changes with the settings, so ask again after changing any."""
+
+    seconds: float

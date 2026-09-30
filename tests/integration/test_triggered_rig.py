@@ -84,7 +84,7 @@ class System:
         self.coordinator = Coordinator(
             source=DeviceSpec("source", lambda: WaveformSource(self.output, CONFIG), ready_timeout=2.0),
             participants=[
-                DeviceSpec("camera", lambda: self.camera, ready_timeout=2.0, trigger="camera_trigger"),
+                DeviceSpec("camera", lambda: self.camera, ready_timeout=2.0),
                 DeviceSpec("pressure", lambda: self.pressure, ready_timeout=2.0),
             ],
         )
@@ -142,26 +142,6 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
         drawn = {(c + frames[-1].index) % SHAPE[1] for c in range(4)}  # the producer's bar
         assert lit == drawn, "the frame holds the picture that frame index should draw"
         del frames, last  # views of the segment: the reader cannot close under them
-    finally:
-        reader.close()
-
-
-async def test_d12_the_camera_is_told_at_the_start_how_many_frames_it_will_get():
-    """The count a recorder sizes its file by (user, 2026-09-25) is the
-    source's count of the camera line's pulses, made before any played;
-    here the wire turns those same pulses into the frames it gets."""
-    system = System()
-    await system.load_waveforms()
-
-    starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
-    await system.clock.advance(0.5)
-    assert await starting == AcquisitionStarted()
-    told = system.camera.expected_frames
-    reader = ImageBuffer.open(system.buffer_name)
-    try:
-        await system.clock.advance(10.0)
-
-        assert told == reader.published() == system.pulses_played() == CYCLES * PER_CYCLE
     finally:
         reader.close()
 

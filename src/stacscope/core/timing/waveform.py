@@ -11,15 +11,7 @@ import numpy as np
 
 from stacscope.core.actors import Accepted
 from stacscope.core.ports import OutputConfig, SignalOutput
-from stacscope.core.protocol import (
-    CountPulses,
-    MainApplied,
-    MainDiscarded,
-    PulseCounts,
-    QueueMain,
-    SetWaveform,
-    Waveform,
-)
+from stacscope.core.protocol import MainApplied, MainDiscarded, QueueMain, SetWaveform, Waveform
 from stacscope.core.timing.source import NotReady, TimingSource
 
 type Samples = tuple[np.ndarray, np.ndarray]  # (ao, do)
@@ -52,11 +44,6 @@ class WaveformSource(TimingSource):
       ``SetWaveform`` of MAIN empties the queue, and so does the end of an
       acquisition. Each MAIN taken that differs from the last is published as
       ``MainApplied``, and every dropped one in a ``MainDiscarded``.
-    - ``CountPulses(cycles)`` is answered with each DO line's rising edges
-      over an acquisition of that many cycles, as the waveforms stand:
-      WARMUP, each queued MAIN for a cycle and then the last one taken,
-      COOLDOWN. -1 for every line if the acquisition runs until stopped or
-      no MAIN is set.
     - An ``Underflow`` is not caught: the source dies, and the Coordinator
       treats it as losing the source.
     """
@@ -126,8 +113,6 @@ class WaveformSource(TimingSource):
                     return
                 self._pending.append((tag, (np.asarray(ao, dtype=float), np.asarray(do, dtype=bool))))
                 self.reply(Accepted())
-            case CountPulses(cycles):
-                self.reply(PulseCounts(tuple(line.label for line in self.config.do), self._pulses(cycles)))
             case _:
                 await super().handle(msg)
 
@@ -197,30 +182,6 @@ class WaveformSource(TimingSource):
             await self.output.write(ao[:, chunk], do[:, chunk], label=label if written == 0 else None)
             written += k
             self._queued += k
-
-    def _pulses(self, cycles: int) -> tuple[int, ...]:
-        """Each DO line's rising edges over an acquisition of ``cycles``."""
-        main = self._waveforms[Waveform.MAIN]
-        if cycles < 0 or (main is None and not self._pending):
-            return (-1,) * len(self.config.do)
-        # What run_cycle will take: the queue in order, one cycle each, then
-        # the last MAIN taken for every cycle left.
-        queued = [samples for _, samples in self._pending][:cycles]
-        steady = queued[-1] if queued else main
-        segments = [(self._waveforms[Waveform.WARMUP][1], 1)]
-        segments += [(do, 1) for _, do in queued]
-        segments += [(steady[1], cycles - len(queued)), (self._waveforms[Waveform.COOLDOWN][1], 1)]
-        counts = np.zeros(len(self.config.do), dtype=np.int64)
-        last = np.zeros(len(self.config.do), dtype=bool)  # every line is low before output
-        for do, times in segments:
-            if times == 0 or do.shape[1] == 0:
-                continue
-            within = np.count_nonzero(do[:, 1:] & ~do[:, :-1], axis=1)
-            # The first copy rises from whatever came before it; each repeat
-            # rises from the copy before it.
-            counts += within * times + (do[:, 0] & ~last) + (do[:, 0] & ~do[:, -1]) * (times - 1)
-            last = do[:, -1]
-        return tuple(int(n) for n in counts)
 
     def _discard(self, reason: str) -> None:
         if self._pending:

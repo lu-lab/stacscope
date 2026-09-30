@@ -25,12 +25,9 @@ directory:
 The save directory can also be given in the device's configuration. A file
 is never written over; one that already exists refuses the acquisition.
 
-A file takes its whole size on disk when it opens, so it is sized to the
-acquisition when the acquisition's length is known: the camera on its
-external trigger, with the number of pulses the DAQ will send it. Otherwise
-it may fill the free space on its disk, less the larger of 100 GiB and a
-tenth of the disk. The configuration can set a lower limit for either. An
-acquisition whose file ends up holding fewer frames than were streamed is
+A file takes its whole size on disk when it opens. It may fill the free
+space on its disk, less the larger of 100 GiB and a tenth of the disk, and
+the configuration can set a lower limit. An acquisition whose file ends up holding fewer frames than were streamed is
 reported as a fatal fault when it stops.
 
 Windows only, and DCAM-API must be installed. DCAM-API allows one camera
@@ -69,8 +66,8 @@ it closes the file anyway, and reports it."""
 
 HEADROOM_BYTES = 100 * 2**30
 HEADROOM_FRACTION = 0.10
-"""A recording without a known length leaves the larger of these free on
-its disk: 100 GiB, or a tenth of the disk."""
+"""A recording leaves the larger of these free on its disk: 100 GiB, or a
+tenth of the disk."""
 # The legacy kept 100 GiB free; the tenth is the usual advice for NTFS, and
 # the larger governs on a large disk (user, 2026-09-25). It also leaves room
 # for anything else writing to the disk, such as a conversion to HDF5.
@@ -103,13 +100,10 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     Answers ``SetSaveDirectory`` with ``SaveDirectory``, or ``Rejected``
     while armed or for a directory that does not exist. An acquisition with
     a file name records to ``<save directory>/<name>_<device>.dcimg``. A
-    file holds the acquisition's frames (``expected_frames``) when the
-    camera's TRIGGER SOURCE is EXTERNAL and the count is known, and
-    otherwise what the disk has room for beyond ``HEADROOM_BYTES`` or
-    ``HEADROOM_FRACTION`` of it, whichever is larger; ``max_record_frames``
-    caps either. The arm is refused if no directory is set, the file already
-    exists, or the disk has no room for the acquisition's frames (or, with
-    no count, for one frame). A file that holds fewer frames than were
+    file may hold what the disk has room for beyond ``HEADROOM_BYTES`` or
+    ``HEADROOM_FRACTION`` of it, whichever is larger, capped by
+    ``max_record_frames``. The arm is refused if no directory is set, the
+    file already exists, or the disk has no room for one frame. A file that holds fewer frames than were
     published, missed any, or was still being written when closed is
     reported at the stop as a fatal ``Fault``.
     """
@@ -276,14 +270,15 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
             raise RuntimeError(f"{path}: {'; '.join(problems)}")
 
     def _frame_limit(self, directory: Path) -> int:
-        """The most frames a file in ``directory`` may hold: the
-        acquisition's frames when they are known, else what the disk has
-        room for beyond its headroom; capped by the config either way.
-        Raises ``OSError`` if the disk has room for neither."""
+        """The most frames a file in ``directory`` may hold: what the disk
+        has room for beyond its headroom, capped by the config. Raises
+        ``OSError`` if the disk has no room for a frame."""
         # DCIMG reserves a file's whole size when it opens (V4), so the limit
-        # is space taken from the disk for the whole acquisition. The known
-        # length comes first for that reason (user, 2026-09-25). DCAM's own
-        # sizes are used, as the SDK's recording sample does.
+        # is space taken from the disk for the whole acquisition. Sizing it
+        # to the acquisition's length would need the trigger line's pulse
+        # count, and so would tie the camera to the waveforms; that was
+        # built and taken out (user, 2026-09-30). DCAM's own sizes are used,
+        # as the SDK's recording sample does.
         fixed = self.capture.get("RECORD FIXED BYTES PER FILE") + self.capture.get(
             "RECORD FIXED BYTES PER SESSION"
         )
@@ -291,35 +286,15 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
         usage = disk_usage(directory)
         headroom = max(HEADROOM_BYTES, usage.total * HEADROOM_FRACTION)
         room = max(0, int((usage.free - headroom - fixed) // per_frame))
-        if self._frames_known():
-            if self.expected_frames > room:
-                raise OSError(
-                    f"{directory} has no room for the acquisition's {self.expected_frames} frames: "
-                    f"room for {room}, keeping {int(headroom)} bytes free"
-                )
-            limit = max(self.expected_frames, 1)  # DCAM refuses a file of no frames
-        else:
-            if room < 1:
-                raise OSError(
-                    f"{directory} has no room for a frame: {usage.free} bytes free, "
-                    f"{int(headroom)} kept free, {int(fixed + per_frame)} needed"
-                )
-            limit = min(room, _MOST_FRAMES)
+        if room < 1:
+            raise OSError(
+                f"{directory} has no room for a frame: {usage.free} bytes free, "
+                f"{int(headroom)} kept free, {int(fixed + per_frame)} needed"
+            )
+        limit = min(room, _MOST_FRAMES)
         if self.max_record_frames is not None:
             limit = min(limit, self.max_record_frames)
         return limit
-
-    def _frames_known(self) -> bool:
-        """Whether the acquisition's pulse count is this camera's frame
-        count: known, and the camera taking its frames from the line."""
-        # On its internal or software trigger the camera takes frames the
-        # line never pulsed, and a file sized to the pulses would stop short.
-        if self.expected_frames < 0:
-            return False
-        try:
-            return self.capture.label("TRIGGER SOURCE") == "EXTERNAL"
-        except (ValueError, DcamError):
-            return False
 
     def _read(self, name: str) -> PropertyValue:
         value = self.capture.get(name)

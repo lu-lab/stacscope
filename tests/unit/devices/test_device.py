@@ -31,7 +31,6 @@ class FakeDevice(TimedDevice):
 
     async def arm(self, root_filename, cycles):
         self.calls.append(("arm", root_filename, cycles))
-        self.frames_at_arm = self.expected_frames
         if self.refuse is not None:
             raise NotReady(self.refuse)
         if self.fail is not None:
@@ -217,20 +216,3 @@ async def test_a_device_that_cannot_reach_its_safe_state_dies_rather_than_confir
     assert rig.device.calls == [
         ("arm", "run-01", 3), "disarm", "close",
     ], "teardown does not try the jammed shutter a second time"  # fmt: skip
-
-
-# --- D13: the frames this acquisition will pulse ------------------------------
-
-
-async def test_the_frames_the_acquisition_will_pulse_are_known_before_the_arm():
-    """A recorder sizes its file from them (user, 2026-09-25), and it opens
-    the file in its arm. Kept as an attribute rather than an argument, so no
-    role's arm changes; -1 when unknown."""
-    rig = Rig()
-
-    assert await rig.ask(StartDevice("run-01", 10, 40)) == DeviceReady()
-    assert rig.device.frames_at_arm == 40
-    await rig.ask(StopDevice())
-
-    assert await rig.ask(StartDevice("run-02", -1)) == DeviceReady()
-    assert rig.device.frames_at_arm == -1

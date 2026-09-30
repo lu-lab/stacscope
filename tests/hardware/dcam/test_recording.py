@@ -1,4 +1,4 @@
-"""V4-V6 -- the OrcaFlash device recording to DCIMG through the camera's
+"""V4-V5 -- the OrcaFlash device recording to DCIMG through the camera's
 driver, read back through dcimgapi.dll.
 
 RUN ON THE CAMERA'S MACHINE. This triggers the camera by software, changes
@@ -13,14 +13,6 @@ test:
       and closing it take.
   V5  A file whose frame limit is reached before the stop: the recorder
       stops by itself, and the device reports it as a fatal fault.
-  V6  An acquisition of known length on the external trigger, pulsed by
-      the DAQ: the file is sized to exactly those frames, and holds them
-      all. Only with STACSCOPE_CAMERA_TRIGGER set to the DAQ line wired to
-      the camera's trigger input (Dev1/port0/line0 on the dev box), and the
-      nidaqmx extra:
-
-          STACSCOPE_CAMERA=0 STACSCOPE_CAMERA_TRIGGER=Dev1/port0/line0 \
-              uv run --extra nidaqmx pytest tests/hardware/dcam/test_recording.py
 
 No test records without a limit: DCIMG reserves a file's whole size when it
 opens (V4), so an unlimited recording would claim most of the disk.
@@ -46,7 +38,7 @@ import uuid
 
 import numpy as np
 import pytest
-from dcam_rig import GRACE, ROWS_256, SOFTWARE, daq_pulses, restore, software_trigger
+from dcam_rig import GRACE, ROWS_256, SOFTWARE, restore, software_trigger
 from dcimg_reader import DcimgFile
 from image_streaming_contract import Listener
 
@@ -63,8 +55,6 @@ RECORD_DIR = pathlib.Path(os.environ.get("STACSCOPE_RECORD_DIR", "E:/stacscope_t
 N_SLOTS = 16
 CAPACITY = 16 * 2048 * 2048 * 2
 SETTINGS = [*SOFTWARE, *ROWS_256]
-EXTERNAL = [("TRIGGER SOURCE", "EXTERNAL"), ("EXPOSURE TIME", 0.001), *ROWS_256]
-LINE = os.environ.get("STACSCOPE_CAMERA_TRIGGER", "")
 
 
 @pytest.fixture
@@ -200,38 +190,3 @@ async def test_v5_a_file_that_reaches_its_limit_is_a_fatal_fault_at_the_stop(cam
     assert fault.fatal and "3 of the 5" in fault.reason
     assert frames == 3
     assert framestamps == [0, 1, 2]
-
-
-async def test_v6_a_file_of_known_length_holds_exactly_the_frames_the_daq_pulsed(camera, report, folder):
-    """The count a device is told at the start is the source's count of its
-    line's pulses. On its external trigger the Flash takes one frame per
-    pulse, so a file sized to the count is exactly full, reserving no more
-    of the disk than it uses."""
-    if not LINE:
-        pytest.skip("set STACSCOPE_CAMERA_TRIGGER to the DAQ line wired to the camera's trigger input")
-    pulses = 20
-    async with flash(camera, folder, settings=EXTERNAL) as (device, ref, listener):
-        assert await _ask(ref, StartDevice("v6", 1, pulses)) == DeviceReady()
-        path = folder / "v6_flash.dcimg"
-        size_at_open = path.stat().st_size
-        with daq_pulses(LINE, period=0.01, n=pulses) as fire:
-            await fire()
-            await asyncio.sleep(pulses * 0.01 + 0.5)
-        assert await _ask(ref, StopDevice()) == DeviceStopped()
-        await asyncio.sleep(GRACE)
-        faults = _faults(listener)
-        published = device.writer.published() - device.writer.acquisition_start
-
-    with DcimgFile(path) as file:
-        frames = file.frames
-        framestamps = [file.frame(i)[1] for i in range(frames)]
-    per_frame = size_at_open / pulses
-    report(
-        f"file {size_at_open} bytes at open ({per_frame:.0f} per frame of {pulses}), "
-        f"{path.stat().st_size} at close; published {published}, file {frames}, "
-        f"frame stamps {framestamps}; faults {[f.reason for f in faults]}"
-    )
-    assert faults == []
-    assert published == frames == pulses
-    assert framestamps == list(range(pulses))
-    assert size_at_open < (pulses + 1) * 256 * 2048 * 2, "sized to the acquisition, not the disk"

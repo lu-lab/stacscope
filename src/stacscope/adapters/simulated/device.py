@@ -21,8 +21,6 @@ class SimulatedDevice(Actor):
         self.never_ready = never_ready
         self.fail_in_setup = fail_in_setup
         self.calls: list[tuple] = []
-        self.started_with: list[StartDevice] = []
-        """Every ``StartDevice`` received, in order."""
 
     def names(self) -> list[str]:
         return [call[0] for call in self.calls]
@@ -35,7 +33,6 @@ class SimulatedDevice(Actor):
         match msg:
             case StartDevice(root_filename, _):
                 self.calls.append(("start", root_filename, self.clock.now()))
-                self.started_with.append(msg)
                 if self.never_ready:
                     return
                 if self.ready_delay:

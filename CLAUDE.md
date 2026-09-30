@@ -172,20 +172,16 @@ section explains why.
       file is never overwritten. A file short of the frames published,
       with missed frames, or still being written at close is a fatal
       `Fault` at the stop.
-    - **DCIMG reserves a file's whole size at open (V4)**, so the frame
-      limit, in order (user, 2026-09-25): the acquisition's frames when
-      known and the Flash is on EXTERNAL trigger; else the free space less
-      the larger of 100 GiB and 10% of the disk; `max_record_frames` caps
-      either. A known length the disk cannot hold refuses the arm.
-  - **Each device is told its frame count** (core, user, 2026-09-25):
-    `DeviceSpec.trigger` names the DO line (its label) that triggers a
-    device. At each start the Coordinator asks the source `CountPulses`
-    (answered `PulseCounts`: each line's rising edges over the whole
-    acquisition, -1 until stopped), and sends
-    `StartDevice(root, cycles, frames)`. `TimedDevice.expected_frames`
-    holds it before `arm`. A source that cannot count leaves every count
-    -1. `WaveformSource` counts; `SimulatedTimingSource` counts with
-    `pulses_per_cycle`.
+    - **DCIMG reserves a file's whole size at open (V4)**. The frame
+      limit is the free space less the larger of 100 GiB and 10% of the
+      disk, capped by `max_record_frames` (user, 2026-09-25). A disk
+      with no room for one frame refuses the arm.
+    - **A recording's length is always indeterminate** (user,
+      2026-09-30). Sizing the file from the trigger line's pulse count
+      (`StartDevice.frames`, `CountPulses`, `DeviceSpec.trigger`) was
+      built, then taken out: it mixed waveform logic and camera logic.
+      It may be revisited. The Recording fix from the same work stays:
+      the file is named before anything arms.
     - Test files go to `E:/stacscope_tests` on the dev box
       (`STACSCOPE_RECORD_DIR`), and are deleted after. They are read back
       with `tests/adapters/dcam/dcimg_reader.py` over `dcimgapi.dll`.
@@ -195,7 +191,7 @@ section explains why.
   - **An adapter's own messages cross processes**: the codec checks a type
     registered after it was built the first time it meets one (a child
     builds its codec before unpickling the device).
-  - **5e is done**, on the camera and the DAQ (V4–V6). **Next, for a new
+  - **5e is done**, on the camera (V4–V5). **Next, for a new
     session: the 5e entry at the top of the plan's "Milestone 5" status
     block**, then 5f or Milestone 6 (user's choice).
 

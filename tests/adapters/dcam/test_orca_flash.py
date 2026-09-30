@@ -563,30 +563,20 @@ def _room(fake, frames: int) -> int:
     return 100 * GIB + RECORD_PER_FILE + RECORD_PER_SESSION + frames * per_frame + per_frame - 1
 
 
-async def _limit(ref, fake, frames: int = -1) -> int:
+async def _limit(ref, fake) -> int:
     stem = f"run-{len(fake.recordings):02d}"  # a file is never recorded over
-    assert await _ask(ref, StartDevice(stem, 10, frames)) == DeviceReady()
+    assert await _ask(ref, StartDevice(stem, 10)) == DeviceReady()
     limit = fake.recordings[-1].max_frames
     assert await _ask(ref, StopDevice()) == DeviceStopped()
     return limit
 
 
-async def test_o9_a_file_holds_the_acquisitions_frames_when_they_are_known(launch, fake, tmp_path, disk):
-    """The acquisition's length comes first (user, 2026-09-25): the file
-    reserves its whole size at open (V4), so a file no larger than the
-    acquisition claims no more of the disk than it will use."""
-    disk(_room(fake, 1000), 500 * GIB)
-    _, ref, _ = await launch(fake, save_directory=tmp_path)
-
-    assert await _limit(ref, fake, frames=37) == 37
-
-
-async def test_o9_without_a_known_length_a_file_may_fill_the_disk_but_its_headroom(
-    launch, fake, tmp_path, disk
-):
-    """An acquisition until stopped may use the disk, less headroom for the
-    file system and for anything else writing to the disk (user,
-    2026-09-25): the larger of 100 GiB, the legacy's constant, and 10%."""
+async def test_o9_a_file_may_fill_the_disk_but_its_headroom(launch, fake, tmp_path, disk):
+    """A file's length is never known in advance (user, 2026-09-30: taking
+    it from the trigger line's pulse count tied the camera to the
+    waveforms). So a file may use the disk, less headroom for the file
+    system and for anything else writing to the disk (user, 2026-09-25):
+    the larger of 100 GiB, the legacy's constant, and 10%."""
     disk(_room(fake, 1000), 500 * GIB)
     _, ref, _ = await launch(fake, save_directory=tmp_path)
 
@@ -602,29 +592,11 @@ async def test_o9_on_a_large_disk_the_headroom_is_a_tenth_of_it(launch, fake, tm
     assert await _limit(ref, fake) == 1000
 
 
-async def test_o9_a_count_the_camera_is_not_triggered_by_is_not_its_length(launch, fake, tmp_path, disk):
-    """The count is of the line's pulses. A Flash on its internal or
-    software trigger takes frames the line never pulsed, and a file sized
-    to the pulses would stop short."""
-    disk(_room(fake, 1000), 500 * GIB)
-    _, ref, _ = await launch(fake, save_directory=tmp_path, settings=[("TRIGGER SOURCE", "INTERNAL")])
-
-    assert await _limit(ref, fake, frames=37) == 1000
-
-
 async def test_o9_config_can_lower_the_limit(launch, fake, tmp_path, disk):
     disk(_room(fake, 1000), 500 * GIB)
     _, ref, _ = await launch(fake, save_directory=tmp_path, max_record_frames=5)
 
     assert await _limit(ref, fake) == 5
-    assert await _limit(ref, fake, frames=37) == 5
-
-
-async def test_o9_an_acquisition_of_no_frames_still_opens_a_file_dcam_accepts(launch, fake, tmp_path, disk):
-    disk(_room(fake, 1000), 500 * GIB)
-    _, ref, _ = await launch(fake, save_directory=tmp_path)
-
-    assert await _limit(ref, fake, frames=0) == 1
 
 
 async def test_o9_a_limit_beyond_what_dcam_can_count_is_dcams_largest(launch, fake, tmp_path, disk):
@@ -649,20 +621,6 @@ async def test_o9_a_disk_without_room_for_a_frame_refuses_the_acquisition(launch
     assert fake.recordings == []
     assert not fake.attached and not fake.capturing
     assert [f.fatal for f in _faults(listener)] == [True]
-
-
-async def test_o9_a_known_length_the_disk_cannot_hold_refuses_the_acquisition(
-    launch, fake, tmp_path, disk
-):
-    """Found before the first frame, not when the disk fills partway."""
-    disk(_room(fake, 1000), 500 * GIB)
-    _, ref, _ = await launch(fake, save_directory=tmp_path)
-
-    answer = await _ask(ref, StartDevice("run-01", 10, 1001))
-
-    assert isinstance(answer, Rejected)
-    assert "1001 frames" in answer.reason and "room for 1000" in answer.reason
-    assert fake.recordings == [] and not fake.attached
 
 
 # --- O10: a file that falls short is fatal -----------------------------------------------------

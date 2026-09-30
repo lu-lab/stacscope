@@ -937,7 +937,35 @@ its failure mode is a worse diagnostic rather than a wrong one.
 
 *In progress. Staged 2026-09-19 at the user's request.*
 
-**Status, 2026-09-25 (read this first after a clear):**
+**Status, 2026-09-30 (read this first after a clear):**
+- **The frame count told to devices has been taken out (user, 2026-09-30).**
+  The approach mixed waveform logic and camera logic too much. The user may
+  revisit it later. A recording's length is now always indeterminate: the
+  DCIMG limit is the free space less headroom (the larger of 100 GiB and
+  10% of the disk), capped by `max_record_frames`, and a disk with no room
+  for one frame refuses the arm.
+  - Removed from the core (all of `9f1bfa5` but the Recording fix):
+    - `StartDevice.frames`, `DeviceSpec.trigger`, and `CountPulses` /
+      `PulseCounts`;
+    - the Coordinator's `_pulse_counts`, `WaveformSource`'s edge counting,
+      and `TimedDevice.expected_frames`;
+    - `SimulatedTimingSource(pulses_per_cycle=)` and
+      `SimulatedDevice.started_with`.
+  - Tests removed with it: C6 (6), W14 (4), D13, the D12 count test, and
+    the codec round trips of the two messages.
+  - Removed from the Flash: the known-length branch of `_frame_limit` and
+    `_frames_known`. O9 lost its four known-length tests. V6, the
+    DAQ-pulsed camera test of a file sized to the count, is deleted.
+  - **Kept:** `Recording.arm` names the file before anything arms, and
+    its D7 test.
+  - The 5e bullets below on the "known length" and on "how a device
+    learns the length" are **superseded**. They are kept as the history of
+    what was built and why.
+  - Suites: default 555 on 3.14t and 3.14; DCAM 297 passed, 83 skipped
+    (no SDK variables set); NI on `Dev1-sim` 99 passed. A mutant in
+    `_frame_limit` was caught by O9.
+
+**Status, 2026-09-25:**
 - **5e, DCIMG recording: done, green over the fake and on the camera and
   DAQ (2026-09-25, fourth session; the user allowed Claude to run the
   camera and the NI hardware). Not committed.**

@@ -154,6 +154,15 @@ wheels = [
 ]
 
 [[package]]
+name = "enum-compat"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/46/8ed2368976d934652d8f33f1fdd86f5580fab45e890c90a848e83097a093/enum-compat-0.0.3.tar.gz", hash = "sha256:3677daabed56a6f724451d585662253d8fb4e5569845aafa8bb0da36b1a8751e", size = 1389, upload-time = "2019-10-14T18:48:35.264Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/ae/467bc4509246283bb59746e21a1a2f5a8aecbef56b1fa6eaca78cd438c8b/enum_compat-0.0.3-py3-none-any.whl", hash = "sha256:88091b617c7fc3bbbceae50db5958023c48dc40b50520005aa3bf27f8f7ea157", size = 1322, upload-time = "2019-10-14T18:48:37.663Z" },
+]
+
+[[package]]
 name = "hightime"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -511,6 +520,17 @@ wheels = [
 ]
 
 [[package]]
+name = "pyueye"
+version = "4.96.952"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "enum-compat" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/b9/2a372f906a4f5f197509f5fbc165f1e0e321daf4b6361edfcf46d0fe6888/pyueye-4.96.952-py2.py3-none-any.whl", hash = "sha256:b1393355be8d2072730f1c617a7b22a99186989a6f62a1386a5ff04fbcf30cd5", size = 57149, upload-time = "2022-06-28T13:45:11.217Z" },
+]
+
+[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -551,6 +571,9 @@ dependencies = [
 nidaqmx = [
     { name = "nidaqmx" },
 ]
+ueye = [
+    { name = "pyueye" },
+]
 viewer = [
     { name = "pyqtgraph" },
     { name = "pyside6" },
@@ -571,8 +594,9 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pyqtgraph", marker = "extra == 'viewer'", specifier = ">=0.13" },
     { name = "pyside6", marker = "extra == 'viewer'", specifier = ">=6.6" },
+    { name = "pyueye", marker = "extra == 'ueye'", specifier = ">=4.96" },
 ]
-provides-extras = ["nidaqmx", "viewer"]
+provides-extras = ["nidaqmx", "viewer", "ueye"]
 
 [package.metadata.requires-dev]
 dev = [

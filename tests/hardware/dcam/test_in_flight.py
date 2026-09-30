@@ -54,7 +54,8 @@ import time
 import uuid
 
 import pytest
-from dcam_rig import FORMATS, camera_with, daq_pulses
+from daq_pulses import daq_pulses
+from dcam_rig import FORMATS, camera_with
 
 from stacscope.adapters.in_flight import measure_in_flight
 from stacscope.core.buffer import ImageBuffer

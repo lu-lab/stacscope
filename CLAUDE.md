@@ -191,9 +191,20 @@ section explains why.
   - **An adapter's own messages cross processes**: the codec checks a type
     registered after it was built the first time it meets one (a child
     builds its codec before unpickling the device).
-  - **5e is done**, on the camera (V4–V5). **Next, for a new
-    session: the 5e entry at the top of the plan's "Milestone 5" status
-    block**, then 5f or Milestone 6 (user's choice).
+  - **5e is done**, on the camera (V4–V5).
+  - **5f, the uEye, is in progress (user, 2026-09-30).** The uEye on this
+    machine is the instrument's own camera (a Thorlabs UI-3240CP-NIR, run
+    on IDS's driver on purpose), and the adapter uses IDS's `pyueye`
+    (BSD-3). The user decided: no IDS file in the repository (its
+    licence is unknown); one message per setting; RAW pixel formats, 8-bit
+    first and 10/12 only after Y5; recording later. **Start from the
+    plan's "5f — the uEye camera"**. 5f-1, the survey, is done
+    (`tests/hardware/ueye/`, gated on `STACSCOPE_UEYE`, run with `--extra
+    ueye`). Decided from it (user): device time is the raw stamp (transfer
+    end, `TimeSource.DEVICE`); RAW8 and RAW10 only; full-frame RAW10
+    DAQ-triggered at 20 fps must hold (Y9, at 40 MHz). The driver skips a
+    locked slot, and the sensor ignores a trigger it is busy for, both in
+    silence. **5f-2 is next.**
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

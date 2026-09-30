@@ -952,6 +952,15 @@ its failure mode is a worse diagnostic rather than a wrong one.
 *In progress. Staged 2026-09-19 at the user's request.*
 
 **Status, 2026-09-30 (read this first after a clear):**
+- **5f, the uEye, is decided and started (user, 2026-09-30).** See "5f —
+  the uEye camera", after 5b. Its questions were answered: pyueye, no IDS
+  file in the repo, one message per setting, RAW pixel formats, line 2
+  wired, recording later. **5f-1, the survey, is done**
+  (Y1–Y9, green on the camera). Device time is the raw stamp; RAW8 and
+  RAW10 only; full-frame RAW10 triggered at 20 fps is required and holds
+  (user). **Next: 5f-2**, `UEyeFrameCapture` over a fake pyueye. The
+  question under "What the survey means for 5f-2" (settings answering the
+  shortest trigger period) comes before 5f-4.
 - **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
   "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
   published a Fault for one. Four tests went red first, one per actor, and
@@ -1805,7 +1814,7 @@ and that is a design task, not an adapter task.
 | 5c | DCAM ctypes layer, offline, against a fake DLL | SDK headers, read locally (never committed) |
 | 5d | DCAM device actor, zero-copy into `ImageBuffer` | SDK |
 | 5e | DCIMG recorder (`dcamrec_*`), Windows-only | SDK |
-| 5f | uEye producer | deferred, optional |
+| 5f | uEye producer | pyueye (BSD-3); **in planning 2026-09-30**, see "5f — the uEye camera" |
 
 5a splits again along the same seam: **5a-1** the adapter against a fake
 `nidaqmx.Task` injected as a factory, needing nothing installed *(done
@@ -3086,6 +3095,341 @@ makes no set, attach or capture call.
   free disk space, as the legacy did.
 - **For the camera-as-timing-source case:** a master pulse (continuous,
   start or burst, 10 µs–10 s) and three programmable output triggers.
+
+### 5f — the uEye camera *(investigated 2026-09-30; a proposal, nothing decided)*
+
+Written by Claude while the user was away, so that a new session can pick it
+up. Marks: *(user)* is what the user said; everything else is a finding or a
+proposal, to be taken to the user before any of it is built.
+
+**What the user said (2026-09-30):**
+- The uEye on this machine is the instrument's camera: testing here is
+  testing against the true instrument.
+- It is the Thorlabs model (µManager's `ThorCam-uEye`, triggered on
+  `ThorCamTrigger`, `Dev1/port0/line2`), but it runs on **IDS's** driver on
+  purpose. Thorlabs' own documentation pointed to IDS's driver for a Python
+  example, and switching fixed bugs in Thorlabs' drivers. So the adapter
+  targets IDS's uEye API, not Thorlabs' uc480.
+- Use pyueye, since IDS provides it.
+- Look at IDS's newer SDK too, though the camera is old and may not be
+  supported by it.
+
+**What is on the machine** (read-only; the camera was opened, queried and
+closed, and nothing captured):
+- IDS Software Suite 4.97 (`C:\Program Files\IDS\uEye`). `ueye_api_64.dll`
+  4.97.4111 is in System32. The SDK has headers (`develop\include\ueye.h`),
+  the full API manual as HTML (`help\uEye_Manual`, 911 pages), and C++
+  sample sources (`develop\sources`: `uEyeImageQueue`, `uEyeSequence`,
+  `uEyeEvent` and `uEyeTimestamp` are the relevant ones). Nothing further is
+  needed from the user.
+- Windows lists the camera as "uEye UI-324x Series"
+  (`USB\VID_1409&PID_3240`), driver OK. It is camera ID 1, model
+  `UI324xCP-NIR` (a UI-3240CP-NIR), S/N 4103283431, board ID "IDS GmbH",
+  dated 13.03.2018, board type 0x64 (USB 3 uEye CP).
+- **Probably a CP Rev. 1.** Its feature bits (`is_DeviceFeature`,
+  0x68001ef) lack the image-memory mode that only the CP Rev. 2 has (the
+  manual's "is_DeviceFeature: USB 3 uEye CP Rev. 2 image memory" page). To
+  be confirmed on the camera (Y1), because the timestamp's meaning depends
+  on it.
+
+  | | |
+  |---|---|
+  | Sensor | 1280 × 1024 mono, global shutter, 5.3 µm (e2v EV76C560) |
+  | Link | USB 3, 4000 Mb/s reported |
+  | Trigger modes | freerun, software, rising (`LO_HI`), falling (`HI_LO`); delay settable |
+  | Pixel clock | 7–86 MHz (62 values); 24 MHz after init |
+  | Exposure | 0.009–66.6 ms at 24 MHz; bound by pixel clock and frame rate |
+  | Frame rate | 15 fps after init |
+  | AOI | width step 4, height step 2, minimum 16 × 4; position step 2 |
+  | Binning / subsampling | binning 2 modes; no subsampling |
+  | I/O | 2 GPIOs; flash (strobe) output |
+  | Timestamp configuration | not supported (no reset from a pin) |
+  | Test images | supported, so a capture test can run with no light |
+
+- ctypes from 3.14t loads the DLL and opens the camera, both directly and
+  through pyueye.
+
+**The SDK: pyueye over the uEye API (proposed).**
+- *pyueye* 4.96.952 (PyPI, 2022-06-28) is IDS's own binding, under the
+  **3-Clause BSD licence**. It is pure Python over ctypes
+  (`py2.py3-none-any`, one dependency, `enum-compat`), so it installs on
+  3.14t. It is a line-for-line mirror of the C API. It binds everything the
+  port needs: `is_SetAllocatedImageMem`, `is_AddToSequence`,
+  `is_ImageQueue`, `is_UnlockSeqBuf`, `is_GetImageInfo`, `is_CaptureStatus`,
+  `is_CaptureVideo` / `is_StopLiveVideo`, `is_ClearSequence`,
+  `is_FreeImageMem`, `is_Event`, and the settings functions. It also defines
+  the structs and constants, so we need not transcribe `ueye.h`.
+  - It **loads the DLL on import** and raises `ImportError` without it. So
+    the adapter imports pyueye lazily, and a test passes a fake in its
+    place, as `DcamFrameCapture(library=...)` does.
+  - On 3.14 its docstrings raise `SyntaxWarning` (invalid escapes) the first
+    time they compile. That is harmless: our pytest config does not make
+    warnings errors.
+  - It has not been released since 2022, against SDK 4.96, and the DLL here
+    is 4.97. The C API it mirrors is stable, so that should not matter.
+  - It opened this camera from 3.14t (`is_InitCamera`, `is_GetSensorInfo`,
+    `is_ExitCamera`). `sizeof(UEYEIMAGEINFO)` is 96.
+- *IDS peak* is what IDS now recommends for new projects. It calls the
+  Software Suite "legacy, still supported". Older `UI-` cameras work under
+  IDS peak through its "uEye transport layer", which needs Software Suite
+  4.95 or later installed beside it. So the camera is supported, but:
+  - the transport layer offers RAW pixel formats only, no trigger-controlled
+    exposure, and no fine exposure or extended pixel clock. IDS's pages say
+    nothing about timestamps or user buffers;
+  - the Python binding, `ids_peak` 1.17.0 (2026-09-28), is under a
+    **proprietary** licence, and ships only `cp310-abi3` wheels. **This
+    interpreter accepts `abi3t` but not `abi3`**, checked with
+    `packaging.tags`, so it cannot be installed into the engine's
+    free-threaded environment. The only route would be a device process
+    running standard 3.14, as the monitor does. The transport could place
+    one there, but that is a new kind of deployment for one camera;
+  - it adds a GenICam layer over the same uEye driver, which would still
+    have to be installed.
+
+  Proposal: pyueye over the uEye API now. Revisit IDS peak if IDS drops the
+  Software Suite, or `ids_peak` ships free-threaded wheels.
+
+**Licence** (proposed; not legal advice):
+- pyueye is BSD-3. It is taken as a dependency, never copied in, so its
+  notice travels with the package.
+- The Software Suite has **no licence text on disk**. `legal/` holds only
+  the third-party notices (Qt under LGPL-3), and none was found online. The
+  headers carry "(c) 2004–2025 IDS". The installer presumably showed an
+  end-user licence; ask the user whether they kept it.
+- Until the terms are known, apply the DCAM policy's first rule: **no IDS
+  file in the repository** (no header, sample, manual text or DLL). With
+  pyueye supplying the structs and constants, the adapter should need none.
+  The fake mimics pyueye's surface (its function names and call shapes),
+  which is a BSD-licensed API. DCAM's other rules (the marking, no
+  copyright line) come from Hamamatsu's licence, and nothing here calls for
+  them.
+- A conformance test like DCAM's would check pyueye's struct sizes against
+  `ueye.h` when `STACSCOPE_UEYE_SDK` names the SDK folder. It is cheap
+  insurance against the 4.96/4.97 gap.
+
+**Findings that shape the design:**
+1. **Our own memory.** `is_SetAllocatedImageMem` makes user memory an image
+   buffer, then `is_AddToSequence` adds it to the ring, then
+   `is_ClearSequence` + `is_FreeImageMem` take it back (which does not free
+   it). The row pitch is `width × bytes per pixel`, with no padding, so
+   `slot_bytes` is the frame's size. The manual says the memory "must
+   always be locked globally". Whether a shared-memory segment (a mapped
+   file) satisfies the driver is unknown, and is checked on the camera (Y2).
+   If it does not, the fallbacks are `VirtualLock` on the segment's pages,
+   or copying into the slot (a copying producer, `in_flight` 1).
+2. **Queue mode fits the port** (proposed). `is_ImageQueue`:
+   - it is first-in first-out, and each wait returns the memory ID of the
+     oldest frame not yet taken;
+   - a capture error enters the queue in order, as a return of
+     `IS_CAPTURE_STATUS`, so a lost frame is in-band;
+   - the wait can be cancelled (`IS_IMAGE_QUEUE_CMD_CANCEL_WAIT`), which is
+     what `stop` needs;
+   - a buffer locks itself when filled, and the driver reuses it only after
+     `is_UnlockSeqBuf`. The manual says a frame's info matches its data
+     only while it is locked, so the adapter reads `UEYEIMAGEINFO` before it
+     unlocks. The unlock is the adapter's alone. Consumers are protected by
+     the buffer's `in_flight` rule, not by locks.
+
+   The alternative, ring mode with `is_GetActSeqBuf` on each frame event,
+   can skip frames at high rates, by the manual's own warning. Rejected.
+3. **Slot order must be checked.** The buffer assumes frame *k* lands in
+   slot *k mod N*. Queue mode says which memory each frame went to, so the
+   adapter checks it and raises if a frame is out of place, rather than
+   trusting the driver's fill order. The camera test is Y3. How many
+   buffers a sequence may hold is not documented; that is Y4.
+4. **The colour mode defaults to 8-bit BGR packed**, even on this mono
+   camera (`is_SetColorMode(IS_GET_COLOR_MODE)` read 1 after init). Opening
+   must set a mono format, or every frame is three times the size. Also:
+   - the MONO modes pass through the camera's LUT and gamma; the SENSOR_RAW
+     modes do not. For science data RAW is probably right (*ask*);
+   - 10- and 12-bit formats sit in 16 bits and some are filled from the
+     MSB with fewer payload bits than named, depending on the camera
+     model. As with DCAM, only formats numpy describes exactly are exposed
+     until the bit placement is checked on the camera (Y5);
+   - packed formats are unpacked by the API on the host, so a frame's final
+     write into the slot is software, not DMA. The port does not care.
+5. **Timestamps differ from the plan's assumption.** On "USB 3 uEye CP
+   Rev. 1" (and USB 2, and USB 3 LE), `u64TimestampDevice` marks when the
+   frame **finished transferring to the PC**, not the trigger (0.1 µs
+   ticks). Only GigE and newer USB 3 cameras stamp the trigger. The manual
+   gives a formula to estimate the exposure start from it. Which clock
+   counts those ticks is not stated. The host timestamp (`UEYETIME`) is
+   1 ms resolution, resynchronized to system time every 60 s.
+   `u64FrameNumber` is "internal image number (not chronological)".
+   Consequences, pending Y1 and Y6:
+   - the `TimeSource` for device time is undecided (DEVICE or DRIVER);
+   - lost frames are caught by the capture status, in the queue and from
+     `is_CaptureStatus` counters (`DRV_OUT_OF_BUFFERS`,
+     `USB_TRANSFER_FAILED`, `DEV_MISSED_IMAGES`, ...). Gaps in frame numbers
+     count as well only if Y6 shows them sequential. The DCAM decision
+     (both an error and gaps, user) is the model.
+6. **Trigger.** On the instrument the DAQ triggers the uEye from
+   `Dev1/port0/line2`. Whether that line is wired to this camera now is
+   unknown (*ask*). Exposure is bounded by frame rate and pixel clock even
+   under a trigger, so settings apply in order: pixel clock, then frame
+   rate, then exposure.
+7. **No native recorder.** Recording a uEye means the thesis's route: a
+   recorder that consumes the buffer (§3.4.3, and "Retired from the tree"
+   in 5b). That is new core work, not part of the adapter (*ask* whether it
+   is wanted now).
+8. **Opening.** `is_InitCamera` is opened in a worker thread, as DCAM is,
+   so heartbeats are answered meanwhile. The camera gets a process of its
+   own, where a vendor driver belongs, and the heartbeat is mandatory there
+   (Milestone 4). Whether the driver frees the camera when its process is
+   killed is checked on the camera (Y7), as the Flash's recovery was.
+
+**Settings: the device's own messages (5b decision).** The uEye has no
+property-by-name system like DCAM's: each setting is its own function
+(`is_PixelClock`, `is_Exposure`, `is_SetFrameRate`, `is_AOI`,
+`is_SetColorMode`, `is_SetExternalTrigger`, `is_SetTriggerDelay`,
+`is_SetHardwareGain`, `is_SetBinning`). Two shapes, for the user to choose:
+- (a) **One message per setting**: `SetExposure(ms)`, `SetAOI(x, y, w, h)`,
+  `SetPixelFormat(name)`, `SetTrigger(mode, delay_us)`, `SetPixelClock(mhz)`,
+  `SetFrameRate(fps)`. Each answers with the value the camera took, or
+  `Rejected`. Explicit, and typed by the codec.
+- (b) **The Flash's messages reused**: `SetProperty(name, value)` /
+  `GetProperty(name)` answered `PropertyValue`, with a table of names in
+  the adapter. A client could then treat both cameras alike, but 5b said a
+  shared camera message waits for a second *client*, and this is a second
+  camera.
+
+Recommendation: (a). It needs no table of names, and it keeps a shared
+message for when a client needs one.
+
+**Proposed work, in order** (as 5c–5e went; tests first, and each passing
+test gets its mutation check):
+- **5f-1, survey on the camera** (Y). A script under `tests/hardware/ueye/`
+  that puts back every setting it changes, and uses the test image where
+  light does not matter:
+  - Y1: revision, and what `u64TimestampDevice` measures: against host time
+    under freerun, and against DAQ pulse times if line 2 is wired.
+  - Y2: `is_SetAllocatedImageMem` over our shared-memory segment.
+  - Y3: slot order under queue mode.
+  - Y4: the largest sequence the driver takes.
+  - Y5: bit placement of the 10/12/16-bit formats (test image, known
+    values).
+  - Y6: whether `u64FrameNumber` is sequential.
+  - Y7: reopening after the process is killed.
+- **5f-2, `UEyeFrameCapture` over a fake pyueye** (U), in
+  `adapters/ueye/capture.py`, with the fake in `tests/adapters/ueye/fake_ueye.py`:
+  - U-tests: importing the adapter needs no pyueye; open sets the pixel
+    format and closes what it opened on any failure; `frame_format` from
+    the AOI and format; attach registers every slot in order and checks the
+    pitch; start inits the queue, then capture; `wait_frames` counts, checks
+    each slot, and raises `FramesLost` on a capture-status return;
+    stamps come from the info read before unlock; stop cancels a wait;
+    detach exits the queue, clears the sequence and frees every memory ID;
+    close is repeatable;
+  - the port contract (K1–K9) over the fake.
+- **5f-3, the port on the camera**: K1–K9, `measure_in_flight` (as M1),
+  and a sustained-rate run with no loss (as M2).
+- **5f-4, `UEyeCamera(ImageStreaming, TimedDevice)`** (E), in
+  `adapters/ueye/camera.py`, with its messages in `adapters/ueye/messages.py`.
+  The role contract (F1–F6) over the fake, then on the camera.
+- **5f-5, DAQ-triggered**: frames on line 2's pulses, if it is wired.
+- *Packaging:* an optional extra, `ueye = ["pyueye>=4.96"]`.
+  `tests/adapters/ueye/` and `tests/hardware/ueye/` stay out of the default
+  run, as the other vendors' tests do. The hardware suite is gated on
+  `STACSCOPE_UEYE` (the camera ID), and the DAQ-triggered test also on
+  `STACSCOPE_UEYE_TRIGGER`. Windows only, like DCAM, unless the user wants
+  the Linux driver kept open.
+
+**Decided (user, 2026-09-30)**, answering the proposal's seven questions:
+1. **pyueye over the uEye API.** IDS peak is not used now. Revisit it if IDS
+   drops the Software Suite, or `ids_peak` ships free-threaded wheels.
+2. **No IDS file in the repository.** The Software Suite's end-user licence
+   was not kept, so its terms are unknown. pyueye supplies the structs and
+   constants.
+3. **Settings are (a): one message per setting** (`SetExposure`, `SetAOI`,
+   `SetPixelFormat`, `SetTrigger`, `SetPixelClock`, `SetFrameRate`). Each
+   answers with the value the camera took, or `Rejected`.
+4. **RAW pixel formats (no LUT or gamma), at 8, 10 and 12 bits.** Each depth
+   is exposed only after Y5 confirms its bit placement on the camera.
+   `SENSOR_RAW8` needs no such check. *(Narrowed after Y5, below: RAW8 and RAW10
+   only.)*
+5. **`Dev1/port0/line2` is wired to the uEye's trigger input** on this
+   machine. 5f-5 and Y1's check against pulse times can run here.
+6. **Recording for the uEye comes later.** 5f is capture and the device only.
+   A buffer-consuming recorder is separate core work.
+7. **Claude may run the survey's captures on the uEye in the session of
+   2026-09-30, and may pulse the DAQ's digital lines.** No analog output may
+   be set to anything but 0 V, even when the AO task runs only to supply
+   `ao/SampleClock` to the digital lines.
+
+**5f-1, the survey: done on the camera (2026-09-30), run by Claude.**
+`tests/hardware/ueye/test_survey.py`, 13 tests, all green. It is gated on
+`STACSCOPE_UEYE` (camera ID, 1 here), and its DAQ test on
+`STACSCOPE_UEYE_TRIGGER` (`Dev1/port0/line2`). Run it with `--extra ueye
+--extra nidaqmx`. The helpers are in `ueye_rig.py`. The DAQ's pulse train
+moved from the DCAM rig to `tests/hardware/daq_pulses.py`, shared by both
+camera suites. It drives one digital line clocked by counter 0, and creates
+no analog task. pyueye is the `ueye` extra.
+- **Y1: a CP Rev. 1.** Its feature bits (0x68001ef) lack
+  `CAP_MEMORY_MODE`. **The device stamp marks the end of the transfer.**
+  Under software trigger it moved 38.96 ms for 39 ms more exposure. It is
+  in 0.1 µs ticks. On DAQ pulses (rising edge, `LO_HI`), 80 pulses gave
+  exactly 80 frames and no more. The stamps were spaced 25 ms apart, spread
+  26–100 µs across runs (the transfer's jitter). The device clock agrees
+  with the DAQ's timebase to within the measurement, 13–33 ppm by run.
+- **Y2: our shared-memory segment is accepted as image memory.**
+  `is_SetAllocatedImageMem` took all eight slots, and the white test image
+  landed in them as 255. No `VirtualLock` was needed. The pitch is the width
+  (no padding).
+- **Y3: queue mode fills slots in order and wraps** (three times round a
+  ring of eight). **A slot still locked when its turn comes is skipped in
+  silence.** The next frame lands in the following slot, and no capture
+  error is counted. Only the adapter's slot-order check can catch it. The
+  test asserts this, so a driver that changes it fails the test.
+- **Y4:** a sequence of 8192 memories (the most tried) is accepted and
+  captures.
+- **Y5: RAW10 and RAW12 sit from the LSB** in 16 bits: white reads 1023 and
+  4095, and RAW16 reads 65535. In all three, the sensor's gray wedge has
+  exactly **1024 distinct values**, spread over the full range. So RAW12 and
+  RAW16 carry the sensor's 10 bits rescaled, not more information (the
+  EV76C560 has a 10-bit ADC).
+- **Y6: `u64FrameNumber` steps by 1 within a capture.** It goes on counting
+  sensor frames between captures and between sessions (gaps of 5–6 across
+  a stop and start in freerun), so a gap means a loss only within one
+  capture.
+- **Y7: the camera opens after its capturing process is killed.**
+  `is_InitCamera` answers `IS_DEVICE_IN_USE` (213) for about 1.5 s, then
+  succeeds, and the camera captures.
+- **Y8: `is_InitCamera` starts from the camera's defaults.** Colour mode,
+  AOI, pixel clock and exposure changed in one session were back to
+  BGR8, full frame, 24 MHz and 66.6 ms in the next.
+
+- **Y9: the full sensor in RAW10, DAQ-triggered at 20 fps, loses
+  nothing** (the user's requirement for testing, 2026-09-30). 200 pulses
+  gave 200 frames, in order, with no gap and no capture error, at 40 MHz
+  and 10 ms exposure. `STACSCOPE_SOAK_SECONDS` lengthens the run. **Under a
+  trigger this sensor does not expose while it reads out**, and **a
+  trigger that arrives while it is busy is ignored in silence**. The first
+  try, at 31 MHz (22.2 fps freerun, about 45 ms of readout) plus 10 ms of
+  exposure, got every other pulse. No `DEV_MISSED_IMAGES` or any other
+  capture error counted the lost triggers. So the trigger period must
+  cover the readout (one over the freerun maximum) plus the exposure. The
+  camera cannot report a trigger it missed.
+
+**Decided (user, 2026-09-30), from the survey:**
+- **Device time is the raw stamp**: `TimeSource.DEVICE`, the camera's
+  clock at transfer end, in 0.1 µs ticks. It is not corrected to the
+  exposure start.
+- **Pixel formats: RAW8 and RAW10 only.** RAW10 is LSB-aligned `<u2`.
+  RAW12 and RAW16 are not exposed: they carry no more than RAW10.
+- **Full-frame RAW10, DAQ-triggered at 20 fps, must be sustained** for
+  testing. Y9 shows it is, at 40 MHz.
+
+**What the survey means for 5f-2 (proposed):**
+- *Settings.* A trigger the sensor is too busy for is lost without a
+  trace. So `SetPixelClock`, `SetExposure` and `SetAOI` could answer with
+  the shortest trigger period they now allow (readout plus exposure), and a
+  client could check its waveform against it. *Ask* before building.
+- *Loss.* A capture-status return in the queue, a slot out of place, or a
+  gap in `u64FrameNumber` within one capture, counted from the capture's
+  first frame.
+- *Opening.* After a crash, `is_InitCamera` refuses with
+  `IS_DEVICE_IN_USE` for a moment. Opening should retry that code for a few
+  seconds before failing the launch.
 
 ## Subsequent milestones
 

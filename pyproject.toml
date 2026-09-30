@@ -18,6 +18,9 @@ viewer = [
     "pyqtgraph>=0.13",
     "PySide6>=6.6",
 ]
+ueye = [
+    "pyueye>=4.96",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.16,<0.13.0"]

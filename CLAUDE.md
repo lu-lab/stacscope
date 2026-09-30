@@ -10,7 +10,7 @@ reimplementation of the control software for a custom light-sheet
 (SPIM) microscope, meant to generalize to other microscopes. The original is a
 LabVIEW Actor Framework application described in thesis Chapter 3; it works, but
 is being replaced for the reasons that chapter's §3.6 gives. Older notes under
-`reference/` call it the "SPIM engine" — same project.
+`notes/` call it the "SPIM engine" — same project.
 
 **The user is the original author** of both the instrument and the thesis. They
 have deep domain knowledge of the optics, the hardware timing, and the design
@@ -303,15 +303,17 @@ data flow. Also `setup` / `run` / `teardown` hooks, and "actor runtime", not
 
 ## Read these first, in this order
 
-All of it lives under **`reference/`, which is gitignored and local-only** — it
-is deliberately not published to the remote. A fresh clone will not have it; ask
-the user for a copy if it is missing.
+The notes (1–3) live in **`notes/`, which is tracked**, so every dev machine's
+sessions share them — keep them up to date and commit them with the work they
+describe. The source material (4–5) lives under **`reference/`, which is
+gitignored and local-only** — it is deliberately not published to the remote. A
+fresh clone will not have it; ask the user for a copy if it is missing.
 
-1. **`reference/notes/architecture-plan.md`** — the approved architecture. This
+1. **`notes/architecture-plan.md`** — the approved architecture. This
    is the spec to build against and supersedes anything that disagrees with it.
-2. **`reference/notes/spim-engine-walkthrough.md`** — what the legacy LabVIEW
+2. **`notes/spim-engine-walkthrough.md`** — what the legacy LabVIEW
    code actually does, and a map of dead code to ignore.
-3. **`reference/notes/claude-workflow-notes.md`** — process lessons, including
+3. **`notes/claude-workflow-notes.md`** — process lessons, including
    the **hardware safety** section. Read that section before running anything on
    the instrument machine.
 4. **`reference/thesis/ch3.md`** — authoritative for design intent. A Markdown

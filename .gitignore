@@ -1,5 +1,6 @@
-# Local-only reference material: the legacy LabVIEW/Jupyter/uManager tree, the
-# thesis chapter, and session handoff notes. Deliberately not published.
+# Local-only reference material: the legacy LabVIEW/Jupyter/uManager tree and
+# the thesis chapter. Deliberately not published. (Session notes are in notes/,
+# tracked, so sessions on every dev machine share them.)
 reference/
 
 # Local-only: the running list of driver installs, NI MAX setup and instrument

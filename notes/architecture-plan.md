@@ -3663,6 +3663,9 @@ holds: no writer port was built.
 - **Tests:**
   - L1–L10, the recorder: `tests/unit/recording/`, on the real clock.
   - L11–L17, the role: `tests/unit/devices/test_buffer_recording.py`.
+  - L13 and L14 end to end, through a Coordinator on the real clock:
+    `tests/integration/test_recording_rig.py` (built after the user's
+    confirmations, 2026-10-01).
   - E7 on the uEye fake.
   - W4 on the camera.
 - **Mutation checks.** 21 mutants: the save directory 4, the recorder 9,
@@ -3707,10 +3710,25 @@ holds: no writer port was built.
   (confirmed). The recorder handles `FinishRecording` before it sees a
   stop, so every frame published still reaches the file (L16). A disk that
   hangs would hang the close.
-- **Not built:** an end-to-end test of a recorder failing through the
-  Coordinator to an abort. The device's fatal `Fault` is tested (L14), and
-  the Coordinator's abort on one is tested (C-tests). The two together
-  need a Coordinator on the real clock.
+- **The end-to-end tests are built** (2026-10-01),
+  `tests/integration/test_recording_rig.py`. They use D12's rig, recording,
+  with every actor on the real clock:
+  - L13 end to end: 5 cycles, with a disk slower than the camera (80 ms a
+    frame against 50 ms) so that it is behind when the triggers end. The
+    file holds every frame triggered, and nothing faults.
+  - L14 end to end: a disk that fills after two frames, during an
+    acquisition of 40 cycles (4 s). The Coordinator aborts within a
+    fraction of a second, the source stops early, and the file keeps its
+    two frames.
+  - The camera's `stop_timeout` is set apart from its `ready_timeout`, as
+    the instrument's must be.
+  - Mutation checks, four mutants, all caught:
+    - the Coordinator ignoring a fatal `Fault`;
+    - the role not publishing a recorder's failure;
+    - a stop timeout too short for the backlog;
+    - `close_recording` not waiting for the recorder. This one first
+      survived: with no backlog at the stop there was nothing to wait for,
+      so L13 gained the slow disk.
 
 **The user's brief (2026-10-01):** a lightweight recording actor that writes
 TIFF or raw data to disk. The streaming actor launches it as a child, and

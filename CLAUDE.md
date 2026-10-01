@@ -105,7 +105,9 @@ section explains why.
     `Recording`. A stem with no save directory set refuses the arm.
   - tifffile is a core dependency.
   - The recorder's tests run on the real clock; D12 runs unsaved because
-    of it. On the instrument, a stop waits for the recorder's backlog, so
+    of it. `tests/integration/test_recording_rig.py` is D12's rig,
+    recording, on the real clock: a whole file through the Coordinator
+    (L13), and a failing recorder aborting the acquisition (L14). On the instrument, a stop waits for the recorder's backlog, so
     a recording camera's `DeviceSpec.stop_timeout` must allow for it.
   - Confirmed (user, 2026-10-01): an acquisition with no frames keeps its
     empty TIFF, and a camera that closes while its recorder is finishing

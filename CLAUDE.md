@@ -86,9 +86,26 @@ section explains why.
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
 - **Milestone 5 is done** (real adapters, closed 2026-10-01): the PCI-6733,
   the ORCA-Flash with DCIMG recording, and the uEye, each on its hardware.
-  **Next is a recorder that reads the buffer, for the uEye** (user,
-  2026-10-01): a proposal, with questions open, is in the plan under "The
-  buffer recorder", after 5f. What follows is the record of Milestone 5.
+  What follows the next bullet is the record of Milestone 5.
+- **The buffer recorder is done** (user's decisions, 2026-10-01; the plan's
+  "The buffer recorder", after 5f). It is for a camera whose driver cannot
+  write files, the uEye first.
+  - `TIFFRecorder` (`core/recording/`) is an actor started for each
+    acquisition. It writes every frame of the buffer to a BigTIFF, with
+    the device and host time in private tags 65000/65001 on each page, or
+    it ends with an error. An overrun is fatal: the user sizes the
+    experiment to the disk, and `benchmarks/tiff_write.py` measures one.
+    The writes run on a thread of its own.
+  - Another format means copying the class, not adding a port (user).
+  - `BufferRecording(Recording)` is the role that starts it, as a child,
+    and tells it the count with `FinishRecording`. A recorder that dies
+    mid-acquisition is a fatal `Fault`. `UEyeCamera` and `SimulatedCamera`
+    have the role.
+  - `SetSaveDirectory` / `SaveDirectory` are core messages now, answered by
+    `Recording`. A stem with no save directory set refuses the arm.
+  - tifffile is a core dependency.
+  - The recorder's tests run on the real clock; D12 runs unsaved because
+    of it.
   **5a, the NI-DAQmx adapter,
   is done**, through 5a-3 on the physical board. **5b's shape is decided**
   (2026-09-24): `ImageStreaming` is a device role whose primary

@@ -954,9 +954,10 @@ its failure mode is a worse diagnostic rather than a wrong one.
 **Milestone 5 is closed (user, 2026-10-01).** Every stage, 5a–5f, is done
 on its hardware: the PCI-6733, the ORCA-Flash (with DCIMG recording) and
 the uEye. 5f-5, DAQ-triggered, needed no work of its own: Z2–Z3 (the port)
-and W2–W3 (the device) already ran on line 2's pulses. **Next: a recorder
-that reads the buffer, for the uEye** (user); see "The buffer recorder" after
-5f. The bullets below are the record of how the milestone got here.
+and W2–W3 (the device) already ran on line 2's pulses. **Then, the same day: a recorder
+that reads the buffer, for the uEye** (user), done over the fake and on the
+camera; see "The buffer recorder" after 5f. The bullets below are the record
+of how the milestone got here.
 
 **Status, 2026-09-30:**
 - **5f, the uEye, is decided and started (user, 2026-09-30).** See "5f —
@@ -3593,7 +3594,123 @@ messages in `adapters/ueye/messages.py`. No `Recording` (decision 6).
   - **W3:** pulses at 0.97 of the shortest period end the acquisition with a
     fatal `Fault` ("FramesLost ... after frame 1").
 
-### The buffer recorder *(proposed 2026-10-01; nothing decided)*
+### The buffer recorder *(proposed, decided and done 2026-10-01)*
+
+**Status: done, over the fake and on the uEye (2026-10-01).** The proposal
+below is kept as the history. Where it differs from this block, this block
+holds: no writer port was built.
+
+**Decided (user, 2026-10-01)**, answering the proposal's questions:
+1. **TIFF only, through tifffile, a core dependency.** No raw format.
+2. **Per-frame metadata goes in the TIFF**, if TIFF can hold it cleanly. It
+   can: private tags on each page. The frame number may be redundant, so
+   it is left out.
+3. **An overrun is fatal.** This is one of the few cases, maybe the only
+   one, where a consumer's overrun is a failure: the writer must handle
+   every frame or fault. Setting up the experiment so that this does not
+   happen is the user's responsibility. A benchmark measures a disk's
+   limit, which depends on the hardware, not just on the writer.
+4. **No headroom rule.** Nothing is preallocated, so the file system says
+   when the disk is full.
+5. **`SetSaveDirectory` is a core feature.**
+6. **A thread in the parent's process.** Even GIL threading is acceptable,
+   as long as the work is limited by moving data, not by computing.
+7. **`TIFFRecorder`.** Another format means copying this class and
+   adapting it, not one core class handling many formats. TIFF is the
+   field's default for raw linear image sequences.
+
+**Built:**
+- **`SetSaveDirectory` / `SaveDirectory`** are in `core/protocol/messages.py`,
+  answered by the `Recording` role. The role refuses a change while armed
+  or to a directory that does not exist, and refuses a stem while no
+  directory is set (`save_directory` defaults to `None`, not the working
+  directory). `check_save_directory()` is the launch-time check each device
+  calls before opening hardware. The Flash's own copy is gone; its O11
+  tests pass through the role. These are D7's five new tests in
+  `test_recording.py`.
+- **`TIFFRecorder`** (`core/recording/tiff_recorder.py`), an actor:
+  - It opens the reader and the file in `setup`, with `open(path, "xb")`,
+    so a file is never written over. It refuses a buffer on another
+    acquisition.
+  - A thread of its own copies each frame, checks `still_valid` after the
+    copy, then writes the copy. A torn frame never reaches the file.
+  - Each page is a BigTIFF page of its own (`contiguous=False`,
+    `metadata=None`), so it can carry tags: 65000 `device_ticks` and 65001
+    `host_time_ns` (SLONG8), only for fields the producer fills.
+  - Page 0's description is JSON naming the source, buffer, acquisition,
+    time source, clock rate and tag map.
+  - tifffile and Fiji read the pages as one stack.
+  - `FinishRecording(frames)` → `RecordingFinished(frames)`, then it stops.
+  - An overrun, a torn frame, a new acquisition, or a write error ends it
+    with that error at once. The thread hands the error to the loop, and
+    the file is closed first.
+  - The thread clears its error's traceback frames: a view of the buffer in
+    them stopped the reader from closing (K9 again, found by L8).
+- **`BufferRecording(Recording)`** (`core/devices/buffer_recording.py`):
+  - The recorder's class is the `recorder` attribute.
+  - `open_recording` spawns it as the child `recorder-<acquisition id>`
+    and waits for it to start or die.
+  - `close_recording` tells it `FinishRecording(published)` and waits for
+    its exit, rather than asking, then checks `frames_written` against the
+    count.
+  - A `ChildExited` with an error during the acquisition is published as
+    a fatal `Fault` at once, and reported once only.
+  - `close` stops a recorder still running.
+  - Defining a device with the role but without `ImageStreaming` is a
+    `TypeError`.
+  - `SimulatedCamera` and `UEyeCamera` have the role, each with a
+    `save_directory` option.
+- **Tests:**
+  - L1–L10, the recorder: `tests/unit/recording/`, on the real clock.
+  - L11–L17, the role: `tests/unit/devices/test_buffer_recording.py`.
+  - E7 on the uEye fake.
+  - W4 on the camera.
+- **Mutation checks.** 21 mutants: the save directory 4, the recorder 9,
+  the role 7, the uEye 1. Three survived:
+  - The rewording of an overrun as a new acquisition was untested. It
+    became a test: a new acquisition seen by a recorder that is behind.
+  - `close` stopping a recorder was untested. It became a test: the camera
+    cancelled mid-stop. That test found a real bug: `close_recording` let
+    go of the recorder before it had stopped, so `close` could not stop it.
+  - Skipping `file.close()` is equivalent: dropping the last reference
+    closes the file in CPython.
+
+  A recorder that loses count without an error has a test of its own,
+  written before its mutant ran.
+- **W4, on the camera:** full-frame RAW10, 20 fps from line 2, 10 s.
+  - 200 pulses gave 200 frames published and 200 pages (524 MB) on E:.
+  - The stop was answered in 0.01 s.
+  - Page-to-page camera time: median 50.000 ms (49.957–50.035).
+  - The file's last frames equal the buffer's, pixel for pixel and tick
+    for tick. W1–W3 still pass.
+- **`benchmarks/tiff_write.py DIRECTORY [--shape R C] [--seconds S]
+  [--rate FPS]`**:
+  - It records synthetic frames through the real recorder, never lapping
+    it.
+  - It reports the sustained rate, the longest hold-up, and the slots
+    needed at `--rate`.
+  - On the dev box's E:, uEye full frames for 30 s: 489 frames/s (1.28
+    GB/s), longest hold-up 101 ms, so 6 slots at 20 fps.
+
+**Findings and choices to confirm:**
+- **D12 runs unsaved now.** Its Coordinator times the stop in virtual time,
+  which expires before a real-thread recorder finishes ("stop not
+  confirmed: camera"). It is an artifact of the test, with a real
+  counterpart: **on the instrument, confirming a stop includes the
+  recorder writing its backlog**. That is at most a ring's worth, at disk
+  speed. The Coordinator's stop timeout must allow for it.
+- **An acquisition with no frames leaves a 16-byte TIFF with no pages.**
+  tifffile opens it as empty; a strict reader may refuse it. It is kept as
+  the record that the acquisition ran (Claude's choice; the user may
+  prefer it deleted).
+- **A camera closing while its recorder finishes waits for it.** The
+  recorder handles `FinishRecording` before it sees a stop, so every frame
+  published still reaches the file. A disk that hangs would hang the
+  close.
+- **Not built:** an end-to-end test of a recorder failing through the
+  Coordinator to an abort. The device's fatal `Fault` is tested (L14), and
+  the Coordinator's abort on one is tested (C-tests). The two together
+  need a Coordinator on the real clock.
 
 **The user's brief (2026-10-01):** a lightweight recording actor that writes
 TIFF or raw data to disk. The streaming actor launches it as a child, and

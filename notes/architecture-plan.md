@@ -3717,9 +3717,15 @@ holds: no writer port was built.
     frame against 50 ms) so that it is behind when the triggers end. The
     file holds every frame triggered, and nothing faults.
   - L14 end to end: a disk that fills after two frames, during an
-    acquisition of 40 cycles (4 s). The Coordinator aborts within a
-    fraction of a second, the source stops early, and the file keeps its
-    two frames.
+    acquisition of 100 cycles (10 s). The Coordinator aborts at once, the
+    source stops early, and the file keeps its two frames. The abort
+    takes about a second, because the queued output drains first.
+  - The simulated output queues a second of samples. With 0.2 s queued,
+    CI's Windows 3.14 runner failed L14: its event loop was held up long
+    enough for the output to run dry, so the source was lost and the
+    Coordinator went FAULTED. A 250 ms stall reproduces that at 0.2 s,
+    and not at 1 s. On the real clock the output's buffer depth is the
+    stall the rig survives, as it is on the board.
   - The camera's `stop_timeout` is set apart from its `ready_timeout`, as
     the instrument's must be.
   - Mutation checks, four mutants, all caught:

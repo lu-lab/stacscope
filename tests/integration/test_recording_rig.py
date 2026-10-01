@@ -42,7 +42,10 @@ CONFIG = OutputConfig(
     rate=RATE,
     ao=(Channel("Dev1/ao0", "etl"),),
     do=(Channel("Dev1/port0/line0", "camera_trigger"),),
-    buffer_samples=20,
+    # A second of output queued: on the real clock a loop held up longer
+    # than the buffer's slack runs the output dry and loses the source. At
+    # 0.2 s, a Windows CI runner did (2026-10-01).
+    buffer_samples=100,
 )
 SHAPE = (4, 8)
 PER_CYCLE = 2  # camera pulses per MAIN cycle
@@ -111,7 +114,8 @@ class System:
         )
         self.source = WaveformSource(self.output, CONFIG)
         self.coordinator = Coordinator(
-            source=DeviceSpec("source", lambda: self.source, ready_timeout=2.0),
+            # The source's stop drains the queued second of output.
+            source=DeviceSpec("source", lambda: self.source, ready_timeout=2.0, stop_timeout=DEADLINE),
             participants=[
                 DeviceSpec("camera", lambda: self.camera, ready_timeout=2.0, stop_timeout=DEADLINE),
             ],
@@ -139,7 +143,9 @@ class System:
         started = time.monotonic()
         deadline = started + DEADLINE
         while self.coordinator.state is not CoordinatorState.IDLE:
-            assert time.monotonic() < deadline, f"still {self.coordinator.state} after {DEADLINE} s"
+            assert time.monotonic() < deadline, (
+                f"still {self.coordinator.state} after {DEADLINE} s: {[f.reason for f in self.listener.faults()]}"
+            )
             await asyncio.sleep(0.01)
         return time.monotonic() - started
 
@@ -196,13 +202,15 @@ async def test_l14_end_to_end_a_recorder_that_fails_aborts_the_acquisition(syste
     frames it missed are gone from the ring. The camera publishes it as a
     fatal Fault, and the Coordinator stops everyone at once, rather than
     running its cycles to the end with nothing saved."""
-    cycles = 40  # 4 s of MAIN, were it to run on
+    cycles = 100  # 10 s of MAIN, were it to run on
     system = systems(tmp_path, camera_cls=FailingCamera)
     await system.started()
 
     took = await system.acquire(cycles, "run-01")
 
-    assert took < 2.0, f"the acquisition ran on for {took:.1f} s"
+    # The fault comes at the third frame; the abort then waits for the
+    # queued second of output to drain.
+    assert took < 3.0, f"the acquisition ran on for {took:.1f} s"
     assert system.pulses_played() < cycles * PER_CYCLE, "the source was stopped early"
     reasons = [f.reason for f in system.listener.faults()]
     assert any("no space left" in r for r in reasons), reasons

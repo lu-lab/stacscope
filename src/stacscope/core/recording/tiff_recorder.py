@@ -51,7 +51,10 @@ POLL = 0.001
 # Private tags (65000 and up are reusable by anyone), SLONG8: BigTIFF only.
 # The frame number is not written: a recording that loses a frame ends, so a
 # page's index is its frame's (user, 2026-10-01).
-_TAGS = ((MetaField.DEVICE_TIME, DEVICE_TICKS_TAG, "device_ticks"), (MetaField.HOST_TIME, HOST_TIME_TAG, "host_time_ns"))
+_TAGS = (
+    (MetaField.DEVICE_TIME, DEVICE_TICKS_TAG, "device_ticks"),
+    (MetaField.HOST_TIME, HOST_TIME_TAG, "host_time_ns"),
+)
 
 
 @dataclass(frozen=True)
@@ -91,7 +94,9 @@ class TIFFRecorder(Actor):
         # written once, so neither needs a lock.
         self._target: int | None = None
         self._abort = False
-        self._reader = None
+        self._reader: ImageBuffer | None = None
+        # (tag code, metadata field) for each field the producer fills.
+        self._tags: list[tuple[int, str]] = []
         self._file = None
         self._tiff: tifffile.TiffWriter | None = None
         self._thread: threading.Thread | None = None
@@ -197,20 +202,16 @@ class TIFFRecorder(Actor):
             try:
                 frame = cursor.next()
             except Overrun:
+                # A recorder behind finds its frames gone before it finds the
+                # new acquisition's, which looks like being lapped (L8).
                 if reader.acquisition_id != self.acquisition_id:
-                    raise RuntimeError(
-                        f"the buffer started acquisition {reader.acquisition_id} before "
-                        f"acquisition {self.acquisition_id} finished recording"
-                    ) from None
+                    raise self._superseded(reader.acquisition_id) from None
                 raise
             if frame is None:
                 time.sleep(POLL)
                 continue
             if frame.acquisition_id != self.acquisition_id:
-                raise RuntimeError(
-                    f"the buffer started acquisition {frame.acquisition_id} before "
-                    f"acquisition {self.acquisition_id} finished recording"
-                )
+                raise self._superseded(frame.acquisition_id)
             index, meta = frame.index, frame.meta
             pixels = self.copy_frame(frame)
             # A view must not outlive its use: the reader cannot close while
@@ -224,6 +225,12 @@ class TIFFRecorder(Actor):
                 raise exc
             self.write_frame(pixels, meta, description if self.frames_written == 0 else None)
             self.frames_written += 1
+
+    def _superseded(self, acquisition_id: int) -> RuntimeError:
+        return RuntimeError(
+            f"the buffer started acquisition {acquisition_id} before "
+            f"acquisition {self.acquisition_id} finished recording"
+        )
 
     def copy_frame(self, frame: Frame) -> np.ndarray:
         """The frame's pixels, as a packed copy of its view."""

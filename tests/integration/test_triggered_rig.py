@@ -13,7 +13,9 @@ it hears the acquisition's phases and runs its own routine on the clock.
 The acquisitions are not saved (an empty stem). Since 2026-10-01 the simulated
 camera records through a TIFF recorder writing on a real thread, and the
 Coordinator's stop timeout, in virtual time, expires before the thread can
-finish. Recording is tested where real time is used, L11-L17.
+finish. Recording is tested where real time is used, L11-L17. On the
+instrument the same wait is real: a recording camera's stop_timeout must
+allow for its recorder's backlog (user, 2026-10-01).
 """
 
 import asyncio

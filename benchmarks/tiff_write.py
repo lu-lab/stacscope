@@ -48,6 +48,7 @@ class TimedRecorder(TIFFRecorder):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.started_at = 0.0
         self.times: list[float] = []
 
     def write_frame(self, pixels, meta, description):
@@ -141,7 +142,9 @@ def main(argv=None) -> int:
                 # The longest hold-up, at the camera's rate, plus the frames the
                 # camera may be writing, plus one for luck.
                 slots = math.ceil(longest * args.rate) + IN_FLIGHT + 1
-                print(f"  at {args.rate:g} frames/s: give the camera at least {slots} slots ({slots * frame_mb:.0f} MB)")
+                print(
+                    f"  at {args.rate:g} frames/s: give the camera at least {slots} slots ({slots * frame_mb:.0f} MB)"
+                )
     finally:
         if not args.keep:
             path.unlink(missing_ok=True)

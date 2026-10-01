@@ -47,7 +47,8 @@ class BufferRecording(Recording):
     - At the stop, a file short of the frames published is a fatal
       ``Fault``, unless that failure was already reported.
     - A device that closes while recording stops its recorder, which closes
-      the file with what it has written.
+      the file with what it has written. A recorder already told to finish
+      writes every frame published first, so the close waits for it.
     """
 
     recorder: type[Actor] = TIFFRecorder

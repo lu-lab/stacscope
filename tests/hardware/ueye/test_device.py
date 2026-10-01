@@ -51,7 +51,6 @@ from image_streaming_contract import Listener
 from ueye_rig import GRACE, software_trigger
 
 from stacscope.adapters.ueye import (
-    AOI,
     CameraSettings,
     Exposure,
     GetCameraSettings,
@@ -222,7 +221,7 @@ async def test_w3_triggers_too_fast_end_the_acquisition_with_a_fatal_fault(camer
     from daq_pulses import daq_pulses
 
     async with ueye_camera(camera, report, pixel_format="RAW10", pixel_clock=31, exposure_ms=10.0) as (
-        device,
+        _,
         ref,
         listener,
     ):

@@ -57,11 +57,13 @@ class Recording:
     ``save_directory`` set refuses the arm. It answers ``SetSaveDirectory``
     with ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
     directory that does not exist; a device checks one from its
-    configuration with ``check_save_directory`` at launch. A file that will not open fails the arm, after
-    disarming everything that armed after it; if that disarm fails too, the
-    device dies once the arm has been answered. A file that will not close is
-    reported as a fatal ``Fault``, never raised, and death closes the file
-    too, because an unclosed file may be an unreadable one.
+    configuration with ``check_save_directory`` at launch.
+
+    A file that will not open fails the arm, after disarming everything that
+    armed after it; if that disarm fails too, the device dies once the arm
+    has been answered. A file that will not close is reported as a fatal
+    ``Fault``, never raised, and death closes the file too, because an
+    unclosed file may be an unreadable one.
     """
 
     save_directory: Path | None = None

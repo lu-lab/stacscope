@@ -105,7 +105,11 @@ section explains why.
     `Recording`. A stem with no save directory set refuses the arm.
   - tifffile is a core dependency.
   - The recorder's tests run on the real clock; D12 runs unsaved because
-    of it.
+    of it. On the instrument, a stop waits for the recorder's backlog, so
+    a recording camera's `DeviceSpec.stop_timeout` must allow for it.
+  - Confirmed (user, 2026-10-01): an acquisition with no frames keeps its
+    empty TIFF, and a camera that closes while its recorder is finishing
+    waits for it.
   **5a, the NI-DAQmx adapter,
   is done**, through 5a-3 on the physical board. **5b's shape is decided**
   (2026-09-24): `ImageStreaming` is a device role whose primary

@@ -271,7 +271,7 @@ async def test_e4_settings_from_config_are_applied_in_the_cameras_order_at_launc
     pixel clock and AOI, so they go in that order: AOI, pixel clock, frame
     rate, exposure, then the trigger. An exposure set before a slower frame
     rate would be cut short by it."""
-    device, ref, _ = await launch(
+    device, _, _ = await launch(
         fake,
         pixel_format="RAW10",
         aoi=(0, 0, 128, 64),

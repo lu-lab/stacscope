@@ -304,8 +304,8 @@ async def test_l16_a_camera_cancelled_mid_stop_waits_for_its_recorder(rigs, tmp_
     """A shutdown cancels every task, including a camera's whose stop is
     still waiting for its recorder. The camera's close then waits for the
     recorder in its place: told to finish, it writes every frame published
-    and closes the file. Without that, the camera would be gone while its
-    writer thread still held the file and the segment."""
+    and closes the file (user, 2026-10-01). Without that, the camera would
+    be gone while its writer thread still held the file and the segment."""
     rig = rigs(cls=SlowCamera, save_directory=tmp_path)
     await rig.started()
     assert await rig.ask(StartDevice("run-01", -1)) == DeviceReady()

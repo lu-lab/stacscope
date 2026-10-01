@@ -151,7 +151,7 @@ async def test_l1_every_frame_is_written_in_order_and_packed(producer, tmp_path)
     cam = producer(row_pad=10)
     path = tmp_path / "run-01_camera.tif"
     recorder = TIFFRecorder(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    _, ref = await launch(recorder)
 
     cam.publish(5)
     assert await finish(ref, 5) == RecordingFinished(5)
@@ -172,7 +172,7 @@ async def test_l2_each_page_carries_its_frames_time_stamps(producer, tmp_path):
     cam = producer()
     path = tmp_path / "run-01_camera.tif"
     recorder = TIFFRecorder(cam.name, cam.acquisition_id, path, source="camera")
-    parent, ref = await launch(recorder)
+    _, ref = await launch(recorder)
 
     cam.publish(3)
     await finish(ref, 3)
@@ -199,7 +199,7 @@ async def test_l2_a_producer_with_no_clock_gets_no_time_tags(producer, tmp_path)
     cam = producer(metadata=Metadata())
     path = tmp_path / "run-01_camera.tif"
     recorder = TIFFRecorder(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    _, ref = await launch(recorder)
 
     cam.publish(2)
     await finish(ref, 2)
@@ -230,7 +230,7 @@ async def test_l3_finish_waits_for_frames_published_but_not_yet_written(producer
     cam = producer(n_slots=16)
     path = tmp_path / "run-01_camera.tif"
     recorder = Slow(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    _, ref = await launch(recorder)
 
     cam.publish(10)
     assert await finish(ref, 10) == RecordingFinished(10)
@@ -279,11 +279,12 @@ async def test_l4_a_recorder_for_another_acquisition_does_not_start(producer, tm
 
 async def test_l5_an_acquisition_with_no_frames_leaves_an_empty_file(producer, tmp_path):
     """Stopped before the first trigger: the file says the acquisition was
-    recorded and held nothing, which a missing file would not."""
+    recorded and held nothing, which a missing file would not (user,
+    2026-10-01)."""
     cam = producer()
     path = tmp_path / "run-01_camera.tif"
     recorder = TIFFRecorder(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    _, ref = await launch(recorder)
 
     assert await finish(ref, 0) == RecordingFinished(0)
     await ended(recorder)
@@ -302,7 +303,7 @@ async def test_l6_a_recorder_the_camera_laps_ends_with_an_overrun(producer, tmp_
     cam = producer(n_slots=4)
     path = tmp_path / "run-01_camera.tif"
     recorder = Slow(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    parent, _ = await launch(recorder)
     cam.publish(1)
     await written(recorder, 1)
 
@@ -337,7 +338,7 @@ async def test_l7_a_frame_overwritten_while_it_is_copied_is_not_written(producer
     path = tmp_path / "run-01_camera.tif"
     recorder = Lapped(cam.name, cam.acquisition_id, path)
     recorder.camera = cam
-    parent, ref = await launch(recorder)
+    await launch(recorder)
 
     cam.publish(1)
     await ended(recorder)
@@ -367,7 +368,7 @@ async def test_l7_the_page_written_is_the_frame_as_it_was_checked(producer, tmp_
     path = tmp_path / "run-01_camera.tif"
     recorder = LappedLate(cam.name, cam.acquisition_id, path)
     recorder.camera = cam
-    parent, ref = await launch(recorder)
+    await launch(recorder)
 
     cam.publish(1)
     await ended(recorder)
@@ -381,7 +382,7 @@ async def test_l8_a_new_acquisition_under_the_recorder_ends_it(producer, tmp_pat
     cam = producer()
     path = tmp_path / "run-01_camera.tif"
     recorder = TIFFRecorder(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    await launch(recorder)
     cam.publish(2)
     await written(recorder, 2)
 
@@ -400,7 +401,7 @@ async def test_l8_a_new_acquisition_says_so_even_to_a_recorder_behind(producer, 
     cam = producer(n_slots=8)
     path = tmp_path / "run-01_camera.tif"
     recorder = Slow(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    await launch(recorder)
     cam.publish(4)
     await written(recorder, 1)
 
@@ -427,7 +428,7 @@ async def test_l9_a_write_that_fails_ends_the_recorder_with_its_error(producer, 
     cam = producer()
     path = tmp_path / "run-01_camera.tif"
     recorder = Failing(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    parent, _ = await launch(recorder)
 
     cam.publish(5)
     await ended(recorder)
@@ -449,7 +450,7 @@ async def test_l10_a_recorder_stopped_before_its_finish_closes_the_file(producer
     cam = producer()
     path = tmp_path / "run-01_camera.tif"
     recorder = TIFFRecorder(cam.name, cam.acquisition_id, path)
-    parent, ref = await launch(recorder)
+    await launch(recorder)
     cam.publish(3)
     await written(recorder, 3)
 

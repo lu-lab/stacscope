@@ -3692,21 +3692,21 @@ holds: no writer port was built.
   - On the dev box's E:, uEye full frames for 30 s: 489 frames/s (1.28
     GB/s), longest hold-up 101 ms, so 6 slots at 20 fps.
 
-**Findings and choices to confirm:**
-- **D12 runs unsaved now.** Its Coordinator times the stop in virtual time,
-  which expires before a real-thread recorder finishes ("stop not
-  confirmed: camera"). It is an artifact of the test, with a real
-  counterpart: **on the instrument, confirming a stop includes the
+**Findings, and the choices the user confirmed (2026-10-01):**
+- **D12 runs unsaved now** (confirmed). Its Coordinator times the stop in
+  virtual time, which expires before a real-thread recorder finishes
+  ("stop not confirmed: camera"). It is an artifact of the test, with a
+  real counterpart: **on the instrument, confirming a stop includes the
   recorder writing its backlog**. That is at most a ring's worth, at disk
-  speed. The Coordinator's stop timeout must allow for it.
-- **An acquisition with no frames leaves a 16-byte TIFF with no pages.**
-  tifffile opens it as empty; a strict reader may refuse it. It is kept as
-  the record that the acquisition ran (Claude's choice; the user may
-  prefer it deleted).
-- **A camera closing while its recorder finishes waits for it.** The
-  recorder handles `FinishRecording` before it sees a stop, so every frame
-  published still reaches the file. A disk that hangs would hang the
-  close.
+  speed, so a recording camera's `DeviceSpec.stop_timeout` must allow for
+  it.
+- **An acquisition with no frames leaves a 16-byte TIFF with no pages**
+  (confirmed). tifffile opens it as empty; a strict reader may refuse it.
+  It is kept as the record that the acquisition ran (L5).
+- **A camera closing while its recorder finishes waits for it**
+  (confirmed). The recorder handles `FinishRecording` before it sees a
+  stop, so every frame published still reaches the file (L16). A disk that
+  hangs would hang the close.
 - **Not built:** an end-to-end test of a recorder failing through the
   Coordinator to an abort. The device's fatal `Fault` is tested (L14), and
   the Coordinator's abort on one is tested (C-tests). The two together

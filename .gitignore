@@ -28,3 +28,8 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local-only: each machine's rig config. config/rig.example.toml is the
+# tracked template; copy it to config/rig.toml and edit the copy.
+config/*
+!config/*.example.toml

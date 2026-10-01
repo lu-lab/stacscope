@@ -332,6 +332,27 @@ section explains why.
 
   The monitor runs on standard 3.14 beside a `3.14t` engine — which works because it is a pure consumer of shared memory, proven
   by `tests/tools/test_cross_interpreter.py`.
+- **The rig config is done (2026-10-01), and G13 passes on the
+  instrument.** `app/config.py` reads a TOML rig config (`load_config`), and
+  `app/rig.py`'s `Rig.start` builds and launches the Coordinator, source and
+  devices it names; `Rig.close` stops a running acquisition first, then the
+  Coordinator, then the devices. Each device has its own `save_directory`;
+  there is no rig-wide one, and two devices may share one, since a file's
+  name ends with its device's name (user). `config/rig.toml` is each
+  machine's own and gitignored; `config/rig.example.toml` is the tracked
+  template. Tests: G1–G12 and G16 in the default suite, G14–G15 on
+  `Dev1-sim` (`tests/adapters/nidaqmx/test_rig_source.py`), G13 in
+  `tests/hardware/rig/` (both cameras, a 20-cycle-a-second MAIN, 31 Flash
+  frames at 1.30 ms by synchronous readout plus 1 uEye frame a cycle, AO at
+  0 V, on test-saved MAX tasks). **In synchronous readout N pulses give
+  N − 1 frames**, so COOLDOWN plays one more Flash pulse, and the Flash's
+  `n_slots` is a multiple of 31, whole volumes (user). Results and
+  decisions are in the plan's "The rig config".
+  **Keep rig config logic inside `app/`** (user, 2026-10-01): it may be
+  refactored when a recording session config interface is made. Nothing
+  outside `app/` imports `app.config` or `app.rig`, reads the file, or
+  takes a `RigConfig` / `DeviceConfig` / `Construct`; core and the adapters
+  keep taking plain constructor arguments and `DeviceSpec`s.
 - **An actor ignores a message it has no use for, told or asked** (user,
   2026-09-30): no answer, no Fault. Be conservative about sending messages.
   The Coordinator still relays `SourcePhase`. Direct subscription for

@@ -3884,6 +3884,126 @@ consolidated later. Consolidation is not part of this work.
 8. Names: `BufferRecorder` (the actor), `BufferRecording` (the role), and
    a name for the writer port.
 
+### The rig config *(decided and built 2026-10-01; G13 green on the instrument)*
+
+**Status: done (2026-10-01). Green in simulation and on `Dev1-sim`
+(G1–G12, G14–G16), and G13, the instrument's run on both cameras, passes on
+the hardware.** The composition root that "Open items → Deployment" said was
+missing: `app/config.py` reads a TOML rig config, and `app/rig.py`'s
+`Rig.start` turns it into a running Coordinator; `Rig.close` takes it down.
+
+**The target (user, 2026-10-01).** With no session model yet, the rig is
+tested against a run with digital timing signals only, AO held at 0 V: a
+MAIN at 20 cycles a second, one uEye frame per cycle (full frame, RAW10),
+and 31 Flash frames per cycle at 256 rows, packed at the start of the cycle
+at the shortest trigger period that works. Both cameras record, and the
+Coordinator runs the whole cycle. The final version also opens a buffer
+monitor on each stream.
+
+**Decided (user, 2026-10-01):**
+- **Each device has its own save directory**; the file has no rig-wide one
+  (refused if given). The Flash must record to E:, and the uEye may have to
+  record to C: if one disk cannot take both streams; a device split onto
+  another machine later has paths that mean nothing here. A directory is
+  checked by its device at launch, on its own machine, never by the config.
+- **Two devices may share a save directory**, as long as their files'
+  names differ, and may even prefer to (user, 2026-10-01). They do: the
+  `Recording` role names a file `<stem>_<device name>.<ext>`, and device
+  names are unique. G16 pins it; with the device's name dropped from the
+  file name, the second camera refuses its arm.
+- **The Flash fits 31 frames in 50 ms by synchronous readout** (`TRIGGER
+  ACTIVE` `SYNCREADOUT`, AREA, 256 rows). The 5d survey's minimum trigger
+  interval at 256 rows, edge trigger, 1 ms exposure was 2.348 ms: 31 frames
+  would take 72.8 ms. Synchronous readout puts the floor near the readout,
+  ~1.25 ms (128 lines × 9.74 µs). Measured by G13: 1.296 ms.
+- **COOLDOWN plays one more Flash pulse** (user, 2026-10-01). In
+  synchronous readout each pulse ends one exposure and starts the next, so
+  the run's first pulse ends nothing and its last opens an exposure only a
+  further pulse reads out: N pulses give N − 1 frames (G13, measured). The
+  closing pulse sits at COOLDOWN's start, where the next cycle's first would
+  have been. A consequence for imaging: each cycle's first frame is exposed
+  from the previous cycle's last pulse (~11 ms here), the other 30 for one
+  period (1.3 ms).
+- **The Flash's ring is a whole number of volumes**: `n_slots` a multiple
+  of 31, as a volume readout will want (user, 2026-10-01). The example
+  config has 403 (13 volumes); G13 refuses a config that is not.
+- **"Minimum successful trigger timing" is the camera's own floor**
+  (`GetShortestTriggerPeriod`), rounded up to a whole DAQ sample (10 µs).
+  A lost frame is a fatal Fault, so a floor that is wrong ends the run.
+- **The hardware run saves its own NI MAX tasks** (`stacscope_test_rig_*`)
+  and overrides the config's task names, as the device suites do: the
+  "never load `SPIM_*` from a test" rule stands.
+- **Rig config logic stays inside `app/`** (user, 2026-10-01), because it
+  may be refactored when a recording session config interface is made.
+  Nothing outside `app/` imports `app.config` or `app.rig`, reads the file,
+  or takes a `RigConfig`, `DeviceConfig` or `Construct`. Core and the
+  adapters keep taking plain constructor arguments and `DeviceSpec`s; `app/`
+  is where the file becomes those. Today nothing outside `app/` does.
+- **The rig config is local to each machine**: `config/rig.toml` is
+  gitignored; `config/rig.example.toml` is the tracked template (G12 keeps
+  it loading).
+
+**The file.** `[source]` is `nidaqmx` (two MAX task names, optional
+`buffer_samples`; channels and rate are MAX's, read at `Rig.start`) or
+`simulated` (rate, buffer depth, and `ao` / `do` tables of label = channel,
+in row order). Each `[devices.<name>]` holds the rig's keys (`kind`,
+`placement`, `trigger`, `ready_timeout`, `stop_timeout`, `heartbeat`,
+`required`), and everything else is the device's constructor arguments,
+arrays as tuples. Checked at load, naming table and key: unknown keys,
+kinds and placements; options bound against the device class's signature,
+so a misspelt setting fails there (the adapter modules import without their
+vendor packages, so this needs none). `kind` is a short name (`orca_flash`,
+`ueye`, `simulated_camera`, `simulated_free_running_camera`) or
+`package.module:Class`, so a new adapter needs no registry change.
+- **`trigger`** names the digital line, by label, that triggers a device.
+  It is rig data: checked against a simulated source's lines at load and
+  against MAX's at `Rig.start` (G15), used by a run to find a waveform's
+  row (`rig.line(rig.triggers[name])`), and given to a device on the
+  simulated trigger bus as its line. Such a device (one whose class takes
+  `bus`) must run in-process with a simulated source.
+- **Factories are `Construct(target, options)`**: a class name and plain
+  data, so a process child is sent nothing live (G6, G11).
+
+**What `Rig` does that a hand-built rig did not:**
+- `start` waits for every in-process device's `setup`, which the
+  Coordinator does not (it spawns them and moves on; a process launch
+  already waits). A device that fails raises `LaunchFailed` naming it, and
+  what had started is shut down (G9).
+- `close` stops a running acquisition through the Coordinator first, so it
+  ends through COOLDOWN (G8), then **stops the Coordinator before the
+  devices**. Found by G8: closed the other way, the Coordinator published
+  "participant … exited" and "timing source lost" Faults for a deliberate
+  shutdown. Then the process host, then in-process devices and the source,
+  since a parent's exit does not stop its children.
+
+**G13, on the instrument** (`tests/hardware/rig/`, gated on
+`STACSCOPE_RIG_CONFIG`, plus `STACSCOPE_CAMERA_TRIGGER` and
+`STACSCOPE_UEYE_TRIGGER`; `--extra nidaqmx --extra ueye`; its docstring has
+the commands). Run 2026-10-01 by Claude, with the user's permission, both
+cameras saving to `E:/stacscope_tests`:
+- Shortest trigger periods: Flash 1.296 ms at 256 rows in synchronous
+  readout (played every 1.30 ms, so 31 frames take 40.3 ms of 50), with the
+  camera's exposure set to 10 ms, which synchronous readout ignores; uEye
+  44.9 ms at 10 ms exposure and 40 MHz, 5 ms inside the cycle.
+- `SYNCREADOUT` and `POSITIVE` are the Flash's own labels.
+- 5 s (100 cycles) and 20 s (400 cycles, both monitors open): every frame,
+  3100 and 12400 Flash frames, 100 and 400 uEye pages, no Fault. Launch
+  ~5 s, start 0.2 s, close 0.3 s: both cameras ran as process children, and
+  their teardown is far inside `STOP_GRACE`. E: took both streams together
+  (~700 MB/s) for 20 s.
+- Before the closing pulse, the Flash's file was one frame short per run
+  (3099, 12399), which is how the N − 1 above was found.
+- One run, the first with `STACSCOPE_MONITOR=1`, failed after 208 s, never
+  reaching idle within the deadline; its output was lost. The monitors'
+  environment was being updated by both monitors at once in that run, and
+  neither window appeared. Not reproduced in two later runs with monitors.
+- A monitor left open holds its buffer's name, so the next `Rig.start`
+  fails with `FileExistsError` naming it (no hang). Close monitors between
+  runs.
+- The Flash was found at its defaults after the first three runs
+  (INTERNAL, EDGE, NEGATIVE, no subarray): the device's closed DCAM session
+  left nothing to restore.
+
 ## Subsequent milestones
 
 2. **Data flow** — generic ring buffer, producer/consumer, contract tests, synthetic producer. The contract suite runs on both CI legs, so POSIX unlink/persistence semantics and `track=False` are exercised rather than assumed.
@@ -3963,7 +4083,7 @@ policy, or state the Coordinator shouldn't hold.
     through `read_output_config` / `configure` on the control PC yet. That
     belongs to integration (milestone 7), and the user runs it. The rig
     config in `app/`, which names the tasks and may override
-    `BUFFER_SAMPLES`, is not built.
+    `BUFFER_SAMPLES`, is built (2026-10-01; "The rig config").
   - *`QueueMain` through the Coordinator.* Not routed; it goes straight to
     the source, like `SetWaveform`.
 

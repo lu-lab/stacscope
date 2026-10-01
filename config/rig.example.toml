@@ -1,0 +1,57 @@
+# The instrument's rig config: the timing source, and every device, where it
+# runs and with what settings. Copy this to config/rig.toml, which is not
+# tracked, and edit the copy for this machine. The format is described in
+# src/stacscope/app/config.py.
+#
+# Each device that records has its own save_directory. Two devices may give
+# the same one: each file's name ends with its device's name. The Flash's
+# stream needs E:; if E: cannot also take the uEye's, point the uEye at
+# another disk.
+
+[source]
+kind = "nidaqmx"
+ao_task = "SPIM_Analog_Task"      # saved in NI MAX
+do_task = "SPIM_Digital_Task"
+ready_timeout = 5.0
+stop_timeout = 10.0               # a stop plays out what is queued, then COOLDOWN
+
+[devices.flash]
+kind = "orca_flash"
+placement = "process"             # DCAM allows one camera session per process
+trigger = "HamamatsuCamTrigger"   # a line of do_task, by its name in NI MAX
+ready_timeout = 30.0              # an arm opens the DCIMG file, which reserves its size
+stop_timeout = 60.0
+buffer_name = "stacscope_flash"
+camera = 0                        # DCAM index
+n_slots = 403                     # 13 volumes of 31 frames: the ring holds whole volumes
+capacity_bytes = 422576128        # 403 frames of 2048 x 256 x 16 bits
+max_slots = 403
+save_directory = "E:/data"
+# Applied in order at launch. 256 rows at the centre of the sensor, each
+# DAQ pulse ending one exposure and starting the next frame's readout.
+settings = [
+    ["SENSOR MODE", "AREA"],
+    ["SUBARRAY VSIZE", 256],
+    ["SUBARRAY VPOS", 896],
+    ["SUBARRAY MODE", "ON"],
+    ["TRIGGER SOURCE", "EXTERNAL"],
+    ["TRIGGER ACTIVE", "SYNCREADOUT"],
+    ["TRIGGER POLARITY", "POSITIVE"],
+]
+
+[devices.ueye]
+kind = "ueye"
+placement = "process"
+trigger = "ThorCamTrigger"
+ready_timeout = 30.0
+stop_timeout = 60.0               # a stop waits for the TIFF recorder's backlog
+buffer_name = "stacscope_ueye"
+camera = 1                        # uEye camera ID
+n_slots = 40
+capacity_bytes = 104857600        # 40 full frames of RAW10 (16 bits a pixel)
+max_slots = 40
+pixel_format = "RAW10"
+pixel_clock = 40                  # MHz: 20 frames a second at full frame
+exposure_ms = 10.0
+trigger_edge = "rising"
+save_directory = "E:/data"

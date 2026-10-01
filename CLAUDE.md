@@ -19,6 +19,23 @@ have you guess.
 
 ## Current state
 
+**Where things stand (2026-10-01): Milestones 1–5 are done, and so is the
+rig config. Hardware testing is paused**, and development has moved off the
+instrument dev box to free the instrument. Expect no hardware on the
+machine you are on. The plan's "Subsequent milestones" lists what comes
+next: M6, the ZeroMQ gateway, then M7, integration on the instrument. Its
+"Open items" holds the work that has no milestone yet:
+- the session model, which the user expects as a recording session config
+  interface;
+- logging and error reporting;
+- checking a waveform against the cameras' timing floors;
+- the communication model;
+- ETL waveforms.
+
+The user has not ordered these. Ask before starting one.
+`notes/instrument-dev-box.md` has the machine, its wiring, and how to run
+each hardware suite on the day testing resumes.
+
 **Milestone 1's spec tests are complete** (actor runtime + Coordinator +
 simulated timing source, test-first), merged into `main`. Its acceptance tests are listed, in agreed order, in the
 architecture plan under "Milestone 1"; they are the spec. The list was revised
@@ -380,9 +397,9 @@ data flow. Also `setup` / `run` / `teardown` hooks, and "actor runtime", not
 
 ## Read these first, in this order
 
-The notes (1–3) live in **`notes/`, which is tracked**, so every dev machine's
+The notes (1–4) live in **`notes/`, which is tracked**, so every dev machine's
 sessions share them — keep them up to date and commit them with the work they
-describe. The source material (4–5) lives under **`reference/`, which is
+describe. The source material (5–6) lives under **`reference/`, which is
 gitignored and local-only** — it is deliberately not published to the remote. A
 fresh clone will not have it; ask the user for a copy if it is missing.
 
@@ -393,10 +410,13 @@ fresh clone will not have it; ask the user for a copy if it is missing.
 3. **`notes/claude-workflow-notes.md`** — process lessons, including
    the **hardware safety** section. Read that section before running anything on
    the instrument machine.
-4. **`reference/thesis/ch3.md`** — authoritative for design intent. A Markdown
+4. **`notes/instrument-dev-box.md`** — the dev box with the instrument's
+   hardware attached: its wiring, the safety rules as practised, and how to
+   run each hardware suite. Only needed when hardware is in reach.
+5. **`reference/thesis/ch3.md`** — authoritative for design intent. A Markdown
    conversion of the author's `chapter3.tex` (same folder); `ch3.pdf` is the
    typeset original, and section numbers cited throughout the plan refer to it.
-5. **`reference/legacy/`** — the original LabVIEW, Jupyter and µManager tree.
+6. **`reference/legacy/`** — the original LabVIEW, Jupyter and µManager tree.
    Read-only reference, never a build target. It includes
    `Labview/spimengine supporting files/` — a LabVIEW VI-documentation export
    of the whole 102-VI hierarchy under the entry point, **block diagrams
@@ -460,7 +480,9 @@ These come from the user directly and override default behaviour.
 ## Environment
 
 - This is a development box, not the control PC. Some dev boxes do have a
-  physical PCI-6733 installed (see Milestone 5 above). **uv** is installed, with
+  physical PCI-6733 installed (see Milestone 5 above). One, CHBE-EBB3233D1,
+  has the instrument's DAQ and both cameras (`notes/instrument-dev-box.md`).
+  A new dev machine's setup is at the end of that file. **uv** is installed, with
   both CPython 3.14 and 3.14 free-threaded; `.python-version` pins
   `3.14+freethreaded`. Run everything through `uv run` (e.g. `uv run pytest`).
 - A `VIRTUAL_ENV` pointing at miniconda makes uv print a mismatch warning. It is

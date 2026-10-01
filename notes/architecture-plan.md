@@ -553,6 +553,14 @@ through scan reset, so every cycle yields one more frame than usable slices. The
 producer emits `slices + discard` frames and neither knows nor cares that one is
 unusable; only a consumer assembling volumes discards it.
 
+*Noted 2026-10-01 (G13), for when this is designed; not decided.* G13's
+Flash timing was in synchronous readout (see "The rig config"). There, N
+pulses give N − 1 frames, so COOLDOWN plays one closing pulse. Each cycle's
+first frame is exposed from the previous cycle's last pulse, about 11 ms
+against 1.3 ms for the rest. That first frame is the one exposed through
+the gap, as the discarded frame above is. How the session model counts
+pulses, frames and discards for this mode is open.
+
 ### External control surface
 
 Protocol first, transport later. `core/protocol/` defines the message types as
@@ -4005,6 +4013,24 @@ cameras saving to `E:/stacscope_tests`:
   left nothing to restore.
 
 ## Subsequent milestones
+
+**Status, 2026-10-01: Milestones 1–5 are done, and so are the buffer
+recorder, the buffer monitor and the rig config (G13 on the instrument).
+Hardware testing is paused**, and development moves to a machine without
+the instrument, to free it. `notes/instrument-dev-box.md` records that
+machine and how to run each hardware suite when testing resumes.
+- Next on this list: 6, the gateway, then 7, integration, which the user
+  runs.
+- Also open, with no milestone yet (see "Open items" and "Session model"):
+  - the session model, which the user expects as a recording session
+    config interface; the rig config stays inside `app/` until then;
+  - logging and error reporting;
+  - checking a waveform against the cameras' timing floors;
+  - the communication model;
+  - ETL waveforms.
+- The user has not ordered these. The gateway carries the session's
+  messages, so whether the session model comes first is worth deciding
+  before either starts.
 
 2. **Data flow** — generic ring buffer, producer/consumer, contract tests, synthetic producer. The contract suite runs on both CI legs, so POSIX unlink/persistence semantics and `track=False` are exercised rather than assumed.
 3. **Device actors against simulation** — multi-device registry, per-device READY/timeout, shared root filename, software-timed participation. *(Done 2026-09-19; see "Milestone 3" above.)*

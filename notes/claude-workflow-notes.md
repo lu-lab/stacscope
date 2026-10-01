@@ -79,8 +79,18 @@ knows the system) before designing around it.
 
 ## Hardware safety — read this before running anything on the control machine
 
-This session never had hardware access, so this is a boundary to set going
-in, not one that was tested:
+*Updated 2026-10-01.* The rules below were written by the first session,
+which had no hardware access. They are still the default. Since then, the
+user has given Claude permission, one session at a time, to run the DAQ's
+digital lines and both cameras on the instrument dev box. The rules as
+practised, the machine's wiring, and how to run each hardware suite are in
+**`instrument-dev-box.md`**. In short:
+- permission is per session and never carries over;
+- analog output is only ever 0 V;
+- tests never load the instrument's `SPIM_*` tasks;
+- check that a physical `Dev1` cannot be reached before opening any NI task.
+
+The first session's rules:
 
 - **Don't let Claude execute anything that asserts real analog/digital
   output, triggers a camera acquisition, or otherwise actuates the
@@ -96,6 +106,13 @@ in, not one that was tested:
   needs to use it.
 
 ## Recommended sequence for the next session
+
+*Historical: this was the first session's advice, and each step was acted
+on. Two outcomes differ from the advice. The framework is a from-scratch
+actor runtime. Byte compatibility with the legacy napari viewer was dropped
+by decision; the plan's "Open items" explains why. For where the work stands
+now, read `CLAUDE.md`'s "Current state" and
+the plan's "Subsequent milestones" and "Open items".*
 
 1. Bring this folder's three files, plus the full thesis (not just Ch. 3 if
    other chapters are relevant — Ch. 2 covers the ETL/MPC optics this

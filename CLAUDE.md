@@ -84,8 +84,12 @@ section explains why.
   **A heartbeat is mandatory for a process child**, by decision: the link
   catches a process that dies, only a heartbeat catches one that is alive and
   no longer answering. Decisions and findings are in the plan's "Milestone 4".
-- **Milestone 5 is in progress** (real adapters). The ordered work list is in
-  the plan under "Milestone 5 → Next steps". **5a, the NI-DAQmx adapter,
+- **Milestone 5 is done** (real adapters, closed 2026-10-01): the PCI-6733,
+  the ORCA-Flash with DCIMG recording, and the uEye, each on its hardware.
+  **Next is a recorder that reads the buffer, for the uEye** (user,
+  2026-10-01): a proposal, with questions open, is in the plan under "The
+  buffer recorder", after 5f. What follows is the record of Milestone 5.
+  **5a, the NI-DAQmx adapter,
   is done**, through 5a-3 on the physical board. **5b's shape is decided**
   (2026-09-24): `ImageStreaming` is a device role whose primary
   responsibility is the buffer, and hardware sits under it behind a
@@ -192,7 +196,7 @@ section explains why.
     registered after it was built the first time it meets one (a child
     builds its codec before unpickling the device).
   - **5e is done**, on the camera (V4–V5).
-  - **5f, the uEye, is in progress (user, 2026-09-30).** The uEye on this
+  - **5f, the uEye, is done (2026-10-01).** The uEye on this
     machine is the instrument's own camera (a Thorlabs UI-3240CP-NIR, run
     on IDS's driver on purpose), and the adapter uses IDS's `pyueye`
     (BSD-3). The user decided: no IDS file in the repository (its
@@ -231,9 +235,8 @@ section explains why.
   and its fake. **No copyright line or licence on those files**: the
   licence forbids claiming copyright in a derivative work. Keep the layer
   thin (property IDs looked up by name at runtime). The plan's "The DCAM
-  SDK licence" has the policy the user decided, and the reasons. Start from
-  the status block at the top of the plan's "Milestone 5": it has the ordered
-  next steps. The plan's "5b — the image-streaming role and its capture port"
+  SDK licence" has the policy the user decided, and the reasons. The status
+  block at the top of the plan's "Milestone 5" has the milestone's history. The plan's "5b — the image-streaming role and its capture port"
   has the decisions, the tests, and a survey of the dev box camera.
   What 5a leaves open is in the plan's "Open items".
   `NiSignalOutput` is in `adapters/nidaqmx/`, tested against a fake `Task`

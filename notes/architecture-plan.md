@@ -949,9 +949,16 @@ its failure mode is a worse diagnostic rather than a wrong one.
 
 ## Milestone 5 — real adapters
 
-*In progress. Staged 2026-09-19 at the user's request.*
+*Done 2026-10-01. Staged 2026-09-19 at the user's request.*
 
-**Status, 2026-09-30 (read this first after a clear):**
+**Milestone 5 is closed (user, 2026-10-01).** Every stage, 5a–5f, is done
+on its hardware: the PCI-6733, the ORCA-Flash (with DCIMG recording) and
+the uEye. 5f-5, DAQ-triggered, needed no work of its own: Z2–Z3 (the port)
+and W2–W3 (the device) already ran on line 2's pulses. **Next: a recorder
+that reads the buffer, for the uEye** (user); see "The buffer recorder" after
+5f. The bullets below are the record of how the milestone got here.
+
+**Status, 2026-09-30:**
 - **5f, the uEye, is decided and started (user, 2026-09-30).** See "5f —
   the uEye camera", after 5b. Its questions were answered: pyueye, no IDS
   file in the repo, one message per setting, RAW pixel formats, line 2
@@ -967,8 +974,8 @@ its failure mode is a worse diagnostic rather than a wrong one.
   done**, over the fake and on the camera: `UEyeCamera`, its messages, and
   the shared `GetShortestTriggerPeriod` in core. **The Flash answers the
   same query** (O12 over the fake), from its own `TIMING MIN TRIGGER
-  INTERVAL`. **5f is done but for 5f-5** (DAQ-triggered, which Z2, Z3, W2
-  and W3 already covered). The user kept `GetCameraSettings` (2026-10-01).
+  INTERVAL`. **5f is done**: 5f-5, DAQ-triggered, was covered by Z2, Z3,
+  W2 and W3, and closed with the milestone (2026-10-01). The user kept `GetCameraSettings` (2026-10-01).
 - **The Flash suite again, on the camera (2026-10-01, run by Claude with
   the user's permission).** `tests/hardware/dcam` with the DAQ trigger on
   `Dev1/port0/line0`: 170 passed, 6 skipped, in 605 s. V6 (the new
@@ -1829,7 +1836,7 @@ and that is a design task, not an adapter task.
 | 5c | DCAM ctypes layer, offline, against a fake DLL | SDK headers, read locally (never committed) |
 | 5d | DCAM device actor, zero-copy into `ImageBuffer` | SDK |
 | 5e | DCIMG recorder (`dcamrec_*`), Windows-only | SDK |
-| 5f | uEye producer | pyueye (BSD-3); **in planning 2026-09-30**, see "5f — the uEye camera" |
+| 5f | uEye producer | pyueye (BSD-3); **done 2026-10-01**, see "5f — the uEye camera" |
 
 5a splits again along the same seam: **5a-1** the adapter against a fake
 `nidaqmx.Task` injected as a factory, needing nothing installed *(done
@@ -3111,7 +3118,7 @@ makes no set, attach or capture call.
 - **For the camera-as-timing-source case:** a master pulse (continuous,
   start or burst, 10 µs–10 s) and three programmable output triggers.
 
-### 5f — the uEye camera *(investigated 2026-09-30; a proposal, nothing decided)*
+### 5f — the uEye camera *(investigated and decided 2026-09-30; done 2026-10-01)*
 
 Written by Claude while the user was away, so that a new session can pick it
 up. Marks: *(user)* is what the user said; everything else is a finding or a
@@ -3342,6 +3349,8 @@ test gets its mutation check):
   `adapters/ueye/camera.py`, with its messages in `adapters/ueye/messages.py`.
   The role contract (F1–F6) over the fake, then on the camera.
 - **5f-5, DAQ-triggered**: frames on line 2's pulses, if it is wired.
+  *Done without work of its own: Z2–Z3 and W2–W3 ran on line 2 (closed
+  2026-10-01).*
 - *Packaging:* an optional extra, `ueye = ["pyueye>=4.96"]`.
   `tests/adapters/ueye/` and `tests/hardware/ueye/` stay out of the default
   run, as the other vendors' tests do. The hardware suite is gated on
@@ -3584,13 +3593,163 @@ messages in `adapters/ueye/messages.py`. No `Recording` (decision 6).
   - **W3:** pulses at 0.97 of the shortest period end the acquisition with a
     fatal `Fault` ("FramesLost ... after frame 1").
 
+### The buffer recorder *(proposed 2026-10-01; nothing decided)*
+
+**The user's brief (2026-10-01):** a lightweight recording actor that writes
+TIFF or raw data to disk. The streaming actor launches it as a child, and
+its life may simply match the acquisition's. It is for the uEye first.
+
+**The thesis asks for exactly this** (§3.4.3, "Camera actors"): a camera
+whose driver cannot write files "should launch a dedicated virtual device
+actor which will watch for incoming images in the camera buffer and write
+them to file", which "keeps buffered file writing separate from the thread
+or process monitoring acquisition". §3.3.2 makes overruns the consumer's to
+detect: "If this should stop acquisition ... that must be handled through
+actor messages". §3.3.3 makes each camera's files intermediate, to be
+consolidated later. Consolidation is not part of this work.
+
+**What already fits, from the code:**
+- `Recording`'s hooks are where the child is born and finished.
+  `open_recording(path)` runs after the device's camera arms and before
+  capture starts. `close_recording()` runs after capture stops and
+  `ImageStreaming` has published the final frames. So the recorder is
+  spawned before frame 0 exists, and it is told the final count once the
+  count is final. The order check counts a subclass of `Recording` as
+  `Recording`.
+- `Recording.disarm` already turns an error from `close_recording` into a
+  fatal `Fault` ("recording may be truncated"). `Recording.arm` already
+  undoes the arm when `open_recording` raises.
+- `Recording.target` names the file `<save_directory>/<stem>_<name><suffix>`,
+  as the Flash's is named.
+- The reader (`ImageBuffer.open`, `Cursor.next`, `Overrun`, `still_valid`)
+  is everything a recorder reads with.
+
+**Findings that shape it:**
+- **A parent's exit does not stop its children.** `ChildWatch.close`
+  stops watching, and the child runs on. A recorder whose camera died would
+  keep its file open and its reader mapped. The role must stop its recorder
+  in `close`, which runs on every exit, clean or not. Whether the runtime
+  should stop a dead parent's children in general is a separate question.
+- **`TimedDevice` ignores `ChildExited`** (unknown messages are ignored). A
+  recorder that dies mid-acquisition would go unheard, so the role handles
+  it.
+- **Stall tolerance is the ring.** A recorder can fall behind by `n_slots −
+  in_flight` frames before it is lapped: 18 frames, or 0.9 s at 20 fps,
+  with W2's 20 slots. The ring is the queue, so a slow disk calls for more
+  slots, not for a second queue in the recorder. RAW10 at full frame is 2.6
+  MB a frame, so 100 slots is 262 MB and 4.9 s.
+- **A frame copied from the ring is trusted only if `still_valid` holds
+  after the copy.** Otherwise the producer may have overwritten it
+  mid-write, and that is an overrun too.
+- **`FrameWriter` is taken** (the buffer's producer side), so the file
+  writer needs another name.
+- **tifffile is not installed.** It is pure Python (BSD-3) over numpy.
+  Whether it runs clean on 3.14t is to be checked on install.
+
+**Proposed shape:**
+- **`BufferRecorder`, an actor in core**, consuming one acquisition of one
+  buffer. It is given the buffer's name, the acquisition's id and first
+  frame, the path, and a file writer. Its `setup` opens the reader and the
+  file: a refusal fails its launch, and so the arm. The writing runs on a
+  thread of its own, because writes block and the actor's loop is the
+  device's. On 3.14t that thread runs in parallel with capture; on 3.14,
+  disk writes release the GIL. The thread reads every frame in order and
+  writes it with its metadata record. `FinishRecording(frames)` is the
+  device's word that the acquisition ended at that count. The recorder
+  writes up to it, closes the file, answers `RecordingFinished(frames)`, and
+  stops. An overrun, a torn frame, a changed acquisition id, or a writer
+  error ends it with that error, after closing the file so the frames
+  written stay readable.
+- **`BufferRecording(Recording)`, a role**, for an `ImageStreaming` device
+  with no recorder of its own: `UEyeCamera(ImageStreaming, BufferRecording,
+  TimedDevice)`, and `SimulatedCamera` for the tests.
+  - `open_recording` spawns the recorder as a child and waits for it to
+    start or die.
+  - `close_recording` asks `FinishRecording(published)` and raises if the
+    file is short.
+  - `ChildExited` with an error during an acquisition publishes a fatal
+    `Fault`, so the Coordinator aborts.
+  - `close` stops a recorder still running.
+  - **One recorder per acquisition** (the user's suggestion). It has no
+    state machine, a failure cannot carry into the next acquisition, and an
+    in-process spawn costs nothing measurable. It matches the thesis's
+    Record toggle, which is a `STOP` then a `START` with a stem.
+- **A file-writer port**, so formats are adapters with a contract suite and
+  a simulated (in-memory) writer for the tests. Each writer opens a path
+  (refusing one that exists), writes frames and their records, and closes,
+  returning the count.
+  - *TIFF*: tifffile. BigTIFF, one page per frame, uncompressed and
+    contiguous, so it writes at close to raw speed.
+  - *Raw*: either `.npy`, whose header gives shape and dtype and is
+    rewritten with the count at close, or a `.raw` beside a `.json`.
+  - Either way, frames are written packed, without row padding, and the
+    per-frame records (`sequence`, `hw_frame`, `device_ticks`,
+    `host_time_ns`) go beside the frames with the header's time source and
+    clock rate.
+- **Where it runs: in the device's process**, the actor on the device's
+  loop and the writes on its own thread. A process of its own would cost
+  an interpreter start on every arm, and the transport has no way for a
+  device to place a child yet. The reader works across processes, so
+  moving it later changes nothing in the buffer.
+
+**Tests, L (proposed), red/green:**
+- *The writer contract* (each format, and the simulated writer):
+  - L1: an existing path is refused.
+  - L2: frames read back equal and in order, packed from padded strides.
+  - L3: the records read back.
+  - L4: close returns the count, and a file with no frames is still
+    readable.
+- *The recorder* (over a `SimulatedFrameCapture` buffer and the simulated
+  writer):
+  - L5: it writes every frame from the acquisition's first to the count
+    it is told.
+  - L6: Finish waits for frames published but not yet written.
+  - L7: a lapped reader is an overrun: the recorder exits with an error,
+    and what it wrote is readable.
+  - L8: a frame overwritten during its copy is an overrun, not a frame.
+  - L9: a writer error, or a changed acquisition id, ends it with that
+    error.
+  - L10: it closes its reader holding no views (K9).
+- *The role* (on `SimulatedCamera`):
+  - L11: no stem, no recorder.
+  - L12: a recorder that cannot start refuses the arm and undoes it.
+  - L13: at the stop, the file holds exactly the frames published.
+  - L14: a recorder that dies mid-acquisition is a fatal `Fault`, and the
+    Coordinator aborts (end to end).
+  - L15: two acquisitions in a row give two files, from two recorders,
+    under the same child name.
+  - L16: a device stopped while recording stops its recorder, and the file
+    is closed.
+- *On the uEye* (W4): W2's 20 fps full-frame RAW10 from the DAQ, recorded
+  to `E:/stacscope_tests`. Read back, the file holds every frame published,
+  its `hw_frame`s are contiguous, and its last frames equal the buffer's.
+
+**Questions for the user:**
+1. Formats: TIFF and raw both at once, or one first? For raw, `.npy`, or
+   `.raw` with a `.json`?
+2. tifffile: a core dependency, or an optional extra like `nidaqmx`?
+3. Per-frame records: in a file beside the frames, or inside the TIFF
+   (per-page tags)?
+4. An overrun: fatal, and the recorder stops writing (proposed, as for a
+   lost frame)? Or does it keep writing and log the gap?
+5. Disk space: the Flash's rule (refuse the arm below the larger of 100
+   GiB and 10% of the disk, plus one frame), and a fatal `Fault` when a
+   recording reaches that headroom?
+6. `SetSaveDirectory` / `SaveDirectory` are the Flash's own messages. Move
+   them to core, so every recording camera answers the same pair, as
+   `GetShortestTriggerPeriod` was?
+7. In the device's process on a thread (proposed), or a process of its
+   own?
+8. Names: `BufferRecorder` (the actor), `BufferRecording` (the role), and
+   a name for the writer port.
+
 ## Subsequent milestones
 
 2. **Data flow** — generic ring buffer, producer/consumer, contract tests, synthetic producer. The contract suite runs on both CI legs, so POSIX unlink/persistence semantics and `track=False` are exercised rather than assumed.
 3. **Device actors against simulation** — multi-device registry, per-device READY/timeout, shared root filename, software-timed participation. *(Done 2026-09-19; see "Milestone 3" above.)*
 4. **Process transport** — run a simulated device out-of-process and prove fault isolation before the real driver arrives: kill the process, watch the heartbeat fire `ChildExited`, confirm the registry recovers and the engine survives. Doing this in simulation first means the DCAM adapter lands into a boundary already known to work. *(Done 2026-09-19; see "Milestone 4" above.)*
 5. **Real adapters** — `nidaqmx` against NI MAX simulated devices first, then DCAM.
-   *(In progress 2026-09-19, broken into stages 5a–5f; see "Milestone 5" above.)*
+   *(Done 2026-10-01, in stages 5a–5f; see "Milestone 5" above.)*
    **Our own thin ctypes layer over the official DCAM SDK**, not `pyDCAM` (0.0.1,
    no `requires_python`, no classifiers — too thin for the highest-risk adapter).
    We wrap `dcamapi.dll` for init/open, ROI and exposure, `dcambuf_attach` for the

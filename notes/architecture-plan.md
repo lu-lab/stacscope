@@ -967,9 +967,15 @@ its failure mode is a worse diagnostic rather than a wrong one.
   done**, over the fake and on the camera: `UEyeCamera`, its messages, and
   the shared `GetShortestTriggerPeriod` in core. **The Flash answers the
   same query** (O12 over the fake), from its own `TIMING MIN TRIGGER
-  INTERVAL`. V6 checks it on the Flash, and is the user's to run. **5f is
-  done but for 5f-5** (DAQ-triggered, which Z2, Z3, W2 and W3 already
-  covered) and the user's confirmation of `GetCameraSettings`.
+  INTERVAL`. **5f is done but for 5f-5** (DAQ-triggered, which Z2, Z3, W2
+  and W3 already covered). The user kept `GetCameraSettings` (2026-10-01).
+- **The Flash suite again, on the camera (2026-10-01, run by Claude with
+  the user's permission).** `tests/hardware/dcam` with the DAQ trigger on
+  `Dev1/port0/line0`: 170 passed, 6 skipped, in 605 s. V6 (the new
+  query): 11.079 ms at 1 ms exposure, 20.083 ms at 10 ms, each DCAM's
+  `TIMING MIN TRIGGER INTERVAL`. K1–K9 pass with the sentinels laid after
+  attach; M1 is still depth 1 in all nine conditions; M2 4008 frames in
+  5 s at 801.7 fps, none lost; V4–V5 as before.
 - **Unknown messages are ignored, told or asked (user, 2026-09-30).** See
   "Actor core". `TimedDevice`, `TimingSource` and the Coordinator each
   published a Fault for one. Four tests went red first, one per actor, and
@@ -3548,7 +3554,7 @@ messages in `adapters/ueye/messages.py`. No `Recording` (decision 6).
   `PixelFormat`, `SetAOI` → `AOI`, `SetPixelClock` → `PixelClock`,
   `SetFrameRate` → `FrameRate`, `SetExposure` (ms) → `Exposure`,
   `SetTrigger(edge, delay_us)` → `Trigger`, each with what the camera took,
-  or `Rejected`. **Added by Claude, for the user to confirm:**
+  or `Rejected`. **Added by Claude, and kept (user, 2026-10-01):**
   `GetCameraSettings` → `CameraSettings`, which reads every setting and the
   pixel clocks on offer. Without it a client cannot read a setting without
   changing it, and a new pixel clock moves the exposure.

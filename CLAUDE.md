@@ -216,15 +216,13 @@ section explains why.
     it, and sentinels go down after attach. **5f-4 is done**:
     `UEyeCamera(ImageStreaming, TimedDevice)` (`adapters/ueye/camera.py`),
     one message per setting (`adapters/ueye/messages.py`), plus
-    `GetCameraSettings`, which Claude added and the user has yet to
-    confirm. The shared query `GetShortestTriggerPeriod` →
+    `GetCameraSettings`, which Claude added and the user kept. The shared query `GetShortestTriggerPeriod` →
     `ShortestTriggerPeriod(seconds)` is in `core/protocol/messages.py`. On
     the camera, `tests/hardware/ueye/test_device.py` (W1–W3) shows 20 fps
     full-frame RAW10 through the device, and too-fast triggers ending an
     acquisition with a fatal Fault. **`OrcaFlash` answers the same query**
-    from DCAM's `TIMING MIN TRIGGER INTERVAL` (O12 over the fake). V6 in
-    `tests/hardware/dcam/test_device.py` checks it on the Flash, and the
-    user runs it.
+    from DCAM's `TIMING MIN TRIGGER INTERVAL` (O12 over the fake, V6 on
+    the Flash). The whole Flash suite passed again on 2026-10-01.
 
   Time stamps are the driver's (`TimeSource.DRIVER`), by decision. **The DCAM
   SDK licence forbids distributing any of the SDK**: never copy its headers,

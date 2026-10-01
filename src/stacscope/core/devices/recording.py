@@ -17,11 +17,17 @@ streams images lists it after ImageStreaming:
 so the file opens after the frame memory is attached and before capture
 starts, and closes after capture stops and before the memory is given back.
 The package's own description (stacscope.core.devices) explains the rule.
+
+Where the files go is the device's save directory, from its configuration or
+from a SetSaveDirectory message. An acquisition with a stem is refused while
+no directory is set.
 """
 
 from pathlib import Path
 
 from stacscope.core.actors import Fault
+from stacscope.core.devices.device import DeviceState
+from stacscope.core.protocol import SaveDirectory, SetSaveDirectory
 
 
 class Recording:
@@ -46,27 +52,45 @@ class Recording:
     when the class is defined. See ``stacscope.core.devices`` for all the
     roles together.
 
-    It owns exactly one rule — an empty stem means do not record — so that no
-    adapter has to remember it. A file that will not open fails the arm, after
+    It owns the rules every recording device shares, so that no adapter has
+    to remember them: an empty stem means do not record, and a stem with no
+    ``save_directory`` set refuses the arm. It answers ``SetSaveDirectory``
+    with ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
+    directory that does not exist; a device checks one from its
+    configuration with ``check_save_directory`` at launch. A file that will not open fails the arm, after
     disarming everything that armed after it; if that disarm fails too, the
     device dies once the arm has been answered. A file that will not close is
     reported as a fatal ``Fault``, never raised, and death closes the file
     too, because an unclosed file may be an unreadable one.
     """
 
-    save_directory: Path = Path()
+    save_directory: Path | None = None
     file_suffix: str = ""
 
     _recording: bool = False
+
+    def check_save_directory(self) -> None:
+        """Raises ``NotADirectoryError`` if a ``save_directory`` is set and is
+        not an existing directory. Call it in ``setup``, before opening any
+        hardware, so a typo in config fails the launch."""
+        if self.save_directory is not None and not Path(self.save_directory).is_dir():
+            raise NotADirectoryError(f"save_directory {self.save_directory} is not an existing directory")
 
     def target(self, root_filename: str) -> Path | None:
         """This acquisition's file for this device, or ``None`` for an
         acquisition that is not being saved. Override to name it differently —
         returning ``None`` still means record nothing. Called before anything
-        arms; raising refuses the arm."""
+        arms; raising refuses the arm, as it does for a stem with no save
+        directory set."""
         if not root_filename:
             return None
-        return self.save_directory / f"{root_filename}_{self.name}{self.file_suffix}"
+        if self.save_directory is None:
+            # Not the working directory: that is wherever the process started.
+            raise RuntimeError(
+                "no save directory is set: give save_directory in the device's "
+                "configuration, or send SetSaveDirectory"
+            )
+        return Path(self.save_directory) / f"{root_filename}_{self.name}{self.file_suffix}"
 
     @property
     def name(self) -> str:
@@ -81,6 +105,25 @@ class Recording:
     async def close_recording(self) -> None:
         """Finish the file. Called once per recording that was opened, before
         anything listed after ``Recording`` disarms."""
+
+    async def handle(self, msg: object) -> None:
+        match msg:
+            case SetSaveDirectory(path):
+                self._set_save_directory(path)
+            case _:
+                await super().handle(msg)
+
+    def _set_save_directory(self, path: str) -> None:
+        if self.state is DeviceState.ARMED:
+            # The file is already open where it was.
+            self._reject("the save directory cannot change during an acquisition")
+        elif not Path(path).is_dir():
+            # Not created: a mistyped path would put acquisitions where nobody
+            # looks.
+            self._reject(f"{path} is not an existing directory")
+        else:
+            self.save_directory = Path(path)
+            self.reply(SaveDirectory(path))
 
     async def arm(self, root_filename: str, cycles: int) -> None:
         # Everything after this class in the MRO arms first, so the file opens

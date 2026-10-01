@@ -233,3 +233,24 @@ class ShortestTriggerPeriod:
     It changes with the settings, so ask again after changing any."""
 
     seconds: float
+
+
+# --- client → a recording device, directly --------------------------------------
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class SetSaveDirectory:
+    """Record later acquisitions into the existing directory ``path``.
+    Replied ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
+    directory that does not exist."""
+
+    path: str
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class SaveDirectory:
+    """The directory a device records acquisitions into."""
+
+    path: str

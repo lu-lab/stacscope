@@ -6,8 +6,8 @@ values ("PROGRESSIVE"). Every request is answered with a PropertyValue
 holding what the camera applied, which may be rounded from what was asked,
 or with Rejected, carrying the camera's reason.
 
-SetSaveDirectory chooses where recorded acquisitions go, and is answered with
-SaveDirectory.
+Where recorded acquisitions go is set with SetSaveDirectory, which every
+recording device answers (stacscope.core.protocol).
 """
 # For end use and not for commercial purposes.
 
@@ -56,21 +56,3 @@ class PropertyValue:
     name: str
     value: float
     label: str | None
-
-
-@message
-@dataclass(frozen=True, slots=True)
-class SetSaveDirectory:
-    """Record later acquisitions into the existing directory ``path``.
-    Replied ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
-    directory that does not exist."""
-
-    path: str
-
-
-@message
-@dataclass(frozen=True, slots=True)
-class SaveDirectory:
-    """The directory acquisitions are recorded into."""
-
-    path: str

@@ -36,10 +36,8 @@ from stacscope.adapters.dcam import (  # noqa: E402
     GetProperty,
     OrcaFlash,
     PropertyValue,
-    SaveDirectory,
     SetProperty,
     SetPropertyLabel,
-    SetSaveDirectory,
     _api,
 )
 from stacscope.adapters.dcam import camera as camera_module  # noqa: E402
@@ -56,6 +54,8 @@ from stacscope.core.actors import (  # noqa: E402
 from stacscope.core.buffer import ImageBuffer  # noqa: E402
 from stacscope.core.protocol import (  # noqa: E402
     MESSAGES,
+    SaveDirectory,
+    SetSaveDirectory,
     DeviceReady,
     DeviceStopped,
     GetShortestTriggerPeriod,

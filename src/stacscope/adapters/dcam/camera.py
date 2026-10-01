@@ -49,10 +49,8 @@ from stacscope.adapters.dcam.capture import DcamError, DcamFrameCapture
 from stacscope.adapters.dcam.messages import (
     GetProperty,
     PropertyValue,
-    SaveDirectory,
     SetProperty,
     SetPropertyLabel,
-    SetSaveDirectory,
 )
 from stacscope.core.devices import DeviceState, ImageStreaming, Recording, TimedDevice
 from stacscope.core.protocol import GetShortestTriggerPeriod, ShortestTriggerPeriod
@@ -148,8 +146,7 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     async def setup(self) -> None:
         # Checked before DCAM opens: a mistyped directory would otherwise be
         # found only by the first recorded acquisition.
-        if self.save_directory is not None and not self.save_directory.is_dir():
-            raise NotADirectoryError(f"save_directory {self.save_directory} is not an existing directory")
+        self.check_save_directory()
         # DCAM takes seconds to start, and the runtime answers heartbeats on
         # this loop: opened here, a camera in its own process reads as hung.
         opening = asyncio.ensure_future(asyncio.to_thread(self._open))
@@ -182,8 +179,6 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
                 self._answer(name)
             case SetProperty(name, value) | SetPropertyLabel(name, value):
                 self._change(name, value)
-            case SetSaveDirectory(path):
-                self._set_save_directory(path)
             case GetShortestTriggerPeriod():
                 self._shortest_trigger_period()
             case _:
@@ -243,26 +238,7 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
         # laid out for the old one, under a header that describes the old.
         self._reject(reason, fatal=True)
 
-    def _set_save_directory(self, path: str) -> None:
-        if self.state is DeviceState.ARMED:
-            self._reject("the save directory cannot change during an acquisition")
-        elif not Path(path).is_dir():
-            # Not created: a mistyped path would put acquisitions where
-            # nobody looks.
-            self._reject(f"{path} is not an existing directory")
-        else:
-            self.save_directory = Path(path)
-            self.reply(SaveDirectory(path))
-
     # --- recording: the driver's own DCIMG writer ---------------------------------------
-
-    def target(self, root_filename: str) -> Path | None:
-        if root_filename and self.save_directory is None:
-            raise RuntimeError(
-                "no save directory is set: give save_directory in the device's "
-                "configuration, or send SetSaveDirectory"
-            )
-        return super().target(root_filename)
 
     async def open_recording(self, path: Path) -> None:
         if path.exists():

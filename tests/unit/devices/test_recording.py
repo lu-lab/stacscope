@@ -11,10 +11,19 @@ acquisition that is not being saved runs.
 
 from pathlib import Path
 
+import pytest
+
 from stacscope.adapters.simulated import VirtualClock
 from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
 from stacscope.core.devices import Recording, TimedDevice
-from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
+from stacscope.core.protocol import (
+    DeviceReady,
+    DeviceStopped,
+    SaveDirectory,
+    SetSaveDirectory,
+    StartDevice,
+    StopDevice,
+)
 
 SAVE_DIR = Path("D:/data")
 
@@ -256,3 +265,72 @@ async def test_a_file_that_cannot_be_named_fails_the_arm_before_anything_arms():
     assert "no save directory" in fault.reason
     assert await rig.ask(StopDevice()) == DeviceStopped()
     assert rig.device.calls == []
+
+
+# --- where the files go: a core message, answered by the role (user, 2026-10-01) -----------
+
+
+async def test_the_save_directory_is_set_by_message(tmp_path):
+    """Every recording device answers the same message, so a client moves an
+    experiment's files without knowing which camera writes which format."""
+    rig = Rig()
+
+    assert await rig.ask(SetSaveDirectory(str(tmp_path))) == SaveDirectory(str(tmp_path))
+    await rig.ask(StartDevice("run-01", 10))
+
+    assert rig.device.opened == [tmp_path / "run-01_camera.dcimg"]
+
+
+async def test_a_save_directory_that_does_not_exist_is_refused(tmp_path):
+    """Refused rather than created: a mistyped path would otherwise put an
+    acquisition somewhere nobody looks."""
+    rig = Rig()
+
+    answer = await rig.ask(SetSaveDirectory(str(tmp_path / "typo")))
+
+    assert isinstance(answer, Rejected) and "typo" in answer.reason
+    assert not (tmp_path / "typo").exists()
+    await rig.ask(StartDevice("run-01", 10))
+    assert rig.device.opened == [SAVE_DIR / "run-01_camera.dcimg"], "the old one still holds"
+
+
+async def test_the_save_directory_does_not_change_during_an_acquisition(tmp_path):
+    """The file is already open where it was; an answer saying otherwise
+    would send the user looking in the wrong place."""
+    rig = Rig()
+    await rig.ask(StartDevice("run-01", 10))
+
+    assert isinstance(await rig.ask(SetSaveDirectory(str(tmp_path))), Rejected)
+
+    await rig.ask(StopDevice())
+    assert await rig.ask(SetSaveDirectory(str(tmp_path))) == SaveDirectory(str(tmp_path))
+
+
+class Undirected(FakeRecorder):
+    save_directory = None
+
+
+async def test_a_stem_with_no_save_directory_refuses_the_acquisition_before_anything_arms():
+    """No directory is no place to record, not the working directory, which
+    is wherever the process happened to start."""
+    rig = Rig(cls=Undirected)
+
+    answer = await rig.ask(StartDevice("run-01", 10))
+
+    assert isinstance(answer, Rejected) and "save directory" in answer.reason
+    assert rig.device.calls == []
+    assert await rig.ask(StartDevice("", 10)) == DeviceReady(), "running unsaved still works"
+
+
+def test_a_configured_save_directory_that_does_not_exist_is_caught(tmp_path):
+    """Checked by the device at launch, before its hardware opens: otherwise
+    a typo in config is found only by the first acquisition that records."""
+    device = Undirected()
+    device.check_save_directory()  # none set is fine: nothing records until one is
+
+    device.save_directory = tmp_path
+    device.check_save_directory()
+
+    device.save_directory = tmp_path / "typo"
+    with pytest.raises(NotADirectoryError, match="typo"):
+        device.check_save_directory()

@@ -19,6 +19,11 @@ the camera's defaults (Y8).
   W3  Pulses faster than the shortest trigger period: the camera ignores
       some, and the device ends the acquisition with a fatal Fault instead
       of publishing a stack with planes missing.
+  W4  W2, recorded: the TIFF file holds every frame published, with the
+      camera's clock on each page, and its last frames equal the buffer's.
+      Written in a folder of its own under STACSCOPE_RECORD_DIR
+      (E:/stacscope_tests by default, the dev box's data drive), deleted
+      after the test.
 
 Each adds what it saw to the "uEye findings" section at the end of the run;
 paste that section back.
@@ -35,6 +40,8 @@ paste that section back.
 import asyncio
 import contextlib
 import os
+import pathlib
+import shutil
 import time
 import uuid
 
@@ -68,6 +75,9 @@ from stacscope.core.protocol import (
 pytestmark = pytest.mark.timeout(300)
 
 SOAK = float(os.environ.get("STACSCOPE_SOAK_SECONDS", "10"))
+
+RECORD_DIR = pathlib.Path(os.environ.get("STACSCOPE_RECORD_DIR", "E:/stacscope_tests"))
+"""Where W4 writes its file: on the dev box, the data drive (user)."""
 
 N_SLOTS = 20
 CAPACITY = N_SLOTS * 1280 * 1024 * 2  # twenty full frames of RAW10
@@ -227,3 +237,74 @@ async def test_w3_triggers_too_fast_end_the_acquisition_with_a_fatal_fault(camer
     assert stopped == DeviceStopped()
     assert faults and faults[0].fatal
     assert "FramesLost" in faults[0].reason
+
+
+@pytest.fixture
+def record_dir():
+    """A folder of this test's own, deleted afterwards with what is in it."""
+    if not RECORD_DIR.parent.exists():
+        pytest.skip(f"{RECORD_DIR.parent} does not exist; set STACSCOPE_RECORD_DIR")
+    path = RECORD_DIR / uuid.uuid4().hex[:12]
+    path.mkdir(parents=True)
+    yield path
+    shutil.rmtree(path)
+    with contextlib.suppress(OSError):
+        RECORD_DIR.rmdir()  # only if nothing else is in it
+
+
+async def test_w4_raw10_full_frame_at_20_fps_recorded_to_tiff(camera, trigger_line, record_dir, report):
+    """The reason the recorder exists (user, 2026-10-01): the uEye has no
+    recorder of its own, so the device records its buffer. Every frame
+    published must be in the file, in order, stamped with the camera's
+    clock, or the stop reports it."""
+    import tifffile
+    from daq_pulses import daq_pulses
+
+    from stacscope.core.recording import DEVICE_TICKS_TAG
+
+    rate = 20.0
+    n = int(rate * SOAK)
+    async with ueye_camera(
+        camera, report, pixel_format="RAW10", pixel_clock=40, exposure_ms=10.0, save_directory=record_dir
+    ) as (device, ref, listener):
+        period = (await _ask(ref, GetShortestTriggerPeriod())).seconds
+        assert period <= 0.9 / rate, f"the shortest trigger period is {period * 1e3:.1f} ms"
+        assert await _ask(ref, StartDevice("w4", -1)) == DeviceReady()
+        reader = ImageBuffer.open(device.buffer_name)
+        try:
+            with daq_pulses(trigger_line, 1 / rate, n) as fire:
+                await fire()
+                deadline = time.monotonic() + n / rate + 3.0
+                while reader.published() - reader.acquisition_start < n and time.monotonic() < deadline:
+                    await asyncio.sleep(0.05)
+                await asyncio.sleep(GRACE)
+            stopping = time.monotonic()
+            assert await _ask(ref, StopDevice()) == DeviceStopped()
+            stop_s = time.monotonic() - stopping
+            published = reader.published() - reader.acquisition_start
+            last = reader.acquisition_start + published
+            first = max(reader.acquisition_start, last - N_SLOTS + reader._layout.in_flight)
+            slots = [reader.slot_of(i) for i in range(first, last)]
+            buffer_frames = np.stack([reader.frames[s] for s in slots])  # copies
+            buffer_ticks = [int(t) for t in reader.meta["device_ticks"][slots]]
+            kept = last - first
+        finally:
+            reader.close()
+    path = record_dir / "w4_ueye.tif"
+    size = path.stat().st_size
+    with tifffile.TiffFile(path) as tf:
+        pages = len(tf.pages)
+        ticks = [page.tags[DEVICE_TICKS_TAG].value for page in tf.pages]
+        file_frames = np.stack([page.asarray() for page in tf.pages[pages - kept :]])
+    intervals = np.diff(np.array(ticks, dtype=np.int64)) * 1e-7
+    report(
+        f"{n} pulses, {published} published, {pages} pages in {size / 1e6:.0f} MB; stop {stop_s:.2f} s; "
+        f"page intervals median {np.median(intervals) * 1e3:.3f} ms, "
+        f"min {intervals.min() * 1e3:.3f}, max {intervals.max() * 1e3:.3f}"
+    )
+    assert published == n
+    assert pages == published
+    assert _faults(listener) == []
+    np.testing.assert_array_equal(file_frames, buffer_frames)
+    assert ticks[pages - kept :] == buffer_ticks
+    assert np.all(intervals > 0)

@@ -1,7 +1,7 @@
-"""E1-E8: the UEyeCamera device over the fake pyueye, beyond the
+"""E1-E7: the UEyeCamera device over the fake pyueye, beyond the
 ImageStreaming role contract (test_role_contract.py): its settings messages,
-the shortest trigger period, the settings its config applies at launch, and
-opening the camera without stalling the actor runtime.
+the shortest trigger period, the settings its config applies at launch,
+opening the camera without stalling the actor runtime, and recording.
 
 The capture takes frames in a thread, so this runs on a real clock, and
 every step allows ``GRACE`` for a thread to hand its result back.
@@ -405,3 +405,53 @@ def test_e6_the_messages_cross_a_process_boundary(msg):
     codec = Codec(MESSAGES)
 
     assert codec.decode(codec.encode(msg)) == msg
+
+
+# --- E7: recording, through a TIFF recorder reading the buffer (user, 2026-10-01) -----------
+
+
+async def test_e7_an_acquisition_with_a_stem_is_recorded_to_tiff(launch, fake, tmp_path):
+    """The uEye has no recorder of its own, so the device records its own
+    buffer: every frame published, in order, with the camera's clock on
+    each page. The directory is set by the core message, as for the Flash."""
+    import numpy as np
+    import tifffile
+
+    from stacscope.core.protocol import SaveDirectory, SetSaveDirectory
+    from stacscope.core.recording import DEVICE_TICKS_TAG
+
+    device, ref, listener = await launch(fake)
+    assert await _ask(ref, SetSaveDirectory(str(tmp_path))) == SaveDirectory(str(tmp_path))
+    assert await _ask(ref, StartDevice("run-01", -1)) == DeviceReady()
+    fake.pulse(4)
+    await asyncio.sleep(GRACE)
+    assert await _ask(ref, StopDevice()) == DeviceStopped()
+
+    path = tmp_path / "run-01_camera0.tif"
+    with tifffile.TiffFile(path) as tf:
+        pages = np.stack([page.asarray() for page in tf.pages])
+        ticks = [page.tags[DEVICE_TICKS_TAG].value for page in tf.pages]
+        description = tf.pages[0].description
+    reader = ImageBuffer.open(device.buffer_name)
+    try:
+        start = reader.acquisition_start
+        assert reader.published() - start == 4
+        slots = [reader.slot_of(start + i) for i in range(4)]
+        np.testing.assert_array_equal(pages, np.stack([reader.frames[s] for s in slots]))
+        assert ticks == [int(t) for t in reader.meta["device_ticks"][slots]]
+    finally:
+        reader.close()
+    assert '"device_time_source": "CAMERA"' in description
+    assert _faults(listener) == []
+
+
+async def test_e7_a_save_directory_from_config_that_does_not_exist_fails_before_the_camera_opens(
+    launch, fake, tmp_path
+):
+    """A typo in config is found at launch, not by the first acquisition
+    that records, and without holding the camera open meanwhile."""
+    device, _, _ = await launch(fake, save_directory=tmp_path / "typo")
+
+    assert not device.started.is_set()
+    assert "typo" in str(device.exit_error)
+    assert not fake.is_open

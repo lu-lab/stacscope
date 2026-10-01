@@ -19,6 +19,12 @@ ignored by the camera, and the acquisition stops with a lost frame. Ask
 GetShortestTriggerPeriod for the shortest period the current settings
 allow, and keep the trigger slower than that.
 
+An acquisition with a file name is recorded to a TIFF file,
+<save directory>/<name>_<device>.tif, by a recorder reading the buffer. The
+directory comes from the configuration or from SetSaveDirectory. The disk
+must keep up with the frame rate: a recorder that falls a buffer's length
+behind stops the acquisition. benchmarks/tiff_write.py measures a disk.
+
 The IDS Software Suite must be installed, with the "ueye" extra. Give the
 camera a process of its own. Opening it can take a few seconds when
 another program has just let it go.
@@ -26,6 +32,8 @@ another program has just let it go.
 
 import asyncio
 import contextlib
+import os
+from pathlib import Path
 
 from stacscope.adapters.ueye.capture import UEyeFrameCapture
 from stacscope.adapters.ueye.messages import (
@@ -44,7 +52,7 @@ from stacscope.adapters.ueye.messages import (
     SetTrigger,
     Trigger,
 )
-from stacscope.core.devices import ImageStreaming, TimedDevice
+from stacscope.core.devices import BufferRecording, ImageStreaming, TimedDevice
 from stacscope.core.protocol import GetShortestTriggerPeriod, ShortestTriggerPeriod
 
 IN_FLIGHT = 2
@@ -53,7 +61,7 @@ measured 1 on the instrument's camera, from software triggers and from the
 DAQ, and declared with a margin of 1."""
 
 
-class UEyeCamera(ImageStreaming, TimedDevice):
+class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
     """uEye camera ``camera`` (its camera ID; 0 for the first one free),
     streaming into the image buffer ``buffer_name``.
 
@@ -66,14 +74,18 @@ class UEyeCamera(ImageStreaming, TimedDevice):
     "falling") and ``trigger_delay_us``. Any left out keep the camera's
     defaults. One the camera refuses fails the launch. ``in_flight``
     overrides the declared in-flight depth, and ``open_timeout`` how long
-    to wait for a camera another process holds. ``ueye`` replaces pyueye,
-    for tests.
+    to wait for a camera another process holds. ``save_directory`` is where
+    recordings go, an existing directory, checked at launch; without one,
+    only acquisitions that are not recorded can start. ``ueye`` replaces
+    pyueye, for tests.
 
     Answers each ``Set...`` message with the setting as the camera took it,
     ``GetCameraSettings`` with ``CameraSettings``, and
     ``GetShortestTriggerPeriod`` with ``ShortestTriggerPeriod``; or with
     ``Rejected``, whose reason says why. ``SetPixelFormat`` and ``SetAOI``
-    are refused during an acquisition.
+    are refused during an acquisition. ``SetSaveDirectory`` is answered
+    with ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
+    directory that does not exist.
     """
 
     def __init__(
@@ -93,6 +105,7 @@ class UEyeCamera(ImageStreaming, TimedDevice):
         trigger_delay_us: int = 0,
         in_flight: int = IN_FLIGHT,
         open_timeout: float | None = None,
+        save_directory: str | os.PathLike | None = None,
         ueye=None,
     ) -> None:
         super().__init__()
@@ -110,9 +123,11 @@ class UEyeCamera(ImageStreaming, TimedDevice):
         self.trigger_delay_us = trigger_delay_us
         self.in_flight = in_flight
         self.open_timeout = open_timeout
+        self.save_directory = None if save_directory is None else Path(save_directory)
         self._ueye = ueye
 
     async def setup(self) -> None:
+        self.check_save_directory()
         # Opened in a thread: the runtime answers heartbeats on this loop,
         # and an open waits out a camera a crashed process held (Y7).
         opening = asyncio.ensure_future(asyncio.to_thread(self._open))

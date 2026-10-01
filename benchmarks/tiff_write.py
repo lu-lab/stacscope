@@ -115,7 +115,7 @@ def main(argv=None) -> int:
     parser.add_argument("directory", type=Path, help="an existing directory on the disk to measure")
     parser.add_argument("--shape", type=int, nargs=2, default=(1024, 1280), metavar=("ROWS", "COLUMNS"))
     parser.add_argument("--seconds", type=float, default=30.0, help="how long to record (default 30)")
-    parser.add_argument("--rate", type=float, help="the camera's frame rate, to size its buffer for")
+    parser.add_argument("--rate", type=float, metavar="FPS", help="the camera's frame rate, to size its buffer for")
     parser.add_argument("--keep", action="store_true", help="keep the file")
     args = parser.parse_args(argv)
     if not args.directory.is_dir():

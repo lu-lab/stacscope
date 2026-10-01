@@ -254,3 +254,24 @@ class SaveDirectory:
     """The directory a device records acquisitions into."""
 
     path: str
+
+
+# --- a streaming device → the recorder it started -------------------------------
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class FinishRecording:
+    """The acquisition being recorded ended at ``frames`` frames: write up to
+    that many, close the file, and stop. Replied ``RecordingFinished``; a
+    recorder that cannot ends with an error instead."""
+
+    frames: int
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class RecordingFinished:
+    """The recording is closed, holding ``frames`` frames."""
+
+    frames: int

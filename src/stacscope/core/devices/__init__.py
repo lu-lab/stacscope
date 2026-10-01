@@ -6,6 +6,10 @@ A device is a TimedDevice with roles mixed in. There are three:
     ImageStreaming  fills a shared-memory image buffer, from a frame capture
     Recording       writes the device's own file for each acquisition
 
+BufferRecording is a kind of Recording, for a camera whose driver cannot
+write files: for each acquisition it starts a recorder that reads the
+camera's image buffer and writes a TIFF file. It goes where Recording goes.
+
 The device's own class, the adapter, is a TimedDevice subclass that says what
 arming and disarming its hardware means.
 
@@ -70,12 +74,14 @@ reported as a fatal fault and does not stop the disarm. Any other failure
 ends the device, which is how a stop that was not achieved is reported.
 """
 
+from stacscope.core.devices.buffer_recording import BufferRecording
 from stacscope.core.devices.device import DeviceState, NotReady, TimedDevice
 from stacscope.core.devices.image_streaming import ImageStreaming
 from stacscope.core.devices.recording import Recording
 from stacscope.core.devices.software_timed import SoftwareTimed
 
 __all__ = [
+    "BufferRecording",
     "DeviceState",
     "ImageStreaming",
     "NotReady",

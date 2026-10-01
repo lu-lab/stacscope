@@ -8,6 +8,7 @@ dependencies = [
     "msgpack>=1.2.2",
     "numpy>=2.5.3",
     "pydantic>=2.13.5",
+    "tifffile>=2026.9.20",
 ]
 
 [project.optional-dependencies]

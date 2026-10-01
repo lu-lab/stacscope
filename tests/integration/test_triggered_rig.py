@@ -9,6 +9,11 @@ being part of either of the other two.
 
 The software-timed pressure box is in the control flow and not the timing flow:
 it hears the acquisition's phases and runs its own routine on the clock.
+
+The acquisitions are not saved (an empty stem). Since 2026-10-01 the simulated
+camera records through a TIFF recorder writing on a real thread, and the
+Coordinator's stop timeout, in virtual time, expires before the thread can
+finish. Recording is tested where real time is used, L11-L17.
 """
 
 import asyncio
@@ -118,7 +123,7 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
     system = System()
     await system.load_waveforms()
 
-    starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
+    starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0.5)
     assert await starting == AcquisitionStarted()
 
@@ -154,7 +159,7 @@ async def test_d12_a_clean_acquisition_raises_no_fault():
     system = System()
     await system.load_waveforms()
 
-    starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
+    starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0.5)
     assert await starting == AcquisitionStarted()
     await system.clock.advance(10.0)
@@ -167,7 +172,7 @@ async def test_d12_nothing_is_produced_before_go_or_after_the_stop():
     system = System()
     await system.load_waveforms()
 
-    starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
+    starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0)
     assert system.camera.writer.published() == 0, "armed, but the source has not gone"
 
@@ -184,7 +189,7 @@ async def test_d12_the_software_timed_device_runs_against_the_same_acquisition()
     system = System()
     await system.load_waveforms()
 
-    starting = system.request(system.ref, StartAcquisition(CYCLES, "run-01"))
+    starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0.5)
     assert await starting == AcquisitionStarted()
     await system.clock.advance(10.0)
@@ -206,7 +211,7 @@ async def test_d12_a_second_acquisition_counts_its_own_triggers():
     await system.load_waveforms()
 
     for acquisition in (1, 2):
-        starting = system.request(system.ref, StartAcquisition(CYCLES, f"run-0{acquisition}"))
+        starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
         await system.clock.advance(0.5)
         assert await starting == AcquisitionStarted()
         await system.clock.advance(10.0)

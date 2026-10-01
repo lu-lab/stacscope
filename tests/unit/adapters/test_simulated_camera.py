@@ -41,7 +41,7 @@ async def test_a_trigger_before_arming_is_counted_and_written_nowhere(camera):
 
 async def test_a_trigger_after_stopping_is_counted_too(camera):
     device, ref, clock = camera
-    assert await ask(ref, StartDevice("run-01", 4), timeout=1.0, clock=clock) == DeviceReady()
+    assert await ask(ref, StartDevice("", 4), timeout=1.0, clock=clock) == DeviceReady()
     device.capture._triggered()
 
     await ask(ref, StopDevice(), timeout=1.0, clock=clock)

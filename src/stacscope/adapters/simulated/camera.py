@@ -8,16 +8,23 @@ its trigger line and the driver DMAs a frame in without asking any actor.
 Its frames come from a simulated frame grabber, which draws a bar moving
 across the field, so that is what a viewer shows. The free-running camera
 draws the same bar with a test image generator of its own.
+
+The triggered camera records as the uEye does: an acquisition with a stem is
+written to <save_directory>/<stem>_<name>.tif by a TIFF recorder reading its
+buffer.
 """
+
+import os
+from pathlib import Path
 
 from stacscope.adapters.simulated.frame_capture import SimulatedFrameCapture
 from stacscope.adapters.simulated.image_generator import TestImageGenerator
 from stacscope.core.buffer import Layout
-from stacscope.core.devices import ImageStreaming, SoftwareTimed, TimedDevice
+from stacscope.core.devices import BufferRecording, ImageStreaming, SoftwareTimed, TimedDevice
 from stacscope.core.protocol import Phase
 
 
-class SimulatedCamera(ImageStreaming, TimedDevice):
+class SimulatedCamera(ImageStreaming, BufferRecording, TimedDevice):
     """Produces one frame per rising edge on its trigger line, while armed.
 
     Frames are captured by a ``SimulatedFrameCapture``, available as
@@ -26,6 +33,11 @@ class SimulatedCamera(ImageStreaming, TimedDevice):
     role's. ``shape``, ``dtype``, ``row_bytes``, ``frame_offset``,
     ``slot_alignment`` and ``in_flight`` set the frame format, as they do on
     the capture.
+
+    An acquisition with a stem is recorded to TIFF in ``save_directory``,
+    an existing directory, checked at launch, or one set by
+    ``SetSaveDirectory``; without one, only acquisitions that are not
+    recorded can start.
     """
 
     def __init__(
@@ -43,6 +55,7 @@ class SimulatedCamera(ImageStreaming, TimedDevice):
         n_slots: int = 16,
         capacity_bytes: int = 1 << 24,
         max_slots: int = 64,
+        save_directory: str | os.PathLike | None = None,
     ) -> None:
         super().__init__()
         self.buffer_name = buffer_name
@@ -51,6 +64,7 @@ class SimulatedCamera(ImageStreaming, TimedDevice):
         self.n_slots = n_slots
         self.bus = bus
         self.trigger = trigger
+        self.save_directory = None if save_directory is None else Path(save_directory)
         self._format = dict(
             shape=shape,
             dtype=dtype,
@@ -61,6 +75,7 @@ class SimulatedCamera(ImageStreaming, TimedDevice):
         )
 
     async def setup(self) -> None:
+        self.check_save_directory()
         # The capture runs on the actor's clock, which exists only from here.
         self.capture = SimulatedFrameCapture(
             self.clock, self.bus, trigger=self.trigger, **self._format

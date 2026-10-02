@@ -61,7 +61,7 @@ class Dev:
 class Rig:
     """A Coordinator with a simulated source and named simulated participants."""
 
-    def __init__(self, source=None, **participants):
+    def __init__(self, source=None, launcher=None, **participants):
         self.clock = VirtualClock()
         self.source = source or SimulatedTimingSource(cycle_period=PERIOD)
         self.devices = {
@@ -71,6 +71,7 @@ class Rig:
         self.coordinator = Coordinator(
             source=self._spec("source", self.source),
             participants=[self._spec(name, dev) for name, dev in participants.items()],
+            launcher=launcher,
         )
         self.ref = spawn(self.coordinator, clock=self.clock, name="coordinator")
         self.listener = Listener()

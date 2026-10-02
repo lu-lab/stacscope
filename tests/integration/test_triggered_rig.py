@@ -128,7 +128,7 @@ async def test_d12_the_frames_a_consumer_reads_are_the_triggers_that_were_emitte
 
     starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0.5)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
 
     reader = ImageBuffer.open(system.buffer_name)
     try:
@@ -164,7 +164,7 @@ async def test_d12_a_clean_acquisition_raises_no_fault():
 
     starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0.5)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
     await system.clock.advance(10.0)
 
     assert system.coordinator.state is CoordinatorState.IDLE
@@ -179,7 +179,7 @@ async def test_d12_nothing_is_produced_before_go_or_after_the_stop():
     await system.clock.advance(0)
     assert system.camera.writer.published() == 0, "armed, but the source has not gone"
 
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
     await system.clock.advance(10.0)
     produced = system.camera.writer.published()
 
@@ -194,7 +194,7 @@ async def test_d12_the_software_timed_device_runs_against_the_same_acquisition()
 
     starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
     await system.clock.advance(0.5)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
     await system.clock.advance(10.0)
 
     steps = system.pressure.log
@@ -216,7 +216,7 @@ async def test_d12_a_second_acquisition_counts_its_own_triggers():
     for acquisition in (1, 2):
         starting = system.request(system.ref, StartAcquisition(CYCLES, ""))
         await system.clock.advance(0.5)
-        assert await starting == AcquisitionStarted()
+        assert isinstance(await starting, AcquisitionStarted)
         await system.clock.advance(10.0)
 
         assert system.coordinator.state is CoordinatorState.IDLE

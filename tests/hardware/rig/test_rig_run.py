@@ -251,7 +251,7 @@ async def test_g13_both_cameras_record_a_cycle_the_coordinator_runs(config_path,
 
             starting = time.monotonic()
             answer = await ask(rig.ref, StartAcquisition(cycles, "g13"), timeout=120.0)
-            assert answer == AcquisitionStarted(), answer
+            assert isinstance(answer, AcquisitionStarted), answer
             started = time.monotonic() - starting
             deadline = time.monotonic() + cycles / CYCLES_PER_SECOND + 180.0
             while rig.coordinator.state is not CoordinatorState.IDLE:

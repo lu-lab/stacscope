@@ -171,7 +171,7 @@ async def test_g7_a_rig_from_its_file_records_both_cameras_each_to_its_own_direc
     rig.ref.tell(Subscribe(spawn(listener)))
     await load_waveforms(rig)
 
-    assert await ask(rig.ref, StartAcquisition(cycles, "run-01"), timeout=DEADLINE) == AcquisitionStarted()
+    assert isinstance(await ask(rig.ref, StartAcquisition(cycles, "run-01"), timeout=DEADLINE), AcquisitionStarted)
     await until_idle(rig, listener)
 
     assert pages(directories / "flash" / "run-01_flash.tif") == cycles * FLASH_PULSES
@@ -193,7 +193,7 @@ async def test_g16_two_devices_may_share_a_save_directory(rigs, tmp_path):
     rig.ref.tell(Subscribe(spawn(listener)))
     await load_waveforms(rig)
 
-    assert await ask(rig.ref, StartAcquisition(cycles, "run-01"), timeout=DEADLINE) == AcquisitionStarted()
+    assert isinstance(await ask(rig.ref, StartAcquisition(cycles, "run-01"), timeout=DEADLINE), AcquisitionStarted)
     await until_idle(rig, listener)
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["run-01_flash.tif", "run-01_ueye.tif"]
@@ -217,7 +217,7 @@ async def test_g8_closing_a_rig_mid_acquisition_stops_it_and_lets_everything_go(
     await load_waveforms(rig)
     buffers = dict(rig.buffers)
     assert set(buffers) == {"flash", "ueye"}
-    assert await ask(rig.ref, StartAcquisition(-1, "run-01"), timeout=DEADLINE) == AcquisitionStarted()
+    assert isinstance(await ask(rig.ref, StartAcquisition(-1, "run-01"), timeout=DEADLINE), AcquisitionStarted)
     await asyncio.sleep(0.3)
 
     await rig.close()
@@ -280,7 +280,7 @@ shape = [4, 8]
     process = rig.host.process("camera")
     assert process is not None and process.returncode is None, "in a process of its own"
 
-    assert await ask(rig.ref, StartAcquisition(4, ""), timeout=DEADLINE) == AcquisitionStarted()
+    assert isinstance(await ask(rig.ref, StartAcquisition(4, ""), timeout=DEADLINE), AcquisitionStarted)
     reader = ImageBuffer.open(rig.buffers["camera"])
     try:
         deadline = time.monotonic() + DEADLINE

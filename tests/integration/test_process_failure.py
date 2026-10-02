@@ -21,7 +21,9 @@ from stacscope.core.actors import Accepted, ask, spawn
 from stacscope.core.protocol import (
     AcquisitionStopped,
     DeviceReady,
+    Phase,
     Relaunch,
+    SourcePhase,
     StartAcquisition,
     StartDevice,
     StopAcquisition,
@@ -231,13 +233,15 @@ async def test_the_engine_survives_and_relaunches_a_device_that_crashed(host):
     engine = spawn(coordinator, name="engine")
     await asyncio.sleep(0)
 
-    # -1 cycles: the run lasts until it is stopped, so the crash lands mid-run
+    # -1 cycles: the run lasts until it is stopped, so the crash lands mid-run.
+    # Told here: a device hears the phases only if it asks (CM24).
     await ask(engine, StartAcquisition(-1, "fish"), timeout=15)
+    coordinator.participants["camera"].tell(SourcePhase(Phase.RUN))
     assert await until(lambda: "camera" not in coordinator.participants)
 
     assert coordinator.state is CoordinatorState.RUNNING  # the engine did not go with it
     assert host.running() == 0
-    assert await ask(engine, StopAcquisition(), timeout=15) == AcquisitionStopped()
+    assert isinstance(await ask(engine, StopAcquisition(), timeout=15), AcquisitionStopped)
 
     assert await ask(engine, Relaunch("camera"), timeout=15) == Accepted()
     camera = coordinator.participants["camera"]

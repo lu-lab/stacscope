@@ -7,8 +7,9 @@ of the acquisition loop** — but it is part of the imaging system, and what it
 does needs to line up with the acquisition.
 
 It lines up with the acquisition's *edges*, and nothing finer. The timing
-source publishes its phases, the Coordinator relays them, and a device starts
-its routine on the phase it chose: a shutter at WARMUP, so it is already
+source reports its phases to the Coordinator, which relays them to every
+device that subscribed -- a software-timed device subscribes as it starts --
+and the device starts its routine on the phase it chose: a shutter at WARMUP, so it is already
 moving; a driven variable at RUN, with the first image.
 
 **That edge is control flow.** It crosses a mailbox, and possibly a process, so
@@ -20,7 +21,7 @@ camera is responsible for its own recording.
 
 import asyncio
 
-from stacscope.core.actors import Fault
+from stacscope.core.actors import Fault, Subscribe
 from stacscope.core.devices.device import DeviceState
 from stacscope.core.protocol import Phase, SourcePhase
 
@@ -56,6 +57,13 @@ class SoftwareTimed:
         """This device's own sequence, on ``self.clock``. Runs once per
         acquisition, may finish early, and is cancelled if the acquisition
         stops first."""
+
+    async def setup(self) -> None:
+        # The phases are its parent's to relay: it asks, by its parent's
+        # address, rather than being subscribed by it.
+        if self.parent is not None:
+            self.parent.tell(Subscribe(self.ref))
+        await super().setup()
 
     async def handle(self, msg: object) -> None:
         match msg:

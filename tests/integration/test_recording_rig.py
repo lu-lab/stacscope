@@ -139,7 +139,7 @@ class System:
     async def acquire(self, cycles, stem):
         """Start an acquisition and wait for the Coordinator to be idle again."""
         answer = await ask(self.ref, StartAcquisition(cycles, stem), timeout=DEADLINE)
-        assert answer == AcquisitionStarted(), answer
+        assert isinstance(answer, AcquisitionStarted), answer
         started = time.monotonic()
         deadline = started + DEADLINE
         while self.coordinator.state is not CoordinatorState.IDLE:

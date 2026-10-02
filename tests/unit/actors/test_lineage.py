@@ -196,6 +196,24 @@ async def test_cm4_an_actor_with_no_handler_of_its_own_still_passes_a_fault_up()
     assert [msg for msg, _ in root.heard] == [fault()]
 
 
+async def test_cm4_a_fault_from_the_parent_is_not_sent_back_to_it():
+    """Reports go up; a ``Fault`` that came *down* -- published by a parent to
+    a child subscribed to it -- is not a report from below. Passed back, the
+    parent would publish it again, and the two would trade it for ever."""
+    child = Keeper()
+    root = Keeper({"child": child})
+    ref = spawn(root, name="root")
+    await settle()
+    ref.tell(Subscribe(child.ref))
+    await settle()
+
+    ref.tell(fault())
+    await settle()
+
+    assert [msg for msg, _ in child.heard] == [fault()]
+    assert [msg for msg, _ in root.heard] == [fault()], "once, from outside; never back from the child"
+
+
 async def test_cm5_an_actor_that_acts_on_a_fault_stops_it_there():
     child = Keeper()
     middle = Absorber({"child": child})

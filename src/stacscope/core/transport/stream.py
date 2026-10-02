@@ -64,12 +64,28 @@ class Connection:
         wire: Wire,
         *,
         on_error: Callable[[Exception], None] | None = None,
+        held: bool = False,
     ) -> None:
+        """``held`` keeps every frame sent until ``release``: for a link whose
+        stream still has a handshake of its own to finish."""
         self._reader = reader
         self._writer = writer
         self._on_error = on_error
-        self.peer = Peer(wire, send=lambda frame: send_frame(self._writer, frame))
+        self._held: list[bytes] | None = [] if held else None
+        self.peer = Peer(wire, send=self._send)
         self.closed = asyncio.Event()
+
+    def _send(self, frame: bytes) -> None:
+        if self._held is not None:
+            self._held.append(frame)
+        else:
+            send_frame(self._writer, frame)
+
+    def release(self) -> None:
+        """Send what was held, in order, and everything after it at once."""
+        held, self._held = self._held or [], None
+        for frame in held:
+            send_frame(self._writer, frame)
 
     async def serve(self) -> None:
         """Deliver arriving frames until the stream ends.

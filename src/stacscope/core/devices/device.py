@@ -6,8 +6,9 @@ only what preparing and releasing *its* hardware means.
 A participant has no phases of its own: once armed, frames arrive when the
 hardware says so, and the device learns the acquisition is over from
 ``StopDevice``. Devices that want to act on the acquisition's progress
-subscribe to the Coordinator's republished ``SourcePhase`` instead, which is
-control flow and never to be trusted for timing.
+subscribe to their parent, the Coordinator, which relays the source's
+``SourcePhase``: control flow, never to be trusted for timing. Faults go to
+the parent too, reported by address.
 """
 
 from collections.abc import Awaitable, Callable

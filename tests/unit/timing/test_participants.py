@@ -8,7 +8,7 @@ reports a hardware fault is still there, and the fix is the user's.
 from timing_support import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
-from stacscope.core.actors import Accepted, Fault, Rejected
+from stacscope.core.actors import Accepted, Fault, Rejected, Subscribe
 from stacscope.core.protocol import (
     AcquisitionStarted,
     Phase,
@@ -71,7 +71,7 @@ async def test_d4_go_waits_for_the_slowest_of_many():
     assert rig.source.phase is Phase.ARMED
 
     await rig.clock.advance(0.2)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
     assert rig.source.phase is Phase.RUN
     assert rig.listener.faults() == []
 
@@ -86,7 +86,7 @@ async def test_d4_a_slow_device_is_judged_by_its_own_timeout_not_anothers():
     assert not starting.done(), "another device's timeout must not abort this one"
 
     await rig.clock.advance(2.0)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
 
 
 async def test_d4_a_device_past_its_own_timeout_aborts_at_that_timeout():
@@ -173,7 +173,7 @@ async def test_d5_a_lost_required_participant_refuses_every_start_until_relaunch
     assert rig.source.calls == source_calls, "the source was not armed either"
 
     assert await rig.call(Relaunch("camera")) == Accepted()
-    assert await rig.start() == AcquisitionStarted()
+    assert isinstance(await rig.start(), AcquisitionStarted)
     assert camera.made[-1].names() == ["start"]
 
 
@@ -199,7 +199,7 @@ async def test_d5_a_lost_optional_participant_is_left_out_of_the_next_start():
     await rig.clock.advance(0)
     assert "monitor" not in rig.coordinator.participants
 
-    assert await rig.start() == AcquisitionStarted()
+    assert isinstance(await rig.start(), AcquisitionStarted)
 
 
 # --- D6: a participant reports a hardware fault it cannot fix -----------------
@@ -230,7 +230,7 @@ async def test_d6_nothing_is_latched_so_the_next_acquisition_is_accepted():
     rig.coordinator.participants["camera"].tell(Trip())
     await rig.clock.advance(1.0)
 
-    assert await rig.start() == AcquisitionStarted()
+    assert isinstance(await rig.start(), AcquisitionStarted)
     assert rig.coordinator.state is CoordinatorState.RUNNING
 
 
@@ -277,11 +277,17 @@ async def test_d6_a_fatal_source_fault_stops_and_idles_like_any_other():
 
 
 class PhaseWatcher(Fragile):
-    """A participant that hears what the source is doing, and can be killed."""
+    """A participant that hears what the source is doing, and can be killed.
+    It asks for the phases, by subscribing to its parent, as a
+    ``SoftwareTimed`` device does (CM24)."""
 
     def __init__(self):
         super().__init__()
         self.phases = []
+
+    async def setup(self):
+        self.parent.tell(Subscribe(self.ref))
+        await super().setup()
 
     async def handle(self, msg):
         match msg:
@@ -293,7 +299,7 @@ class PhaseWatcher(Fragile):
 
 async def test_d8_participants_hear_the_sources_phases():
     """A software-timed device synchronizes to the acquisition through these,
-    so they must reach devices, not only clients."""
+    so they must reach a device that asks for them, not only clients."""
     rig = Rig(pressure=PhaseWatcher())
     await rig.start(cycles=2)
     await rig.clock.advance(5.0)
@@ -313,8 +319,8 @@ async def test_d8_clients_hear_them_too():
 
 
 async def test_d8_a_relaunched_participant_hears_them_as_well():
-    """A device respawned by Relaunch is a new actor: it has to be resubscribed
-    or it would sit through the next acquisition hearing nothing."""
+    """A device respawned by Relaunch is a new actor: it subscribes again as
+    it starts, or it would sit through the next acquisition hearing nothing."""
     rig = Rig(pressure=Dev(Factory(PhaseWatcher), required=False))
     await rig.clock.advance(0)
     rig.coordinator.participants["pressure"].tell(Die())

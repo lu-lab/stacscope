@@ -101,7 +101,7 @@ async def test_g14_a_rig_with_the_ni_source_reads_its_lines_from_max_and_runs(tm
         zeros[1][0, :10] = True  # a pulse on the camera's line, reaching nothing
         for name in Waveform:
             assert await ask(rig.coordinator.source, SetWaveform(name, *zeros), timeout=5.0) == Accepted()
-        assert await ask(rig.ref, StartAcquisition(4, ""), timeout=10.0) == AcquisitionStarted()
+        assert isinstance(await ask(rig.ref, StartAcquisition(4, ""), timeout=10.0), AcquisitionStarted)
         deadline = time.monotonic() + 10.0
         while rig.coordinator.state is not CoordinatorState.IDLE:
             assert time.monotonic() < deadline, rig.coordinator.state

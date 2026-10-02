@@ -97,10 +97,10 @@ async def test_frames_cross_by_shared_memory_while_control_crosses_the_link(rig,
     coordinator, engine = rig
     reader = await reader_for(buffer_name)
 
-    assert await ask(engine, StartAcquisition(-1, ""), timeout=15) == AcquisitionStarted()
+    assert isinstance(await ask(engine, StartAcquisition(-1, ""), timeout=15), AcquisitionStarted)
     assert await until(lambda: reader.published() >= 5, deadline=10.0)
     frames = read(reader, 5)
-    assert await ask(engine, StopAcquisition(), timeout=15) == AcquisitionStopped()
+    assert isinstance(await ask(engine, StopAcquisition(), timeout=15), AcquisitionStopped)
 
     assert frames == list(range(frames[0], frames[0] + 5))  # in order, none missing
     reader.close()

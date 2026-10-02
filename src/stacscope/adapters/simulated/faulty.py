@@ -42,7 +42,8 @@ class Fail(Enum):
 
 
 class FaultyDevice(Actor):
-    """Speaks the device protocol until the named message, then misbehaves."""
+    """Speaks the device protocol until the named message, then misbehaves.
+    ``on="setup"`` misbehaves while starting instead."""
 
     def __init__(
         self,
@@ -61,6 +62,10 @@ class FaultyDevice(Actor):
         process it happened in."""
         self.release_fails = release_fails
         """Whether ``teardown`` raises, as a driver that refuses to close does."""
+
+    async def setup(self) -> None:
+        if self.on == "setup":
+            await self._misbehave()
 
     async def teardown(self) -> None:
         if self.note:

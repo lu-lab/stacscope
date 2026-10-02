@@ -70,13 +70,13 @@ async def test_a_full_acquisition_end_to_end():
 
     starting = system.request(system.ref, StartAcquisition(-1, "run-01"))
     await system.clock.advance(1.0)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
 
     await system.clock.advance(4.0)
     stopping = system.request(system.ref, StopAcquisition())
     await system.clock.advance(5.0)
 
-    assert await stopping == AcquisitionStopped()
+    assert isinstance(await stopping, AcquisitionStopped)
     assert system.output.underflow is None
     labels = [label for label, _ in system.output.timeline]
     assert labels[0] == "warmup" and labels[-1] == "cooldown"
@@ -86,18 +86,20 @@ async def test_a_full_acquisition_end_to_end():
     assert system.coordinator.state is CoordinatorState.IDLE
 
 
-async def test_an_underflow_faults_the_whole_system_and_stops_the_camera():
+async def test_an_underflow_loses_the_source_and_stops_the_camera():
     system = System()
     await system.load_waveforms()
     starting = system.request(system.ref, StartAcquisition(-1, "run-01"))
     await system.clock.advance(1.0)
-    assert await starting == AcquisitionStarted()
+    assert isinstance(await starting, AcquisitionStarted)
 
     system.output.stall_next_write(5.0)
     await system.clock.advance(10.0)
 
-    assert system.coordinator.state is CoordinatorState.FAULTED
+    # The source died of it: a lost required device (CM22), nothing latched.
+    assert system.coordinator.state is CoordinatorState.IDLE
+    assert system.coordinator.source is None
     assert system.output.stopped
     assert "stop" in [c[0] for c in system.camera.calls]
-    fatal = [m for m in system.listener.heard if isinstance(m, Fault) and m.fatal]
-    assert fatal and "Underflow" in fatal[0].reason
+    lost = [m for m in system.listener.heard if isinstance(m, Fault) and "timing source lost" in m.reason]
+    assert lost and "Underflow" in lost[0].reason

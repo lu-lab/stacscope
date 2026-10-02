@@ -57,7 +57,9 @@ async def serve(
     if not isinstance(factory, bytes):
         return UNINSTRUCTED
 
-    connection = Connection(reader, writer, Wire(Codec(MESSAGES)))
+    # Held: the device's setup may already report to its parent, and nothing
+    # may reach the host's end before the handshake's last frame.
+    connection = Connection(reader, writer, Wire(Codec(MESSAGES)), held=True)
     actor = await _build(factory, address, connection, bootstrap_timeout)
     if isinstance(actor, str):
         send_frame(writer, msgpack.packb({"error": actor}))
@@ -67,6 +69,7 @@ async def serve(
     connection.peer.register(actor.ref)
     serving = asyncio.create_task(connection.serve())
     send_frame(writer, msgpack.packb({"ready": address}))
+    connection.release()
 
     # Unbounded, unlike everything above: the device runs for as long as the
     # acquisitions do. A bound here once stopped every healthy device 30 s

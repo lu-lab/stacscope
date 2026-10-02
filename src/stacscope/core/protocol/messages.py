@@ -36,13 +36,24 @@ class StopAcquisition:
 @dataclass(frozen=True, slots=True)
 class AcquisitionStarted:
     """Reply to ``StartAcquisition``: every device was ready and the source has
-    been told to go."""
+    been told to go. ``acquisition`` is its number."""
+
+    acquisition: int
 
 
 @message
 @dataclass(frozen=True, slots=True)
 class AcquisitionStopped:
-    """Reply to ``StopAcquisition``: output has ceased and every device stopped."""
+    """Reply to ``StopAcquisition``: output has ceased and every device
+    stopped. ``acquisition`` is the number of the one that stopped."""
+
+    acquisition: int
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class GetStatus:
+    """Ask the Coordinator for its ``Status``."""
 
 
 @message
@@ -56,7 +67,42 @@ class Relaunch:
     name: str
 
 
-# --- Coordinator → its subscribers ---------------------------------------------
+# --- Coordinator → its clients -------------------------------------------------
+
+
+class CoordinatorState(Enum):
+    IDLE = "idle"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class DeviceStatus:
+    """One device, as the Coordinator sees it: whether it is the timing
+    source, whether acquisitions need it, and whether it is running now.
+    ``ref`` reaches it while it is present."""
+
+    name: str
+    source: bool
+    required: bool
+    present: bool
+    ref: ActorRef | None
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class Status:
+    """The answer to ``GetStatus``, and published to clients on every
+    change. ``acquisition`` is the number of the latest acquisition begun,
+    0 before the first; ``devices`` lists the source first, then the
+    participants in their configured order."""
+
+    state: CoordinatorState
+    acquisition: int
+    devices: tuple[DeviceStatus, ...]
+
 
 
 @message

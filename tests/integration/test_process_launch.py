@@ -127,8 +127,8 @@ async def test_an_acquisition_runs_with_one_participant_in_another_process(host)
     ref = spawn(coordinator, name="engine")
     await asyncio.sleep(0)
 
-    assert await ask(ref, StartAcquisition(2, "fish"), timeout=15) == AcquisitionStarted()
-    assert await ask(ref, StopAcquisition(), timeout=15) == AcquisitionStopped()
+    assert isinstance(await ask(ref, StartAcquisition(2, "fish"), timeout=15), AcquisitionStarted)
+    assert isinstance(await ask(ref, StopAcquisition(), timeout=15), AcquisitionStopped)
 
     assert coordinator.state is CoordinatorState.IDLE
     assert set(coordinator.participants) == {"shutter", "camera"}
@@ -158,11 +158,23 @@ async def test_cm2_a_process_child_reports_to_its_parent_by_address(host):
     ref.tell(Subscribe(spawn(clients, name="client")))
     await asyncio.sleep(0)
 
-    assert await ask(ref, StartAcquisition(2, "fish"), timeout=15) == AcquisitionStarted()
+    assert isinstance(await ask(ref, StartAcquisition(2, "fish"), timeout=15), AcquisitionStarted)
     assert await until(lambda: clients.faults)
 
     assert clients.faults == [Fault(ActorRef(None, "engine/camera"), "the driver reported a warning", False)]
     await ask(ref, StopAcquisition(), timeout=15)
+
+
+async def test_a_process_child_may_report_to_its_parent_while_it_starts(host, parent):
+    """Found building CM24: a software-timed device subscribes to its parent
+    in ``setup``, and from a process child that frame reached the host before
+    the handshake's "ready", which the host took for the answer, and refused
+    the launch. The child now holds what its device sends until the handshake
+    is done; nothing is lost, and it arrives in order."""
+    await host.launch(parent, name="camera", factory=partial(FaultyDevice, Fail.REPORT, on="setup"))
+
+    assert await until(lambda: parent.faults)
+    assert parent.faults[0].reason == "the driver reported a warning"
 
 
 # --- CR1: a child lives as long as its link -----------------------------------

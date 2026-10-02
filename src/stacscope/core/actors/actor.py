@@ -132,6 +132,9 @@ class Actor:
             self.ref.tell(msg, priority, sender=self.ref)
 
         scheduled = self.clock.call_later(seconds, deliver)
+        # A cancelled one never delivers, so it is let go here instead: an
+        # actor that sets a deadline per answer would otherwise keep them all.
+        self._deadlines = [d for d in self._deadlines if not d.cancelled()]
         self._deadlines.append(scheduled)
         return scheduled
 
@@ -143,8 +146,10 @@ class Actor:
         # Every actor's use for a Fault is to pass it up (user, 2026-10-02):
         # it climbs until something acts on it, and the root tells the
         # clients. Anything else an actor has no use for is ignored, told or
-        # asked (user, 2026-09-30).
-        if isinstance(msg, Fault):
+        # asked (user, 2026-09-30). A Fault from the parent came down, to a
+        # child subscribed to it: it is no report from below, and sent back up
+        # the parent would publish it again, for ever.
+        if isinstance(msg, Fault) and (self.parent is None or self._sender != self.parent):
             self.report(msg)
 
     async def teardown(self) -> None:

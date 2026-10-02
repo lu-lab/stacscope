@@ -279,123 +279,138 @@ already-configured trigger channel — an addition, not a restructure.
 
 ### Actor core
 
-Three semantics, which no library provides together — hence ~300 lines in-repo:
+*Rewritten 2026-10-02, when the communication-model decisions were built
+(CM1–CM51, "Open items → The core review"). The history is in the
+milestone sections and that item.*
 
-1. **Priority mailbox** (`asyncio.PriorityQueue`) with `URGENT`/`NORMAL`/`LOW`.
-   STOP preempts queued LOW self-messages maintaining the Run state; NORMAL
-   waveform updates land between cycles without tearing one (§3.5.1). Entries are
-   `(priority, monotonic_seq, msg)` so unorderable payloads never compare.
-2. **`await ask(msg, timeout)`** — the START→READY handshake, per device.
-3. **`spawn_child()`** whose task posts `ChildExited(child, error)` to the parent at
-   URGENT priority — the LAST-ACK equivalent keeping the registry honest.
-   `error` is a string (the exception's `repr`, `"cancelled"`, or a heartbeat
-   timeout description), never the exception object: death may be detected
-   across a process boundary where no exception exists. Exactly one
-   `ChildExited` per child, whichever detection path fires first.
+The runtime is ~400 lines in `core/actors/`. What it gives every actor:
 
-*Implementation notes (R1–R5, 2026-09-18):* the reply address travels in an
-`Envelope`, not the message, so message types stay pure data; `self.reply()` is
-a no-op for a told message. **Heartbeats prove the runtime is alive, not the
-handler:** they are answered on the receive side before the mailbox, so a
-long handler (e.g. multi-second DCAM allocation) is never declared dead; a hung
-handler is caught by per-request `ask` timeouts instead. The parent pings, with a
-`HeartbeatPolicy(interval, timeout)` chosen per child. All timeouts go through
-the injected `Clock`; `VirtualClock.advance()` fires them deterministically.
+1. **A priority mailbox**, URGENT / NORMAL / LOW, FIFO within a priority,
+   enforced at the receiving actor so it survives any transport. Entries are
+   `(priority, seq, msg)`, so payloads never compare. `take(above=p)` takes
+   only what is more urgent than `p`.
+2. **A sender on every envelope.** `Envelope(msg, sender)`; a tell from
+   inside an actor -- its handler or a task it started -- carries that
+   actor's ref, filled from a context variable the runtime sets in the
+   actor's task; a tell from outside any actor carries `None`. `reply()`
+   tells the sender, so told and asked are the same thing. `ask` is a
+   convenience for roots and clients: a one-shot sender address and a
+   timeout. The wire carries the sender (`"s"`).
+3. **A parent by address.** `parent` is set at spawn, always the actor's
+   address less its last segment, `None` for a root. A process child gets
+   one from its link. `report(msg)` tells the parent, or publishes at a root.
+4. **A default use for a `Fault`:** the base `handle` passes it to the
+   parent (a root publishes it) and ignores everything else, so subclasses
+   end their match with `case _: await super().handle(msg)`. A Fault that
+   came from the parent -- published to a child subscribed to it -- is not
+   passed back.
+5. **Supervision.** `ChildExited(child, error)` reaches the parent at
+   URGENT, exactly once, by exit or by heartbeat; `error` is a string.
+   Heartbeats are answered on receipt, so a long handler is never declared
+   dead. A child's final answer that its exit follows goes URGENT too, or
+   the `ChildExited` overtakes it.
+6. **Lifetime.** `setup()` → `run()` → `teardown()`, the last in a
+   `finally`. **A parent's exit stops its children first**, last launched
+   first, each waited for (a process child through its host), then runs its
+   own teardown; a child stopped so is not reported lost.
+7. **Time.** Every timeout goes through the `Clock` port, so virtual time
+   drives them. `Clock.call_later`, and on it `tell_later(seconds, msg)`: a
+   deadline is a message the actor sends itself, cancelled if the answer
+   came first and at the actor's exit.
+8. **The priority-gated wait.** `await self.gated(aw)` waits on the actor's
+   own hardware while handling only messages more urgent than the one in
+   hand. A wait on another actor is never this: it is a state.
 
-Lifecycle mirrors LabVIEW's three hooks (`Pre Launch Init` / `Actor Core` /
-`Stop Core`), renamed to avoid overloading "core": `setup()` → `run()` →
-`teardown()`, the last in a `finally`. Blocking driver calls go to a per-device
-thread via `asyncio.to_thread`. This library is called **the actor runtime**.
+**The parent/child rule** governs who may wait on whom: commands go down,
+answers and reports go up; an actor waits only on its children, as a
+state; siblings never answer each other, so nothing can deadlock. The rule
+is in "Open items → The core review".
 
 **An actor ignores a message it has no use for, told or asked (user,
-2026-09-30).** It sends no answer and publishes nothing, and an asker that
-sent the wrong thing learns it from its own timeout. Until then, a told
-message with no case was published as a non-fatal `Fault`, which reaches
-every subscriber. The Coordinator hears everything its source publishes, so
-each `MainApplied` became a Fault to every participant and client, on every
-acquisition. A known command in the wrong state is still refused, with
-`Rejected`, or with a `Fault` if it was told, because it was meant for that
-actor. **Be conservative about sending messages** (user): an actor may keep an
-address book for its own function, for example a source's list of who wants
-its phases. By default it knows its parent, its children, and the sender of
-the message it is handling, and a message may carry an address for
-subscribe and unsubscribe.
+2026-09-30)**, except a `Fault`, which every actor passes up. A known
+command in the wrong state is refused with `Rejected` to its sender, or a
+`Fault` reported if it has none. **Be conservative about sending messages**
+(user). An actor knows its parent, its children, the sender of the message
+it is handling, and addresses carried in messages; subscriber lists are its
+own business.
 
 ### Coordinator and timing source
 
-*(Decided 2026-09-18.)* The thesis's central timing actor merges two roles;
-§3.4.1 ("for microscopes which use dedicated hardware... it must also serve as
-the device adapter") is what licenses splitting them.
+*(Split decided 2026-09-18; rewritten 2026-10-02 for what is built.)* The
+thesis's central timing actor merges two roles; §3.4.1 ("for microscopes
+which use dedicated hardware... it must also serve as the device adapter")
+is what licenses splitting them. The Coordinator knows who takes part and
+whether they are ready; the source knows when.
 
-**`Coordinator`** — control flow only. First messaged, last to act.
-FSM: Idle → Starting → Running → Stopping → Idle, plus **Faulted**.
-- `StartAcquisition(cycles, root_filename)`: `StartDevice` to every participant
-  *and the source*, each `ask`ed with timeout. Only when all reply
-  `DeviceReady` does the source receive `Go`.
-- READY timeout: abort — `StopDevice` to those that were ready, publish an
-  error, return to Idle. The laggard stays registered (death is heartbeat's
-  job), and the source never receives `Go`.
-- Running does not loop; it waits for `StopAcquisition`, `SourceFinished`, or
-  `ChildExited`. `StopAcquisition` → `Finish` to the source → on
-  `SourceFinished`, `StopDevice` to all → Idle.
-- Loss of the source is a **major error**: `StopDevice` to all, publish a fatal
-  error, enter Faulted; `StartAcquisition` is refused until a source is
-  re-established. Loss of an ordinary participant only drops it from the
-  registry.
+**`Coordinator`** -- control flow only. First messaged, last to act. It
+spawns the source and every participant as its children from
+`DeviceSpec(name, factory, ready_timeout, stop_timeout, heartbeat,
+placement, required)`, and waits on them only as states, matching each
+answer by its sender:
+- Idle → Starting → Running → Stopping → Idle. No Faulted: the source is a
+  device that is always required.
+- `StartAcquisition(cycles, root_filename)` numbers the acquisition and
+  sends `StartDevice` to every participant and the source, each with a
+  deadline it sends itself. All `DeviceReady` → `Go` to the source,
+  `AcquisitionStarted(n)`. Otherwise `Rejected` naming each device not
+  ready and why, a non-fatal `Fault`, and `StopDevice` to everyone,
+  laggards included. A required device or the source lost while starting
+  fails the start at once; an optional one is left out.
+- `StopAcquisition` → `Finish` to the source (URGENT); on `SourceFinished`
+  -- requested or the count run out -- `StopDevice` to everyone, each with
+  its stop deadline, then `AcquisitionStopped(n)`. A device lost while
+  stopping counts as stopped and is reported lost; one that does not
+  answer is "stop not confirmed".
+- A fatal `Fault`, or a required device lost, while running: `StopDevice`
+  to everyone at once (a running source still cools down). Nothing is
+  latched; while a required device or the source is lost, every start is
+  refused, naming it, until it is relaunched.
+- `Relaunch(name)`, when Idle and the device is lost: the launch runs as a
+  task that reports back, so the Coordinator answers meanwhile.
+  `Accepted` once launched, `Rejected` with why. Never automatic (user,
+  2026-09-18).
+- `GetStatus` → `Status(state, acquisition, devices)`, each device's name,
+  whether it is the source, required, present, and its ref; published to
+  clients on every change, beside `DeviceLaunched` and every Fault.
+- It subscribes to nothing. Devices report Faults, and the source its
+  phases and `SourceFinished`, by its address. It relays `SourcePhase` to
+  its subscribers; a subscriber that is one of its devices (a
+  `SoftwareTimed` device subscribes in `setup`) hears the phases only, so
+  no device learns of a sibling, and is dropped when it exits.
 
-**`TimingSource`** — exactly one per Coordinator, **configured, not
-registered**, always a software-controlled device. The base actor enforces
-Idle → Armed → Warmup → Run → Cooldown → Idle and publishes `SourcePhase` on
-each transition and `SourceFinished` when output has ceased. Subclasses supply
-phase behaviour only. The source alone knows cycle boundaries, so it counts
-cycles (from `StartDevice`), deciding at *commit* time rather than play time —
-which is what allows a gapless handoff.
+**`TimingSource`** -- exactly one per Coordinator, **configured, not
+registered**, always a software-controlled device. The base class enforces
+Idle → Armed → Warmup → Run → Cooldown → Idle; subclasses supply phase
+behaviour only (`arm`, `disarm`, `warmup`, `run_cycle`, `cooldown`,
+`drain`). It counts cycles and enters each phase when it *commits* it,
+which is what allows a gapless MAIN → COOLDOWN handoff. `Finish` and an
+exhausted count take effect at the next cycle boundary (the LOW
+`_NextCycle` self-message). `StopDevice` is safe in every phase, and when
+running is Finish-like: the cycle completes, then COOLDOWN, then
+`DeviceStopped`.
 
-*T1 implementation (2026-09-18):* the base class drives everything; hooks are
-`arm(root_filename, cycles)`, `disarm()`, `warmup()`, `run_cycle()`,
-`cooldown()`, `drain()`. `Finish` and an exhausted count both take effect at
-the next cycle boundary (the LOW `_NextCycle` self-message lives in the base).
-`StopDevice` is safe in every phase: no-op when idle, `disarm` when armed, and
-when running it finishes (cooldown + drain) *before* replying `DeviceStopped`.
-`SourcePhase` is announced when a phase is entered, i.e. committed, ahead of
-when a buffered source plays it.
+**Every `SourcePhase` means "now playing"** (user, 2026-10-02): WARMUP when
+output starts, RUN at the first MAIN sample, COOLDOWN at its first sample,
+IDLE once output has ceased. The base asks the subclass where each phase
+starts (`phase_start`, default "now", for a source with no buffer) and how
+long until that sample plays (`until_played`), and checks with an URGENT
+message to itself, which gets in through the gated refill and drain waits.
+An acquisition stopped before any MAIN plays never announces RUN. The
+precision is the control flow's: milliseconds. `MainApplied` stays at
+queue time: it says where a MAIN plays, and a closed loop needs it early.
 
-*C1–C5 implementation (2026-09-18):* the Coordinator spawns the source and
-every participant as its children from `DeviceSpec(name, factory,
-ready_timeout, stop_timeout=ready_timeout, heartbeat=None)` — agreed with the
-user, and it stays valid for remote devices (see the proxy idea under
-distribution). Client replies: `AcquisitionStarted`, `AcquisitionStopped`, or
-`Rejected`. On a READY abort the client is answered immediately, and
-`StopDevice` then goes to **every** device, the laggard included, so a late
-READY cannot leave anything armed (a deliberate widening of "stop those that
-were ready"; `StopDevice` is safe in every state). Source faults are
-republished to the Coordinator's subscribers. Faulted is currently terminal;
-**Relaunch** *(user, 2026-09-18)*: faults are reported all the way up to the
-user, who decides what happens next (a fault may be a hardware stop they must
-deal with first). STACScope makes relaunch *possible* but never does it on its
-own; when it is appropriate is policy for later. `Relaunch(name)` to the
-Coordinator, from Idle or Faulted, spawns a fresh instance from the device's
-spec; relaunching the source leaves Faulted, and a relaunch whose setup fails
-lands back in Faulted with the cause in the `Fault`. A child's name is freed
-the moment its parent hears it is gone, by exit or heartbeat. Every launch is
-published as `DeviceLaunched(name, ref)`, because a ref to a previous
-incarnation reaches nothing. Clients refresh from that, and must re-send what
-lived only in the old instance (e.g. `SetWaveform`). Late subscribers miss
-earlier `DeviceLaunched` events; a query is left for the gateway milestone.
+**Errors:** a request in the wrong state is answered `Rejected(reason)` to
+its sender; with no sender, the refusal is reported as `Fault(source,
+reason, fatal=False)`. Errors that answer nobody are reported as `Fault`.
 
-**Errors** *(agreed 2026-09-18)*: a request in the wrong state is answered
-`Rejected(reason)`, so `ask` returns immediately rather than timing out; if
-the command was told rather than asked, the rejection is published instead as
-`Fault(source, reason, fatal=False)`. Errors that answer nobody are published
-as `Fault`. Both live in `core/actors/messages.py` beside `Subscribe` /
-`Unsubscribe`: publish/subscribe is a runtime facility (`self.publish(msg)`).
-
-**`WaveformSource(TimingSource)`** — the AO implementation over `SignalOutput`.
+**`WaveformSource(TimingSource)`** -- the AO implementation over `SignalOutput`.
 Holds WARMUP/MAIN/COOLDOWN **waveforms** (the thesis's "buffers"; see
-"Vocabulary" for why neither "buffer", "segment" nor "phase"). Run is the LOW-priority self-messaging refill loop;
-`Finish` (URGENT) preempts it, `SetWaveform` (NORMAL, sent by clients directly to
-the source) lands between cycles. COOLDOWN is committed directly behind the last
-MAIN: the handoff must be gapless. Empty WARMUP/COOLDOWN is a valid no-op phase.
+"Vocabulary" for why neither "buffer", "segment" nor "phase"). Run is the
+LOW-priority self-messaging refill loop; its waits for room are gated, so
+`Finish` (URGENT) and `SetWaveform` (NORMAL, sent by clients directly to the
+source) get in mid-refill; a MAIN update is taken at the next cycle
+boundary. COOLDOWN is committed directly behind the last MAIN: the handoff
+must be gapless. Empty WARMUP/COOLDOWN is a valid no-op phase.
 
 *W1–W6 implementation (2026-09-18); defaults confirmed by the user the same
 day, on the understanding that none binds another implementation:* (1) a waveform is `SetWaveform(waveform, ao, do)` — AO channels ×
@@ -406,7 +421,7 @@ emitted like any other; (3) hardware buffer depth is `OutputConfig.buffer_sample
 Output starts only after `Go`, once the pre-roll (WARMUP + first MAIN) is
 queued or the buffer fills; `go()` with nothing written is an error, as in
 DAQmx. Waveforms longer than the buffer are written in chunks. An `Underflow`
-kills the source, which the Coordinator treats as source loss (Faulted).
+kills the source, which the Coordinator treats as losing a required device.
 `arm` may raise `NotReady` (e.g. no MAIN set), answered `Rejected`.
 
 **Camera sources** are not built yet but must remain possible: nothing in the
@@ -735,7 +750,7 @@ Coordinator (against a no-op `SimulatedTimingSource`, proving AO-independence)
 - C2. READY timeout aborts: ready participants get `StopDevice`, the source never gets `Go`, the laggard stays registered. [2]
 - C3. The source gets `Go` only after every participant, itself included, is READY. [11]
 - C4. `StopAcquisition` → `Finish` → `SourceFinished` → `StopDevice` to all → Idle.
-- C5. Source loss → Faulted; `StartAcquisition` refused.
+- C5. Source loss → Faulted; `StartAcquisition` refused. *(Since CM22, a lost source is a lost required device: no Faulted, starts refused until it is relaunched.)*
 
 `WaveformSource` (against simulated `SignalOutput`)
 - W1. The simulated timebase records WARMUP, MAIN×n, COOLDOWN contiguously — no gap at the MAIN→COOLDOWN handoff. [5]
@@ -4324,7 +4339,8 @@ policy, or state the Coordinator shouldn't hold.
     observations 1–7, below.
   - The plan's "Coordinator and timing source" section is out of date (it
     stops only the devices that were ready, and calls FAULTED terminal); it
-    is to be rewritten when these are built.
+    is to be rewritten when these are built. *Done (2026-10-02), with
+    "Actor core".*
 - *Decided on the communication-model observations 1–7 (user,
   2026-10-02), Claude's recommendations accepted:*
   - **1. A child lost mid-handshake.** In STARTING, a lost required device
@@ -4538,6 +4554,68 @@ policy, or state the Coordinator shouldn't hold.
   Coordinator stops every device. CM51 a loop-lag probe in the H9 soak (a
   measurement, on `Dev1-sim`). Then the plan's "Coordinator and timing
   source" section is rewritten and CLAUDE.md brought up to date.
+- *Built (2026-10-02): CM1–CM51 are green, test-first, on 3.14t and 3.14
+  (716 in the default suite; the DCAM, uEye and NI fake-driver suites
+  green too).* Built while the user was away, on their instruction to
+  proceed and report the judgment calls. Commits: Step 1 3527fb0, Step 2
+  838a63d, Step 3 78b6fc3, Step 4 607014d, Step 5 90b12d8, Step 6 43c4a71,
+  Step 7 d243cce and 1ba44ff. "Actor core" and "Coordinator and timing
+  source" above now describe what is built.
+  - *Found on the way, each fixed with a test:*
+    - **A Fault loop.** A child subscribed to its parent was sent the
+      parent's published Faults, and its default passed each straight
+      back up. The Coordinator filters what devices hear (phases only), and
+      the base `handle` never passes a Fault back to the parent it came
+      from (Claude's call: a Fault that came down is no report from below).
+    - **A process child's setup reached the host too early.** A device
+      that reports in `setup` (a `SoftwareTimed` device subscribing to its
+      parent) sent a frame before the bootstrap's "ready", which the host
+      read as the answer and refused the launch (G11). The child now holds
+      its device's frames until the handshake is done.
+    - **A child's last answer overtaken by its exit.** The recorder answers
+      `RecordingFinished` and stops; its `ChildExited` travels URGENT and
+      overtook the NORMAL answer. The recorder now sends that last answer
+      URGENT. The hazard is general: any child that reports and then stops.
+    - **A parent waiting for ever on a child cancelled before it ran** (at
+      loop shutdown every task is cancelled; one cancelled before its first
+      step never sets `stopped`). The parent waits on the child's task.
+  - *Judgment calls, for the user to confirm or change:*
+    - Losing the source is reported as a non-fatal `Fault` ("timing source
+      lost: …"), since the Coordinator carries on; a client waiting on a
+      stop is answered `AcquisitionStopped`, as for any required device,
+      where it was `Rejected` under FAULTED.
+    - `Relaunch` only while Idle (it was Idle or Faulted); a
+      `StopAcquisition` while already stopping is still refused.
+    - `CoordinatorState` moved into `core.protocol`, because `Status`
+      carries it; `core.timing` still exports it.
+    - The wire's reply field is now the sender, key `"s"`.
+    - `Rig.status()`, `Rig.device(name)` and `Rig.source()` are async: each
+      asks `GetStatus`, since a cached ref goes stale on a relaunch.
+    - A held disarm that ends badly (`complete_disarm(problem)`) is a fatal
+      `Fault`, and the stop is still confirmed, as a file that will not
+      close is.
+    - The relaunch's result comes back URGENT, so it is handled before a
+      `ChildExited` from the device it launched.
+  - *Consequences of the decisions, which changed tests:*
+    - A camera shut down mid-recording (its parent exiting) now stops its
+      recorder before its own disarm could name the count, so the file
+      keeps what was written (L16). An acquisition stopped first records
+      every frame, as before.
+    - With the refill wait gated, a `SetWaveform` is accepted as it
+      arrives, mid-cycle, rather than at the boundary; it plays exactly
+      when it did. W8 and W10 measure the latency from the boundary that
+      takes it.
+    - D12's routine starts 0.5 s later: at the first MAIN sample, not at
+      WARMUP's commit.
+    - Devices hear no phases unless they ask; tests that listened on a
+      child device now listen on its parent.
+  - *Not run here, for a machine with the hardware:*
+    - On `Dev1-sim` (Claude may run it): the CM40 contract tests against
+      the NI adapter, G14–G15, and H9 with the CM51 probe. Whether
+      event-loop timers on Windows are fine enough for the announcements
+      (often 15.6 ms) is still to be measured there.
+    - On the instrument (the user): G13, and the camera suites, whose
+      listeners moved to the device's parent.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

@@ -45,10 +45,20 @@ are decided too, and so is **the parent/child rule** that came out of them:
 commands go down, answers and reports go up; an actor waits only on its
 children, as a state; siblings never answer each other, so nothing can
 deadlock; a child reports to its parent by its parent's address; every
-actor's use for a `Fault` is to pass it to its parent. None of it is built
-yet. **Next: the user chooses** between building these, the gateway, the
-session model or another open item. Ask; any build starts with an
-acceptance-test list for their approval.
+actor's use for a `Fault` is to pass it to its parent. **All of it is built**
+(CM1–CM51, 2026-10-02; the plan's "Building it" and "Built" items under the
+core review). In short: every envelope carries its sender; `report` goes to
+the parent; a parent's exit stops its children; deadlines are messages an
+actor sends itself (`tell_later`); hardware waits are `gated`; the
+Coordinator's handshakes and relaunch are states, with no Faulted, and it
+answers `GetStatus`; a role can hold a device's answer (ARMING /
+DISARMING), and the recorder is reached only by message; every
+`SourcePhase` means "now playing"; frames are stamped on
+`time.monotonic_ns`. **The user has yet to review the judgment calls listed
+under "Built"**, and the `Dev1-sim` and instrument runs listed there are
+still to do. **Next: the user chooses** between the gateway, the session
+model or another open item. Ask; any build starts with an acceptance-test
+list for their approval.
 
 `notes/instrument-dev-box.md` has the machine, its wiring, and how to run
 each hardware suite on the day testing resumes.
@@ -389,8 +399,10 @@ section explains why.
   keep taking plain constructor arguments and `DeviceSpec`s.
 - **An actor ignores a message it has no use for, told or asked** (user,
   2026-09-30): no answer, no Fault. Be conservative about sending messages.
-  A `Fault` is never "no use": every actor passes one to its parent
-  (decided 2026-10-02, not built). The Coordinator relays `SourcePhase`,
+  A `Fault` is never "no use": every actor passes one to its parent, unless
+  it came from that parent (2026-10-02). End a handler's match with
+  `case _: await super().handle(msg)` so that default is reached. The
+  Coordinator relays `SourcePhase`,
   for good (the parent/child rule, in the plan's "Open items → The core
   review").
 - **Method:** each test goes red before its implementation goes green. Tests

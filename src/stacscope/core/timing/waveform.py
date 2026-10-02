@@ -11,7 +11,7 @@ import numpy as np
 
 from stacscope.core.actors import Accepted
 from stacscope.core.ports import OutputConfig, SignalOutput
-from stacscope.core.protocol import MainApplied, MainDiscarded, QueueMain, SetWaveform, Waveform
+from stacscope.core.protocol import MainApplied, MainDiscarded, Phase, QueueMain, SetWaveform, Waveform
 from stacscope.core.timing.source import NotReady, TimingSource
 
 type Samples = tuple[np.ndarray, np.ndarray]  # (ao, do)
@@ -152,8 +152,23 @@ class WaveformSource(TimingSource):
 
     async def drain(self) -> None:
         if self._started:
-            await self.output.drain()
+            await self.gated(self.output.drain())
         await self.output.stop()
+
+    # --- where each phase plays ------------------------------------------------
+
+    def phase_start(self, phase: Phase) -> int | None:
+        # Entered just before its samples are queued: they start at the count
+        # queued so far. IDLE and ARMED are not samples.
+        if phase in (Phase.WARMUP, Phase.RUN, Phase.COOLDOWN):
+            return self._queued
+        return None
+
+    def until_played(self, sample: int) -> float | None:
+        if not self._started:
+            return None
+        played = self.output.samples_played()
+        return 0.0 if played >= sample else (sample - played) / self.config.rate
 
     # --- internals ---------------------------------------------------------------
 
@@ -175,7 +190,9 @@ class WaveformSource(TimingSource):
                     await self._go()  # pre-roll already fills the buffer
                     continue
             elif space < min(n - written, step):
-                await self.output.wait_for_space(min(n - written, step))
+                # Gated: a phase's announcement and a stop get in while it
+                # waits, and nothing else -- nothing here is left half-done.
+                await self.gated(self.output.wait_for_space(min(n - written, step)))
                 continue
             k = min(space, n - written)
             chunk = slice(written, written + k)
@@ -195,6 +212,7 @@ class WaveformSource(TimingSource):
     async def _go(self) -> None:
         await self.output.go()
         self._started = True
+        self.announce_due()  # WARMUP plays from now
 
     def _validate(self, waveform: Waveform, ao: np.ndarray, do: np.ndarray) -> str | None:
         n_ao, n_do = len(self.config.ao), len(self.config.do)

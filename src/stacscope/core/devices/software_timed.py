@@ -7,10 +7,12 @@ of the acquisition loop** — but it is part of the imaging system, and what it
 does needs to line up with the acquisition.
 
 It lines up with the acquisition's *edges*, and nothing finer. The timing
-source reports its phases to the Coordinator, which relays them to every
-device that subscribed -- a software-timed device subscribes as it starts --
-and the device starts its routine on the phase it chose: a shutter at WARMUP, so it is already
-moving; a driven variable at RUN, with the first image.
+source reports each phase as it starts playing, the Coordinator relays it to
+every device that subscribed -- a software-timed device subscribes as it
+starts -- and the device starts its routine on the phase it chose: a shutter
+at WARMUP, as output starts, so it is already moving; a driven variable at
+RUN, as the first MAIN plays, with the first image. An acquisition stopped
+before its first MAIN plays never reaches RUN.
 
 **That edge is control flow.** It crosses a mailbox, and possibly a process, so
 it is good to milliseconds, never microseconds. Nothing whose timing matters to

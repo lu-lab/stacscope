@@ -117,6 +117,21 @@ class Rig:
         self.listener = Listener()
         self.ref.tell(Subscribe(spawn(self.listener)))
         self.lengths = {"warmup": warmup, "main": main, "cooldown": cooldown}
+        # When each publication left the source, on the virtual clock.
+        self.published_at = []
+        publish = self.source.publish
+
+        def noting(msg, *args, **kwargs):
+            self.published_at.append((self.clock.now(), msg))
+            publish(msg, *args, **kwargs)
+
+        self.source.publish = noting
+
+    def taken_at(self, sample):
+        """When the cycle whose MAIN starts at ``sample`` took it: its
+        ``MainApplied``, published as that cycle begins."""
+        [when] = [t for t, m in self.published_at if isinstance(m, MainApplied) and m.sample == sample]
+        return when
 
     async def ask(self, msg, timeout=1.0):
         return await ask(self.ref, msg, timeout=timeout, clock=self.clock)
@@ -320,7 +335,11 @@ async def test_w8_an_update_plays_within_one_buffer_of_being_accepted():
     (W6), and then waits behind only what the hardware buffer already holds:
     nothing is queued in software ahead of it. So the buffer's depth is the
     whole of the latency, and a small buffer buys a responsive instrument --
-    the stale-output bound the user relies on when retuning live."""
+    the stale-output bound the user relies on when retuning live.
+
+    Measured from the boundary that takes it. Since the refill wait is gated
+    (CM13), the update is *accepted* as it arrives, mid-cycle, rather than at
+    that boundary; when it plays is unchanged."""
     rig = Rig()
     await rig.go(cycles=-1)
     await rig.clock.advance(1.25)
@@ -334,7 +353,8 @@ async def test_w8_an_update_plays_within_one_buffer_of_being_accepted():
 
     first_new = int(np.flatnonzero(rig.output.ao_played()[0] == 2.0)[0])
     plays_at = first_new / RATE
-    assert plays_at - accepted[0] <= CONFIG.buffer_samples / RATE
+    assert accepted[0] <= rig.taken_at(first_new)
+    assert plays_at - rig.taken_at(first_new) <= CONFIG.buffer_samples / RATE
 
 
 # --- W9-W13: a sequence of MAINs ----------------------------------------------------
@@ -420,7 +440,8 @@ async def test_w10_set_waveform_during_a_sequence_clears_it_and_lands_next():
     [dropped] = discarded(rig)
     assert dropped.tags == tuple(f"s{v}" for v in range(2 + switch, 8))
     first_new = int(np.flatnonzero(rig.output.ao_played()[0] == 9.0)[0])
-    assert first_new / RATE - accepted[0] <= CONFIG.buffer_samples / RATE
+    assert accepted[0] <= rig.taken_at(first_new)
+    assert first_new / RATE - rig.taken_at(first_new) <= CONFIG.buffer_samples / RATE
 
 
 async def test_w11_each_new_main_is_reported_with_its_cycle_and_first_sample():

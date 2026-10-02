@@ -122,6 +122,7 @@ class NiSignalOutput:
         self._draining = False
         self._reported = False
         self._last_generated = 0
+        self._played_at_stop: int | None = None
         self._ao = None
         self._do = None
         self._closed = False
@@ -177,6 +178,7 @@ class NiSignalOutput:
         self._playing = False
         self._draining = False
         self._reported = False
+        self._played_at_stop = None
 
     def space_available(self) -> int:
         self._open()
@@ -244,6 +246,18 @@ class NiSignalOutput:
         self._ao.start()
         self._playing = True
         self._last_generated = 0
+
+    def samples_played(self) -> int:
+        if self._played_at_stop is not None:
+            return self._played_at_stop
+        if not self._playing:
+            return 0
+        # The analog task's count: it is the master, and its sample clock is
+        # the one the digital task follows. Capped at what the caller wrote:
+        # the padding a drain adds (TAIL_PAD) is generated too, and is ours.
+        with self._translated():
+            generated = self._ao.out_stream.total_samp_per_chan_generated
+        return min(generated, self._written)
 
     async def wait_for_space(self, n: int) -> None:
         while (space := self.space_available()) < n:
@@ -330,6 +344,13 @@ class NiSignalOutput:
         """Safe in any state, any number of times. Both tasks are stopped even
         if the first refuses: giving up halfway leaves half the rig running,
         which on this instrument means lines still asserted."""
+        if self._playing and self._played_at_stop is None:
+            # Kept, not read again later: nothing plays after a stop, and a
+            # stopped task's count is not ours to rely on.
+            try:
+                self._played_at_stop = self.samples_played()
+            except Exception:  # noqa: BLE001 - a stop must go ahead whatever the count says
+                self._played_at_stop = 0
         self._playing = False
         failures = []
         for task in (self._ao, self._do):

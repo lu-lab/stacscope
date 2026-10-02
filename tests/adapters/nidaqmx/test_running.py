@@ -98,3 +98,34 @@ async def test_a_write_larger_than_the_space_never_reaches_the_driver(output, da
         await output.write(*block(11))
 
     assert daq.task("ao").written == []
+
+
+# --- CM40: what has played ------------------------------------------------------
+
+
+async def test_cm40_samples_played_is_the_analog_tasks_generated_count(output, daq):
+    """The analog task is the master: its count is the sample clock's. Read
+    in 0.03 ms on Dev1, cheap enough for every refill. Never more than was
+    written -- the padding behind a drain is ours, not the caller's -- and
+    nothing before the clock starts."""
+    await output.write(*block(64))
+    assert output.samples_played() == 0
+
+    await output.go()
+    daq.task("ao").out_stream.played = 40
+    assert output.samples_played() == 40
+    daq.task("ao").out_stream.played = 64 + 100  # TAIL_PAD is generated too
+    assert output.samples_played() == 64
+
+
+async def test_cm40_samples_played_holds_once_stopped(output, daq):
+    """A stopped task's count is not to be trusted to stay put, and nothing
+    plays after a stop: the count is kept as it was."""
+    await output.write(*block(64))
+    await output.go()
+    daq.task("ao").out_stream.played = 30
+
+    await output.stop()
+    daq.task("ao").out_stream.played = 0
+
+    assert output.samples_played() == 30

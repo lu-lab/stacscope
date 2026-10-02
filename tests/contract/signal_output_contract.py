@@ -40,6 +40,9 @@ __all__ = [
     "test_drain_makes_running_dry_the_expected_end",
     "test_output_consumes_samples_at_the_configured_rate",
     "test_running_dry_mid_stream_surfaces_as_underflow_on_the_next_call",
+    "test_samples_played_counts_what_has_played_and_never_what_has_not",
+    "test_samples_played_holds_once_output_stops",
+    "test_samples_played_is_zero_until_output_starts",
     "test_space_is_the_whole_buffer_once_configured",
     "test_starting_with_nothing_written_is_an_error",
     "test_stop_is_safe_whatever_the_state",
@@ -117,6 +120,50 @@ async def test_output_consumes_samples_at_the_configured_rate(rig):
     await rig.elapse(rig.length / 4)
 
     rig.near(output.space_available(), rig.depth / 4)
+
+
+async def test_samples_played_is_zero_until_output_starts(rig):
+    """CM40. The timing source dates each phase by the sample it starts at,
+    and announces it once that sample has played: nothing has before the
+    clock starts, however much is written."""
+    output = await _configured(rig)
+    await output.write(*rig.block(rig.depth // 2))
+    await rig.elapse(rig.length / 4)
+
+    assert output.samples_played() == 0
+
+
+async def test_samples_played_counts_what_has_played_and_never_what_has_not(rig):
+    """CM40. At the configured rate from ``go``, within the rig's slack, and
+    never more than was written -- a phase announced early is the bug this
+    exists to fix."""
+    output = await _configured(rig)
+    await output.write(*rig.block(rig.depth))
+    await output.go()
+
+    await rig.elapse(rig.length / 4)
+    quarter = output.samples_played()
+    await rig.elapse(rig.length / 2)
+    three_quarters = output.samples_played()
+
+    assert abs(quarter - rig.depth / 4) <= rig.slack, quarter
+    assert abs(three_quarters - rig.depth * 3 / 4) <= rig.slack, three_quarters
+    assert three_quarters <= rig.depth
+
+
+async def test_samples_played_holds_once_output_stops(rig):
+    """CM40. Nothing plays after a stop, so the count stops with it."""
+    output = await _configured(rig)
+    await output.write(*rig.block(rig.depth))
+    await output.go()
+    await rig.elapse(rig.length / 4)
+
+    await output.stop()
+    stopped = output.samples_played()
+    await rig.elapse(rig.length / 4)
+
+    assert output.samples_played() == stopped
+    assert abs(stopped - rig.depth / 4) <= rig.slack, stopped
 
 
 async def test_wait_for_space_returns_exactly_when_it_frees(rig):

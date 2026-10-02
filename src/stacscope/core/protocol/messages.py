@@ -175,8 +175,10 @@ class Finish:
 @message
 @dataclass(frozen=True, slots=True)
 class SourcePhase:
-    """Reported by the timing source to its parent on every phase transition,
-    and relayed by the Coordinator to whoever subscribed to it."""
+    """Reported by the timing source to its parent as each phase starts
+    playing -- "now playing", not "now queued" -- and relayed by the
+    Coordinator to whoever subscribed to it. Good to the control flow's
+    precision: milliseconds, never samples."""
 
     phase: Phase
 
@@ -243,8 +245,10 @@ class MainApplied:
     ``cycle`` counts MAIN cycles from 0 in this acquisition; ``sample`` is
     the index of the cycle's first sample in the acquisition's output,
     counting from the first sample of warmup, so it plays ``sample / rate``
-    seconds after output starts. Published when the cycle is committed,
-    which is ahead of when it plays."""
+    seconds after output starts. Published when the cycle is queued, a
+    buffer's depth ahead of when it plays -- unlike ``SourcePhase``, which
+    means "now playing". It says *where* the MAIN plays, and a closed loop
+    needs that early, to queue the next one in time."""
 
     tag: str | None
     cycle: int

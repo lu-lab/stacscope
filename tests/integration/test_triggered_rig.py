@@ -199,9 +199,9 @@ async def test_d12_the_software_timed_device_runs_against_the_same_acquisition()
 
     steps = system.pressure.log
     assert [p for p, _ in steps] == [5.0, 10.0, 15.0, 0.0], "the whole ramp, then vented"
-    # RUN is entered at t = 0 here: no device is slow to arm, and a phase is
-    # announced when it is committed rather than when it plays.
-    assert [round(t, 6) for _, t in steps[:3]] == [0.4, 0.8, 1.2], "its own clock, its own scale"
+    # RUN is announced as the first MAIN sample plays, after the 0.5 s WARMUP
+    # (CM42): the routine's first step is 0.4 s after that.
+    assert [round(t, 6) for _, t in steps[:3]] == [0.9, 1.3, 1.7], "its own clock, its own scale"
     assert steps[-1][1] > steps[-2][1], "vented after the last step, when the run ended"
     assert system.pressure.pressure == 0.0
     assert Phase.RUN in system.listener.phases()

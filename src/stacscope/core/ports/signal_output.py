@@ -64,6 +64,12 @@ class SignalOutput(Protocol):
         """Start the sample clock. ``RuntimeError`` if nothing has been written."""
         ...
 
+    def samples_played(self) -> int:
+        """How many of the samples written have played: 0 until ``go``,
+        never more than were written, and held from ``stop``. Cheap enough to
+        ask often."""
+        ...
+
     async def wait_for_space(self, n: int) -> None:
         """Return once ``n`` samples may be written. Raises ``Underflow``, or
         ``RuntimeError`` if the buffer is full and output was never started."""

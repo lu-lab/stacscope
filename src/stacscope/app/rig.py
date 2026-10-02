@@ -12,11 +12,11 @@ started. Rig.close stops an acquisition still running, then shuts everything
 down, devices first.
 
 The running rig says where things are: rig.ref is the Coordinator, to which
-StartAcquisition and StopAcquisition go; rig.device(name) is a device, for
-its own settings; rig.coordinator.source takes the waveforms; rig.buffers
-gives each streaming device's image buffer name, which a viewer opens; and
-rig.line(rig.triggers[name]) is the row of a device's trigger line in every
-digital waveform.
+StartAcquisition and StopAcquisition go; await rig.status() is its state and
+devices; await rig.device(name) is a device, for its own settings; await
+rig.source() takes the waveforms; rig.buffers gives each streaming device's
+image buffer name, which a viewer opens; and rig.line(rig.triggers[name]) is
+the row of a device's trigger line in every digital waveform.
 
 The NI source needs the "nidaqmx" extra, and reads the channels and rate
 from the tasks saved in NI MAX when the rig starts.
@@ -29,13 +29,17 @@ from collections.abc import Callable
 from stacscope.app.config import ConfigError, DeviceConfig, RigConfig, SourceConfig, check_triggers
 from stacscope.core.actors import Actor, ActorRef, AskTimeout, ask, describe, spawn
 from stacscope.core.ports import Clock, MonotonicClock, OutputConfig
-from stacscope.core.protocol import StopAcquisition
+from stacscope.core.protocol import GetStatus, Status, StopAcquisition
 from stacscope.core.timing import Coordinator, CoordinatorState, DeviceSpec, Launcher, Placement, WaveformSource
 from stacscope.core.transport import LaunchFailed, ProcessHost
 
 CLOSE_TIMEOUT = 30.0
-"""Seconds ``close`` gives a running acquisition to stop, and each actor to
-end, before going on without it."""
+"""Seconds ``close`` gives a running acquisition to stop, and the
+Coordinator, with every device under it, to end, before going on without
+it."""
+
+STATUS_TIMEOUT = 5.0
+"""Seconds the rig waits for the Coordinator to answer ``GetStatus``."""
 
 
 class Rig:
@@ -49,6 +53,7 @@ class Rig:
         ref: ActorRef,
         host: ProcessHost | None,
         made: dict[str, Actor],
+        clock: Clock,
     ) -> None:
         self.config = config
         self.output = output
@@ -63,6 +68,7 @@ class Rig:
         self.buffers = {d.name: d.options["buffer_name"] for d in config.devices if "buffer_name" in d.options}
         """Each streaming device's image buffer name."""
         self._made = made
+        self._clock = clock
 
     @classmethod
     async def start(
@@ -95,7 +101,7 @@ class Rig:
             launcher=Launcher(host),
         )
         ref = spawn(coordinator, clock=clock, name="coordinator")
-        rig = cls(config, output, coordinator, ref, host, made)
+        rig = cls(config, output, coordinator, ref, host, made, clock)
         try:
             await asyncio.wait_for(rig._launched(), launch_timeout)
         except TimeoutError:
@@ -106,9 +112,20 @@ class Rig:
             raise
         return rig
 
-    def device(self, name: str) -> ActorRef:
-        """The device called ``name`` in the rig config."""
-        return self.coordinator.participants[name]
+    async def status(self) -> Status:
+        """The Coordinator's ``Status``: its state, the acquisition's number,
+        and each device, present or lost."""
+        return await ask(self.ref, GetStatus(), timeout=STATUS_TIMEOUT, clock=self._clock)
+
+    async def device(self, name: str) -> ActorRef:
+        """The device called ``name`` in the rig config, where it is now.
+        Raises ``KeyError`` if there is none, or it is lost."""
+        return _present(await self.status(), name, source=False)
+
+    async def source(self) -> ActorRef:
+        """The timing source, where it is now; it takes the waveforms.
+        Raises ``KeyError`` if it is lost."""
+        return _present(await self.status(), None, source=True)
 
     def line(self, label: str) -> int:
         """The row of the digital line ``label`` in a waveform's ``do``."""
@@ -119,25 +136,19 @@ class Rig:
 
     async def close(self) -> None:
         """Stop an acquisition still running, through the Coordinator so
-        every device disarms and closes its file, then shut down the devices
-        in processes of their own, the devices here, the source and the
-        Coordinator. Safe to call more than once."""
-        if self.coordinator.state is CoordinatorState.RUNNING:
+        every device disarms and closes its file, then stop the Coordinator,
+        which stops every device first, here and in processes of their own.
+        Safe to call more than once."""
+        if not self.coordinator.stopped.is_set():
             with contextlib.suppress(AskTimeout):
-                await ask(self.ref, StopAcquisition(), timeout=CLOSE_TIMEOUT)
-        # The Coordinator first: it reports every device that exits under it
-        # as lost, and its clients would hear a deliberate shutdown as a
-        # string of Faults. It does nothing on the way out, and its exit stops
-        # it watching the devices in other processes.
+                if (await self.status()).state is CoordinatorState.RUNNING:
+                    await ask(self.ref, StopAcquisition(), timeout=CLOSE_TIMEOUT, clock=self._clock)
+        # Its exit stops its devices first, last launched first, each waited
+        # for, and reports none of them lost: a deliberate shutdown raises no
+        # Faults (G8).
         await _stopped(self.coordinator)
         if self.host is not None:
-            await self.host.close()
-        # A parent's exit does not stop its children, so those here are
-        # stopped one by one, in the reverse of their launch.
-        devices = [actor for name, actor in self._made.items() if name != "source"]
-        for actor in [*reversed(devices), self._made.get("source")]:
-            if actor is not None:
-                await _stopped(actor)
+            await self.host.close()  # stops listening; its children are already gone
 
     async def _launched(self) -> None:
         """Wait for the Coordinator to have launched everything, and for each
@@ -205,14 +216,23 @@ def _spec(device: DeviceConfig, made: dict[str, Actor], bus) -> DeviceSpec:
 
 
 def _kept(made: dict[str, Actor], name: str, factory: Callable[[], Actor]) -> Callable[[], Actor]:
-    """``factory``, keeping what it makes: a parent's exit does not stop its
-    children, so the rig stops the ones in this process itself."""
+    """``factory``, keeping what it makes, so that the rig can wait for each
+    device in this process to finish starting. Startup only: after that the
+    rig reaches them by message."""
 
     def make() -> Actor:
         actor = made[name] = factory()
         return actor
 
     return make
+
+
+def _present(status: Status, name: str | None, *, source: bool) -> ActorRef:
+    for device in status.devices:
+        if device.source == source and (source or device.name == name) and device.ref is not None:
+            return device.ref
+    what = "the timing source" if source else f"device {name!r}"
+    raise KeyError(f"{what} is not running")
 
 
 async def _stopped(actor: Actor) -> None:

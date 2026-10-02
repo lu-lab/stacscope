@@ -100,11 +100,11 @@ async def test_g14_a_rig_with_the_ni_source_reads_its_lines_from_max_and_runs(tm
         zeros = np.zeros((5, CYCLE)), np.zeros((2, CYCLE), dtype=bool)
         zeros[1][0, :10] = True  # a pulse on the camera's line, reaching nothing
         for name in Waveform:
-            assert await ask(rig.coordinator.source, SetWaveform(name, *zeros), timeout=5.0) == Accepted()
+            assert await ask(await rig.source(), SetWaveform(name, *zeros), timeout=5.0) == Accepted()
         assert isinstance(await ask(rig.ref, StartAcquisition(4, ""), timeout=10.0), AcquisitionStarted)
         deadline = time.monotonic() + 10.0
-        while rig.coordinator.state is not CoordinatorState.IDLE:
-            assert time.monotonic() < deadline, rig.coordinator.state
+        while (state := (await rig.status()).state) is not CoordinatorState.IDLE:
+            assert time.monotonic() < deadline, state
             await asyncio.sleep(0.02)
     finally:
         await rig.close()

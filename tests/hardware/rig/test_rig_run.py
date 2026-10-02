@@ -215,7 +215,7 @@ async def test_g13_both_cameras_record_a_cycle_the_coordinator_runs(config_path,
             # The cycle, from what each camera says it can take.
             floors = {}
             for device in (flash, ueye):
-                answer = await ask(rig.device(device.name), GetShortestTriggerPeriod(), timeout=10.0)
+                answer = await ask(await rig.device(device.name), GetShortestTriggerPeriod(), timeout=10.0)
                 assert isinstance(answer, ShortestTriggerPeriod), f"{device.name}: {answer!r}"
                 floors[device.name] = answer.seconds
             period = math.ceil(floors[flash.name] * RATE - 1e-6)  # samples, rounded up
@@ -243,10 +243,10 @@ async def test_g13_both_cameras_record_a_cycle_the_coordinator_runs(config_path,
             waveforms = [(Waveform.WARMUP, quiet), (Waveform.MAIN, (ao, do)), (Waveform.COOLDOWN, closing)]
             for name, (a, d) in waveforms:
                 assert not a.any(), "every analog output stays at 0 V"
-                assert await ask(rig.coordinator.source, SetWaveform(name, a, d), timeout=10.0) == Accepted()
+                assert await ask(await rig.source(), SetWaveform(name, a, d), timeout=10.0) == Accepted()
 
             for device in (flash, ueye):
-                answer = await ask(rig.device(device.name), SetSaveDirectory(str(folders[device.name])), timeout=10.0)
+                answer = await ask(await rig.device(device.name), SetSaveDirectory(str(folders[device.name])), timeout=10.0)
                 assert isinstance(answer, SaveDirectory), f"{device.name}: {answer!r}"
 
             starting = time.monotonic()
@@ -254,8 +254,8 @@ async def test_g13_both_cameras_record_a_cycle_the_coordinator_runs(config_path,
             assert isinstance(answer, AcquisitionStarted), answer
             started = time.monotonic() - starting
             deadline = time.monotonic() + cycles / CYCLES_PER_SECOND + 180.0
-            while rig.coordinator.state is not CoordinatorState.IDLE:
-                assert time.monotonic() < deadline, f"still {rig.coordinator.state}: {listener.faults()}"
+            while (state := (await rig.status()).state) is not CoordinatorState.IDLE:
+                assert time.monotonic() < deadline, f"still {state}: {listener.faults()}"
                 await asyncio.sleep(0.05)
             ran = time.monotonic() - starting
             faults = listener.faults()

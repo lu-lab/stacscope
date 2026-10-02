@@ -32,6 +32,8 @@ from stacscope.core.buffer import ImageBuffer
 from stacscope.core.protocol import (
     AcquisitionStarted,
     Phase,
+    SaveDirectory,
+    SetSaveDirectory,
     SetWaveform,
     SourcePhase,
     StartAcquisition,
@@ -114,13 +116,13 @@ def cycle(rig, n):
 async def load_waveforms(rig):
     quiet = np.zeros((len(rig.output.ao), 4)), np.zeros((len(rig.output.do), 4), dtype=bool)
     for name, (ao, do) in [(Waveform.WARMUP, quiet), (Waveform.MAIN, cycle(rig, CYCLE)), (Waveform.COOLDOWN, quiet)]:
-        assert await ask(rig.coordinator.source, SetWaveform(name, ao, do), timeout=DEADLINE) == Accepted()
+        assert await ask(await rig.source(), SetWaveform(name, ao, do), timeout=DEADLINE) == Accepted()
 
 
 async def until_idle(rig, listener):
     deadline = time.monotonic() + DEADLINE
-    while rig.coordinator.state is not CoordinatorState.IDLE:
-        assert time.monotonic() < deadline, f"still {rig.coordinator.state}: {listener.faults()}"
+    while (state := (await rig.status()).state) is not CoordinatorState.IDLE:
+        assert time.monotonic() < deadline, f"still {state}: {listener.faults()}"
         await asyncio.sleep(0.01)
 
 
@@ -226,6 +228,26 @@ async def test_g8_closing_a_rig_mid_acquisition_stops_it_and_lets_everything_go(
     assert all(gone(name) for name in buffers.values()), "every segment released"
     assert listener.faults() == []
     assert Phase.COOLDOWN in [m.phase for m in listener.heard if isinstance(m, SourcePhase)]
+
+
+async def test_cm50_the_rig_reads_the_coordinator_through_messages(rigs, directories):
+    """The rig holds the Coordinator object only to start and stop it. Its
+    state and its devices come from ``GetStatus``, as the gateway will get
+    them, so a device relaunched is found where it now is."""
+    rig = await rigs(rig_file(directories))
+
+    status = await rig.status()
+    flash = await rig.device("flash")
+    source = await rig.source()
+
+    assert status.state is CoordinatorState.IDLE
+    assert [d.name for d in status.devices] == ["source", "flash", "ueye"]
+    assert flash.address == "coordinator/flash" and source.address == "coordinator/source"
+    folder = directories / "elsewhere"
+    folder.mkdir()
+    assert await ask(flash, SetSaveDirectory(str(folder)), timeout=DEADLINE) == SaveDirectory(str(folder))
+    with pytest.raises(KeyError):
+        await rig.device("no such device")
 
 
 async def test_g9_a_device_that_cannot_launch_fails_the_start_and_nothing_is_left_running(directories):

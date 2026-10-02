@@ -4166,6 +4166,90 @@ policy, or state the Coordinator shouldn't hold.
     failure semantics are careful; role order is enforced; placement is
     transparent to the Coordinator; the buffer path never touches control.
     None of the problems is structural.
+  - *Principles, decided while going through the actor model (user,
+    2026-10-02), before the observations:*
+    - **Long work does not block the handler.** The Coordinator's start and
+      stop handshakes become states the Coordinator passes through, driven
+      by the replies arriving in its mailbox, not a helper loop or task.
+      A handler never awaits another actor. A wait on the actor's own
+      hardware is unavoidable; how it is handled depends on what should
+      happen if another message arrives meanwhile, decided per action.
+      Waits have been used as backpressure, which made a stop wait behind
+      them; one idea (user) is a wait during which only messages of higher
+      priority than the current one are taken. To be discussed.
+    - **There are no special kinds of message.** A reply is an ordinary
+      message told to the asker. `ask` is shorthand for a pattern: send,
+      expect a reply from the recipient, act on the reply or on a timeout.
+      Publish/subscribe is likewise a pattern, not a message type.
+    - **A ref is the only handle on an actor.** Exceptions are kept to a
+      minimum and reserved for the roots and maintenance processes that are
+      not actors (the rig, a child process's entry point, tests). Any other
+      exception is proposed and discussed on its own (user).
+    - **An actor reaches another only by messaging**, at the addresses it
+      knows: its parent, its children, the sender of the message it is
+      handling, and addresses carried in messages.
+    - **Subscriber lists are the actor's own business.** Several are fine
+      when tied to a role or a temporary state (waiting for replies);
+      whatever keeps the logic simplest. They stay inside the actor and need
+      not be uniform.
+    - **A parent's exit stops its children.** This reverses the rule that
+      children outlive their parent. Children stop first, in reverse launch
+      order, then the parent's own `teardown` runs. A child already finishing
+      (a recorder told `FinishRecording`) is waited for, not cut short. A
+      child stopped this way is not reported as a lost device.
+    - **Deadlines are scheduled self-messages.** A timer set when the
+      request goes out delivers a deadline message to the actor's own
+      mailbox, and is ignored if the reply came first. It is an event-loop
+      timer: no thread, no loop. The `Clock` port gains `call_later` so
+      virtual time still drives it. Favour whatever is most robust in each
+      case; internal threads are not ruled out.
+    - **Hardware waits use a priority-gated wait** (Claude's recommendation,
+      under discussion): at a marked wait, the actor takes only messages of
+      higher priority than the one it is handling. Waits on other actors are
+      states instead.
+    - **Every envelope carries its sender.** A reply is an ordinary tell
+      back to the sender; `ask` remains a convenience for roots. The wire's
+      reply field becomes the sender.
+    - **An abort is not an emergency.** `StopDevice` to a running source
+      stays Finish-like: the cycle completes, then COOLDOWN.
+    - **An emergency halt is added.** Sent only from the root, normally by
+      the user in response to an unsafe hardware state. Every actor moves to
+      a safe state and passes the halt to its children. The DAQ source
+      interrupts and writes the last sample of COOLDOWN. Its shape is to be
+      worked out; the user is still thinking it over (2026-10-02). Claude's
+      proposal, kept for then and not decided:
+      - *Name and priority.* `Halt`, at a new priority level above URGENT,
+        so an actor in a gated wait while handling an URGENT message still
+        takes it.
+      - *Root only.* An actor acts on `Halt` only when the envelope's
+        sender is its parent, so a halt can only start at the root and
+        travel down the tree.
+      - *Spread.* Pass it to every child first, then go to its own safe
+        state, without waiting for the children. Process children get it
+        over their link like any other message.
+      - *Safe state.* A `halt()` hook on each actor, defaulting to the
+        device's `disarm`. An adapter overrides it where safe means more (a
+        shutter closes, a pressure box vents); the source's override
+        interrupts output and writes the last COOLDOWN sample.
+      - *Confirmation.* Each actor answers its parent `Halted(name, safe,
+        reason)`, and each parent passes a summary up, so the user learns
+        which hardware is confirmed safe. The alternative is
+        fire-and-forget. Open.
+      - *Afterwards.* The actor stays halted and refuses work until the root
+        clears it; the Coordinator gains a HALTED state that refuses
+        `StartAcquisition`. The alternative is ending the halt in a restart.
+        Open.
+      - *Limits that cannot be designed away.* An actor inside a blocking
+        driver call cannot act until the call returns. Killing a stuck
+        process child does not make its hardware safe, so a device that
+        does not answer `Halted` is reported as unconfirmed, not killed
+        automatically. A sample-clocked NI task cannot do one on-demand
+        write: it must be stopped and retimed, or a separate static write
+        used. The `SignalOutput` port would gain `halt(sample)`, under the
+        contract suite, checked on `Dev1-sim` and run by the user on `Dev1`.
+      - *Open question.* What a halt writes while idle, or before any
+        COOLDOWN is set: a safe sample named in the rig config, or the last
+        COOLDOWN played.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

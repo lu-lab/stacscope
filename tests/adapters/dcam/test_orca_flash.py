@@ -105,7 +105,8 @@ async def launch():
         )
         ref = parent.spawn_child(device, name=f"camera{len(launched)}")
         listener = Listener()
-        ref.tell(Subscribe(spawn(listener)))
+        # A child reports to its parent, and the root publishes: listen there.
+        parent.ref.tell(Subscribe(spawn(listener)))
         launched.append((device, listener, fake))
         if wait:
             await _either(device.started.wait(), device.stopped.wait())

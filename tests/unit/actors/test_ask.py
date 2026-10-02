@@ -51,18 +51,18 @@ async def test_ask_times_out_exactly_at_the_deadline_in_virtual_time():
         await asking
 
 
-async def test_tell_carries_no_reply_address():
+async def test_a_tell_from_outside_any_actor_carries_no_sender():
     class Replier(Actor):
         def __init__(self):
             super().__init__()
-            self.reply_to_seen = "unset"
+            self.sender_seen = "unset"
 
         async def handle(self, msg):
-            self.reply_to_seen = self.reply_to
+            self.sender_seen = self.sender
             self.stop()
 
     actor = Replier()
     spawn(actor).tell(Ping(0))
     await asyncio.wait_for(actor.stopped.wait(), timeout=1)
 
-    assert actor.reply_to_seen is None
+    assert actor.sender_seen is None

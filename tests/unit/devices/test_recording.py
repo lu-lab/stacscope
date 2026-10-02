@@ -95,7 +95,8 @@ class Rig:
         self.device = cls(**kwargs)
         self.ref = self.parent.spawn_child(self.device, name=name)
         self.listener = Listener()
-        self.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name=f"{name}-listener")))
+        # A child reports to its parent, and the root publishes: listen there.
+        self.parent.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name=f"{name}-listener")))
 
     def faults(self):
         return [m for m in self.listener.heard if isinstance(m, Fault)]

@@ -129,7 +129,8 @@ class Finish:
 @message
 @dataclass(frozen=True, slots=True)
 class SourcePhase:
-    """Published by the timing source on every phase transition."""
+    """Reported by the timing source to its parent on every phase transition,
+    and relayed by the Coordinator to whoever subscribed to it."""
 
     phase: Phase
 

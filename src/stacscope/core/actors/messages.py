@@ -78,8 +78,11 @@ class Rejected:
 @message
 @dataclass(frozen=True, slots=True)
 class Fault:
-    """Published when an actor hits an error that is not a reply to anyone.
-    ``fatal`` means the publisher cannot continue in its role."""
+    """Reported to an actor's parent when it hits an error that is not an
+    answer to anyone. Every actor passes one it receives on to its parent,
+    unless it acts on it, and a root publishes it, so a Fault rises until
+    something handles it. ``source`` is the actor that faulted; ``fatal``
+    means it cannot continue in its role."""
 
     source: ActorRef
     reason: str

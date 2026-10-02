@@ -52,7 +52,8 @@ async def rig(request):
     device = OrcaFlash(name, library=fake, n_slots=6, capacity_bytes=1 << 20, max_slots=16)
     ref = parent.spawn_child(device, name="camera")
     listener = Listener()
-    ref.tell(Subscribe(spawn(listener)))
+    # A child reports to its parent, and the root publishes: listen there.
+    parent.ref.tell(Subscribe(spawn(listener)))
     await device.started.wait()
 
     async def trigger(n: int) -> None:

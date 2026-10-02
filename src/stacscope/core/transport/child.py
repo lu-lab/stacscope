@@ -58,7 +58,7 @@ async def serve(
         return UNINSTRUCTED
 
     connection = Connection(reader, writer, Wire(Codec(MESSAGES)))
-    actor = await _build(factory, address, bootstrap_timeout)
+    actor = await _build(factory, address, connection, bootstrap_timeout)
     if isinstance(actor, str):
         send_frame(writer, msgpack.packb({"error": actor}))
         await connection.close()
@@ -96,12 +96,16 @@ async def _connect(endpoint: str, timeout: float):
         return None
 
 
-async def _build(factory: bytes, address: str, timeout: float) -> Actor | str:
+async def _build(factory: bytes, address: str, connection: Connection, timeout: float) -> Actor | str:
     """The actor, or why there is not one. Construction and ``setup`` both
     count: a device that cannot open its hardware has not started."""
+    # Its parent is across the link: the address says who it is, and the
+    # link reaches it, as it reaches anything not registered on this side.
+    lineage, _, name = address.rpartition("/")
+    parent = connection.peer.ref_to(lineage) if lineage else None
     try:
         actor = pickle.loads(factory)()
-        spawn(actor, address=address)
+        spawn(actor, parent=parent, name=name)
     except Exception as exc:
         return repr(exc)
     await _either(actor.started.wait(), actor.stopped.wait(), timeout=timeout)

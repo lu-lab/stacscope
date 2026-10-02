@@ -1,6 +1,7 @@
 """Location-transparent actor addresses."""
 
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -9,14 +10,15 @@ from stacscope.core.actors.mailbox import Priority
 
 @dataclass(frozen=True, slots=True)
 class Envelope:
-    """A message plus where to send the reply, if anyone is waiting for one.
+    """A message plus who sent it, so whoever handles it can answer.
 
-    The reply address rides here rather than in the message so that message
-    types stay plain data.
+    The sender rides here rather than in the message so that message types
+    stay plain data. ``None`` when the message came from outside any actor
+    and nobody is waiting to hear back.
     """
 
     msg: object
-    reply_to: "ActorRef | None" = None
+    sender: "ActorRef | None" = None
 
 
 class Transport(Protocol):
@@ -33,6 +35,20 @@ class LocalTransport:
 
     def deliver(self, envelope: Envelope, priority: Priority) -> None:
         self._receive(envelope, priority)
+
+
+# Set in each actor's own task by the runtime, and inherited by every task
+# the actor starts, so a tell from a handler or a routine names its sender
+# without the call site having to. A callback scheduled from the actor's task
+# copies it too, which is right for a message an actor sends itself later.
+current_sender: ContextVar["ActorRef | None"] = ContextVar("current_sender", default=None)
+
+
+class _Unset:
+    pass
+
+
+_FROM_CONTEXT = _Unset()
 
 
 class ActorRef:
@@ -61,6 +77,10 @@ class ActorRef:
         msg: object,
         priority: Priority = Priority.NORMAL,
         *,
-        reply_to: "ActorRef | None" = None,
+        sender: "ActorRef | None | _Unset" = _FROM_CONTEXT,
     ) -> None:
-        self._transport.deliver(Envelope(msg, reply_to), priority)
+        """Send ``msg``. The sender is the actor this is called from, or
+        ``None`` from outside any actor; pass ``sender`` to name another."""
+        if isinstance(sender, _Unset):
+            sender = current_sender.get()
+        self._transport.deliver(Envelope(msg, sender), priority)

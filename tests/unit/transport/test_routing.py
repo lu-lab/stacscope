@@ -117,7 +117,7 @@ async def test_a_heartbeat_that_crosses_is_answered_while_a_handler_blocks(link,
 
     replies: list[object] = []
     watch = ActorRef(LocalTransport(lambda envelope, _: replies.append(envelope.msg)), "watch#1")
-    remote.tell(Heartbeat(), Priority.URGENT, reply_to=watch)
+    remote.tell(Heartbeat(), Priority.URGENT, sender=watch)
     await clock.advance(0)
 
     assert replies == [HeartbeatReply()]
@@ -154,6 +154,23 @@ async def test_a_ref_inside_a_message_is_usable_from_the_far_side(link, clock):
 
     assert launched.device.address == "device"
     assert device.handled == [StopDevice()]
+
+
+async def test_cm7_an_ordinary_tell_is_answered_across_the_boundary(link, clock):
+    """Every envelope carries its sender, so an answer is a plain tell back,
+    and a parent need not ``ask`` a child in another process to hear from it.
+    The sender is an actor here, never registered with the peer: it has to be
+    reachable from the far side all the same."""
+    coordinator = Recorder()
+    here = spawn(coordinator, clock=clock, name="coordinator")
+    device = Recorder()
+    await live(device, link.there, clock, "device")
+
+    link.here.ref_to("device").tell(StartDevice("fish", 3), sender=here)
+    await clock.advance(0)
+
+    assert device.handled == [StartDevice("fish", 3)]
+    assert coordinator.handled == [DeviceReady()]
 
 
 async def test_a_frame_for_an_address_that_is_not_here_is_refused(link, clock):

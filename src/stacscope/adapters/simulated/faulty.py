@@ -13,7 +13,7 @@ import sys
 import time
 from enum import Enum
 
-from stacscope.core.actors import Actor
+from stacscope.core.actors import Actor, Fault
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
 
 
@@ -36,6 +36,9 @@ class Fail(Enum):
     the failure a closed connection cannot detect and only a heartbeat can."""
     QUIT = "quit"
     """An orderly stop, from the device's own side."""
+    REPORT = "report"
+    """Reports a non-fatal ``Fault`` to its parent and carries on: a driver
+    warning, the kind of news a device has that nobody asked for."""
 
 
 class FaultyDevice(Actor):
@@ -73,6 +76,8 @@ class FaultyDevice(Actor):
                 self.reply(DeviceReady())
             case StopDevice():
                 self.reply(DeviceStopped())
+            case _:
+                await super().handle(msg)
 
     async def _misbehave(self) -> None:
         match self.fail:
@@ -86,6 +91,8 @@ class FaultyDevice(Actor):
                 time.sleep(3600)  # deliberately not awaited: the loop stops too
             case Fail.QUIT:
                 self.stop()
+            case Fail.REPORT:
+                self.report(Fault(self.ref, "the driver reported a warning", fatal=False))
             case Fail.NOTHING:
                 pass
 

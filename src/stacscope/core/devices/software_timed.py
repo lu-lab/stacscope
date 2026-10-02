@@ -43,12 +43,12 @@ class SoftwareTimed:
     A routine is cancelled when the device stops, before the adapter's
     ``disarm`` reaches its safe state: an interrupted experiment vents the
     pressure and closes the shutter like any other. A routine that raises is
-    published as a fatal ``Fault`` when it does; the device stays armed until
+    reported as a fatal ``Fault`` when it does; the device stays armed until
     it is stopped.
     """
 
     start_phase: Phase = Phase.RUN
-    """Which published phase starts the routine."""
+    """Which relayed phase starts the routine."""
 
     _routine: asyncio.Task | None = None
 
@@ -78,7 +78,7 @@ class SoftwareTimed:
         if routine.cancelled() or routine.exception() is None:
             return
         reason = f"{type(self).__name__} routine failed: {routine.exception()!r}"
-        self.publish(Fault(self.ref, reason, fatal=True))
+        self.report(Fault(self.ref, reason, fatal=True))
 
     async def disarm(self) -> None:
         routine, self._routine = self._routine, None

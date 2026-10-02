@@ -116,13 +116,13 @@ class Coordinator(Actor):
             await self._launch(spec)
 
     async def _launch_source(self) -> None:
+        # Nothing to subscribe to: the source reports its phases, and every
+        # device its Faults, to its parent by address.
         self.source = await self._spawn(self._source_spec)
-        self.source.tell(Subscribe(self.ref))
 
     async def _launch(self, spec: DeviceSpec) -> None:
         ref = self.participants[spec.name] = await self._spawn(spec)
-        ref.tell(Subscribe(self.ref))  # so a device's faults reach here, not just its death
-        self.ref.tell(Subscribe(ref))  # and so the source's phases reach the device
+        self.ref.tell(Subscribe(ref))  # so the source's phases reach the device
 
     async def _spawn(self, spec: DeviceSpec) -> ActorRef:
         """Wherever the launcher puts it, what comes back is a ref like any other."""
@@ -149,8 +149,8 @@ class Coordinator(Actor):
                 if self._refuse(msg, CoordinatorState.RUNNING):
                     return
                 self.state = CoordinatorState.STOPPING
-                if self.reply_to is not None:
-                    self._stop_waiters.append(self.reply_to)
+                if self.sender is not None:
+                    self._stop_waiters.append(self.sender)
                 self.source.tell(Finish(), Priority.URGENT)
             case Relaunch(name):
                 await self._relaunch(name)
@@ -170,9 +170,8 @@ class Coordinator(Actor):
             case _:
                 # Ignored, told or asked (user, 2026-09-30). The Coordinator
                 # hears everything its source publishes -- MainApplied and
-                # MainDiscarded are for whoever queued the waveforms -- and a
-                # Fault for each went to every participant and client.
-                pass
+                # MainDiscarded are for whoever queued the waveforms.
+                await super().handle(msg)
 
     async def _start(self, start: StartDevice) -> None:
         self.state = CoordinatorState.STARTING
@@ -185,7 +184,7 @@ class Coordinator(Actor):
         not_ready = [f"{spec.name} ({why})" for (spec, _), why in zip(devices, answers) if why]
         if not_ready:
             reason = f"not ready: {'; '.join(not_ready)}"
-            self.publish(Fault(self.ref, reason, fatal=False))
+            self.report(Fault(self.ref, reason, fatal=False))
             self.reply(Rejected(reason))
             await self._stop_everyone()
             self.state = CoordinatorState.IDLE
@@ -212,7 +211,7 @@ class Coordinator(Actor):
         unconfirmed = [spec.name for (spec, _), ok in zip(devices, stopped) if not ok]
         if unconfirmed:
             reason = f"stop not confirmed: {', '.join(unconfirmed)}"
-            self.publish(Fault(self.ref, reason, fatal=False))
+            self.report(Fault(self.ref, reason, fatal=False))
 
     async def _stopped(self, spec: DeviceSpec, ref: ActorRef) -> bool:
         timeout = spec.stop_timeout if spec.stop_timeout is not None else spec.ready_timeout
@@ -226,7 +225,7 @@ class Coordinator(Actor):
             self.source = None
             self.state = CoordinatorState.FAULTED
             reason = f"timing source lost: {error or 'exited'}"
-            self.publish(Fault(self.ref, reason, fatal=True))
+            self.report(Fault(self.ref, reason, fatal=True))
             self._release_stop_waiters(Rejected(reason))
             await self._stop_everyone()
             return
@@ -234,7 +233,7 @@ class Coordinator(Actor):
             if ref == child:
                 del self.participants[name]
                 reason = f"participant {name} exited: {error or 'clean stop'}"
-                self.publish(Fault(self.ref, reason, fatal=False))
+                self.report(Fault(self.ref, reason, fatal=False))
                 if self._specs[name].required:
                     await self._abort(f"stopped by the loss of {name}")
 
@@ -254,7 +253,7 @@ class Coordinator(Actor):
         if self.state not in (CoordinatorState.RUNNING, CoordinatorState.STOPPING):
             return
         self.state = CoordinatorState.STOPPING
-        self.publish(Fault(self.ref, reason, fatal=False))
+        self.report(Fault(self.ref, reason, fatal=False))
         await self._stop_everyone()
         self.state = CoordinatorState.IDLE
         self._release_stop_waiters(AcquisitionStopped())
@@ -287,6 +286,18 @@ class Coordinator(Actor):
             self.state = CoordinatorState.IDLE
         self.reply(Accepted())
 
+    def publish(self, msg: object, priority: Priority = Priority.NORMAL) -> None:
+        """Clients hear everything; a device subscribed here hears only the
+        timing phases."""
+        # A device told a Fault would pass it back up, and the two would trade
+        # it for ever; told of a launch, it would hold a sibling's ref. Its
+        # only business here is the phases (the parent/child rule).
+        devices = set(self.participants.values())
+        for subscriber in list(self._subscribers):
+            if subscriber in devices and not isinstance(msg, SourcePhase):
+                continue
+            subscriber.tell(msg, priority)
+
     def _lost_required(self) -> list[str]:
         return [
             name
@@ -312,7 +323,7 @@ class Coordinator(Actor):
         return True
 
     def _reject(self, reason: str) -> None:
-        if self.reply_to is not None:
+        if self.sender is not None:
             self.reply(Rejected(reason))
         else:
-            self.publish(Fault(self.ref, reason, fatal=False))
+            self.report(Fault(self.ref, reason, fatal=False))

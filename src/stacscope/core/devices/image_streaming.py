@@ -302,7 +302,7 @@ class ImageStreaming:
             # Nothing more is published this acquisition: a consumer counting
             # frames would misplace every one after the gap.
             reason = f"{type(self).__name__} stopped publishing: {exc!r}"
-            self.publish(Fault(self.ref, reason, fatal=True))
+            self.report(Fault(self.ref, reason, fatal=True))
 
     def _publish(self, seen: int, delivered: int, layout: Layout) -> int:
         """Stamps and publishes frames ``seen`` to ``delivered - 1`` of this

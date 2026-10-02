@@ -70,6 +70,7 @@ class Listener(Actor):
 
     async def handle(self, msg):
         self.heard.append(msg)
+        await super().handle(msg)  # as the rig's parent, a Fault goes on to the listener
 
     def faults(self):
         return [m for m in self.heard if isinstance(m, Fault)]
@@ -85,7 +86,8 @@ class Rig:
         spawn(self.parent, clock=self.clock, name="parent")
         self.ref = self.parent.spawn_child(self.device, name="device")
         self.listener = Listener()
-        self.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name="listener")))
+        # A child reports to its parent, and the root publishes: listen there.
+        self.parent.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name="listener")))
 
     async def ask(self, msg):
         return await ask(self.ref, msg, timeout=1.0, clock=self.clock)
@@ -171,6 +173,7 @@ async def test_an_unexpected_arm_failure_is_answered_and_published_as_fatal():
     assert "DCAMERR_BUSY" in reply.reason
     assert rig.device.state is DeviceState.IDLE
 
+    await rig.clock.advance(0)  # up to the parent, and out to its listener
     (fault,) = rig.listener.faults()
     assert fault.fatal, "the user decides what happens next"
     assert "DCAMERR_BUSY" in fault.reason

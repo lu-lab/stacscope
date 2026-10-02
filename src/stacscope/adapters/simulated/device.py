@@ -45,3 +45,5 @@ class SimulatedDevice(Actor):
             case StopDevice():
                 self.calls.append(("stop", self.clock.now()))
                 self.reply(DeviceStopped())
+            case _:
+                await super().handle(msg)

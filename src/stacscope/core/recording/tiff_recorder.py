@@ -131,6 +131,8 @@ class TIFFRecorder(Actor):
                 self.stop()
             case _WriterFailed(error):
                 raise error
+            case _:
+                await super().handle(msg)
 
     async def teardown(self) -> None:
         self._abort = True

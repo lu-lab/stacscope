@@ -153,7 +153,7 @@ class Recording:
 
     async def disarm(self) -> None:
         """Closes the file, then disarms everything listed after it. A file
-        that will not close is published as a fatal ``Fault``, not raised."""
+        that will not close is reported as a fatal ``Fault``, not raised."""
         # Not raised: letting it propagate would skip whatever the adapter does
         # after its own super().disarm() — the shutter it closes, the pressure
         # it vents — so a full disk could leave hardware running. The data may
@@ -164,5 +164,5 @@ class Recording:
                 self._recording = False  # the file is no longer ours, closed or not
                 await self.close_recording()
         except Exception as exc:
-            self.publish(Fault(self.ref, f"recording may be truncated: {exc!r}", fatal=True))
+            self.report(Fault(self.ref, f"recording may be truncated: {exc!r}", fatal=True))
         await super().disarm()

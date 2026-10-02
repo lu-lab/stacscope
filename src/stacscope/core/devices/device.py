@@ -43,7 +43,7 @@ class TimedDevice(Actor):
     Failing to arm and failing to disarm are not the same failure.
     ``NotReady`` is a refusal, answered and forgotten. Any other exception from
     ``arm`` is a hardware fault: the device is answered ``Rejected`` and
-    publishes a fatal ``Fault`` so the acquisition does not proceed, but it
+    reports a fatal ``Fault`` so the acquisition does not proceed, but it
     stays alive and idle, because nothing about it is unknown and a relaunch
     would help nobody. A ``disarm`` that fails is the opposite — the hardware's
     state is now unknown, so the device dies rather than confirm a stop it did
@@ -140,11 +140,10 @@ class TimedDevice(Actor):
                     await self._disarm()
                 self.reply(DeviceStopped())
             case _:
-                # Ignored, told or asked (user, 2026-09-30): much of what
-                # arrives is someone else's broadcast, and a Fault published
-                # for it reaches every subscriber. An asker that sent the
-                # wrong thing learns it from its own timeout.
-                pass
+                # Ignored, told or asked (user, 2026-09-30), except a Fault,
+                # which the base passes up. An asker that sent the wrong thing
+                # learns it from its own timeout.
+                await super().handle(msg)
 
     async def _start(self, msg: object, root_filename: str, cycles: int) -> None:
         if self.state is not DeviceState.IDLE:
@@ -177,10 +176,11 @@ class TimedDevice(Actor):
             await self.close()
 
     def _reject(self, reason: str, *, fatal: bool = False) -> None:
-        """Answer the request, and publish anything nobody is waiting on. A
-        fatal fault is published as well as answered: the requester learns the
-        acquisition cannot start, and subscribers learn why."""
-        if self.reply_to is not None:
+        """Answer the request, and report to the parent anything nobody is
+        waiting on. A fatal fault is reported as well as answered: the
+        requester learns the acquisition cannot start, and whoever supervises
+        the device learns why."""
+        if self.sender is not None:
             self.reply(Rejected(reason))
-        if fatal or self.reply_to is None:
-            self.publish(Fault(self.ref, reason, fatal=fatal))
+        if fatal or self.sender is None:
+            self.report(Fault(self.ref, reason, fatal=fatal))

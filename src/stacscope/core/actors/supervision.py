@@ -45,7 +45,7 @@ class ChildWatch:
         self._reported = True
         self._stop_heartbeat()
         self._release()
-        self._parent.tell(ChildExited(self._child, error), Priority.URGENT)
+        self._parent.tell(ChildExited(self._child, error), Priority.URGENT, sender=self._child)
 
     def close(self) -> None:
         """The parent is exiting; stop watching without reporting."""

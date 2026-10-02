@@ -51,7 +51,8 @@ async def rig(request):
     )
     ref = parent.spawn_child(device, name="camera")
     listener = Listener()
-    ref.tell(Subscribe(spawn(listener)))
+    # A child reports to its parent, and the root publishes: listen there.
+    parent.ref.tell(Subscribe(spawn(listener)))
     await device.started.wait()
 
     async def trigger(n: int) -> None:

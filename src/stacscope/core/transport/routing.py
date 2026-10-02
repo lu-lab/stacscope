@@ -29,10 +29,12 @@ class Peer:
         self._wire = wire
         self._send = send
         self._local: dict[str, ActorRef] = {}
-        self._replies: weakref.WeakValueDictionary[str, ActorRef] = weakref.WeakValueDictionary()
-        """One-shot ``ask`` addresses that have crossed, held weakly: reachable
-        while the asker is still waiting, released when it stops. Strong refs
-        here would be a slow leak for the life of the connection."""
+        self._senders: weakref.WeakValueDictionary[str, ActorRef] = weakref.WeakValueDictionary()
+        """Senders from this side that have crossed, so the far side can answer
+        them: actors not registered here, and every ``ask``'s one-shot address.
+        Held weakly: reachable while the sender lives (an ask while its asker
+        is waiting), released after. Strong refs here would be a slow leak for
+        the life of the connection."""
 
     # --- what is here ------------------------------------------------------
 
@@ -44,8 +46,8 @@ class Peer:
         self._local.pop(address, None)
 
     def pending_replies(self) -> int:
-        """One-shot reply addresses still reachable here. Diagnostic."""
-        return len(self._replies)
+        """One-shot ``ask`` addresses still reachable here. Diagnostic."""
+        return sum(REPLY_MARK in address for address in list(self._senders))
 
     # --- how to reach the rest ---------------------------------------------
 
@@ -55,26 +57,26 @@ class Peer:
 
     def resolve(self, address: str) -> ActorRef:
         """Turn an address off the wire back into something tellable."""
-        ref = self._local.get(address) or self._replies.get(address)
+        ref = self._local.get(address) or self._senders.get(address)
         return ref if ref is not None else self.ref_to(address)
 
     # --- the link itself ---------------------------------------------------
 
     def send(self, to: str, envelope: Envelope, priority: Priority) -> None:
-        reply_to = envelope.reply_to
-        if reply_to is not None and reply_to.address not in self._local:
-            self._replies[reply_to.address] = reply_to  # so the far side can answer it
+        sender = envelope.sender
+        if sender is not None and sender.address not in self._local:
+            self._senders[sender.address] = sender  # so the far side can answer it
         self._send(self._wire.pack(to, envelope, priority))
 
     def receive(self, frame: bytes) -> None:
         """Deliver one arriving frame, as though it had been told locally."""
         to, envelope, priority = self._wire.unpack(frame, resolve=self.resolve)
-        target = self._local.get(to) or self._replies.get(to)
+        target = self._local.get(to) or self._senders.get(to)
         if target is None:
             if REPLY_MARK in to:
                 return  # a reply nobody is waiting for: discarded, as promised
             raise Undeliverable(f"no actor at {to!r} on this side")
-        target.tell(envelope.msg, priority, reply_to=envelope.reply_to)
+        target.tell(envelope.msg, priority, sender=envelope.sender)
 
 
 class _Outbound:

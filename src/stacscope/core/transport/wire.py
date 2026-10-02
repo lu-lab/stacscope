@@ -1,14 +1,14 @@
 """The wire frame: an envelope, ready for a byte stream.
 
 The codec carries a message. This carries what surrounds one on its way to a
-mailbox -- the reply address and the priority -- neither of which is part of
-any message: message types stay plain data.
+mailbox -- the sender and the priority -- neither of which is part of any
+message: message types stay plain data.
 
 The frame is a msgpack map of four keys, so it stays readable from another
 language, like the messages inside it:
 
     {"t": <destination address>, "p": <priority>,
-     "r": <reply address or nil>, "m": <encoded message>}
+     "s": <sender address or nil>, "m": <encoded message>}
 
 The destination travels in the frame, not the connection: one link carries
 traffic for many addresses, a child's device answering the Coordinator and
@@ -25,9 +25,9 @@ from stacscope.core.transport.codec import Codec, CodecError, Resolve
 
 _TO = "t"
 _PRIORITY = "p"
-_REPLY = "r"
+_SENDER = "s"
 _MESSAGE = "m"
-_KEYS = {_TO, _PRIORITY, _REPLY, _MESSAGE}
+_KEYS = {_TO, _PRIORITY, _SENDER, _MESSAGE}
 
 
 # The destination rides the frame rather than the connection because one
@@ -41,14 +41,14 @@ class Wire:
         self._codec = codec
 
     def pack(self, to: str, envelope: Envelope, priority: Priority) -> bytes:
-        reply_to = envelope.reply_to
-        if reply_to is not None and not isinstance(reply_to, ActorRef):
-            raise CodecError(f"reply address {reply_to!r} is not an ActorRef")
+        sender = envelope.sender
+        if sender is not None and not isinstance(sender, ActorRef):
+            raise CodecError(f"sender {sender!r} is not an ActorRef")
         return msgpack.packb(
             {
                 _TO: to,
                 _PRIORITY: int(priority),
-                _REPLY: None if reply_to is None else reply_to.address,
+                _SENDER: None if sender is None else sender.address,
                 _MESSAGE: self._codec.encode(envelope.msg),
             },
             use_bin_type=True,
@@ -70,11 +70,11 @@ class Wire:
         except ValueError:
             raise CodecError(f"unknown priority {raw[_PRIORITY]!r}") from None
 
-        address = raw[_REPLY]
-        reply_to = None
+        address = raw[_SENDER]
+        sender = None
         if address is not None:
-            reply_to = resolve(address)
-            if reply_to is None:
-                raise CodecError(f"cannot resolve reply address {address!r}")
-        envelope = Envelope(self._codec.decode(raw[_MESSAGE], resolve=resolve), reply_to)
+            sender = resolve(address)
+            if sender is None:
+                raise CodecError(f"cannot resolve sender {address!r}")
+        envelope = Envelope(self._codec.decode(raw[_MESSAGE], resolve=resolve), sender)
         return raw[_TO], envelope, priority

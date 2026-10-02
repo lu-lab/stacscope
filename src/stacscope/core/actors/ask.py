@@ -45,7 +45,7 @@ async def ask(
     """Send ``msg`` and await the reply, raising ``AskTimeout`` after ``timeout``."""
     reply = asyncio.get_running_loop().create_future()
     reply_to = ActorRef(_ReplyTransport(reply), f"{ref.address}{REPLY_MARK}{next(_reply_ids)}")
-    ref.tell(msg, priority, reply_to=reply_to)
+    ref.tell(msg, priority, sender=reply_to)
     try:
         return await (clock or MonotonicClock()).wait_for(reply, timeout)
     except TimeoutError as exc:

@@ -86,6 +86,7 @@ class Listener(Actor):
 
     async def handle(self, msg):
         self.heard.append(msg)
+        await super().handle(msg)  # as the rig's parent, a Fault goes on to the listener
 
 
 class Rig:
@@ -96,7 +97,8 @@ class Rig:
         self.device = cls()
         self.ref = self.parent.spawn_child(self.device, name="pressure")
         self.listener = Listener()
-        self.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name="listener")))
+        # A child reports to its parent, and the root publishes: listen there.
+        self.parent.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name="listener")))
 
     async def ask(self, msg):
         return await ask(self.ref, msg, timeout=1.0, clock=self.clock)
@@ -158,14 +160,14 @@ async def test_the_routine_is_started_once_however_many_phases_arrive():
     assert rig.settings() == [("set", 5.0, 10.0)], "not two routines at once"
 
 
-async def test_a_broadcast_the_device_does_not_care_about_is_ignored():
-    """Subscribing to the Coordinator means hearing everything it publishes.
-    A device that answered them would publish a fault, which the Coordinator
-    would republish, which would reach the device again."""
+async def test_a_message_the_device_does_not_care_about_is_ignored():
+    """A device subscribed to its parent hears the phases, and only the one it
+    chose starts anything. Anything else it has no use for is ignored: no
+    answer, and nothing reported. (A ``Fault`` is the exception every actor
+    shares: it goes up -- CM4.)"""
     rig = Rig()
     await rig.arm()
 
-    rig.ref.tell(Fault(rig.ref, "some other device's problem", fatal=True))
     rig.ref.tell(DeviceLaunched("camera", rig.ref))
     rig.ref.tell(SourcePhase(Phase.COOLDOWN))
     await rig.clock.advance(0)

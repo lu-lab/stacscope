@@ -35,7 +35,7 @@ class Fragile(SimulatedDevice):
             case Die():
                 raise RuntimeError("the camera fell off the rig")
             case Trip():
-                self.publish(Fault(self.ref, "coolant loop lost", fatal=True))
+                self.report(Fault(self.ref, "coolant loop lost", fatal=True))
             case _:
                 await super().handle(msg)
 
@@ -44,7 +44,7 @@ class Grumbler(SimulatedDevice):
     async def handle(self, msg):
         match msg:
             case Trip():
-                self.publish(Fault(self.ref, "filter wheel slow to seat", fatal=False))
+                self.report(Fault(self.ref, "filter wheel slow to seat", fatal=False))
             case _:
                 await super().handle(msg)
 
@@ -266,7 +266,7 @@ async def test_d6_a_fatal_source_fault_stops_and_idles_like_any_other():
     await rig.start()
     await rig.clock.advance(2.0)
 
-    rig.source.publish(Fault(rig.source.ref, "AO board overheated", fatal=True))
+    rig.source.report(Fault(rig.source.ref, "AO board overheated", fatal=True))
     await rig.clock.advance(1.0)
 
     assert rig.coordinator.state is CoordinatorState.IDLE

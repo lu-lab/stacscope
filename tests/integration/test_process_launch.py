@@ -16,8 +16,10 @@ from functools import partial
 import msgpack
 import pytest
 
-from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
-from stacscope.core.actors import Actor, ChildExited, HeartbeatPolicy, ask, spawn
+from process_support import until
+
+from stacscope.adapters.simulated import Fail, FaultyDevice, SimulatedDevice, SimulatedTimingSource
+from stacscope.core.actors import Actor, ActorRef, ChildExited, Fault, HeartbeatPolicy, Subscribe, ask, spawn
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
@@ -43,10 +45,13 @@ class Parent(Actor):
     def __init__(self) -> None:
         super().__init__()
         self.exits: list[ChildExited] = []
+        self.faults: list[Fault] = []
 
     async def handle(self, msg):
         if isinstance(msg, ChildExited):
             self.exits.append(msg)
+        if isinstance(msg, Fault):
+            self.faults.append(msg)
 
 
 @pytest.fixture
@@ -128,6 +133,36 @@ async def test_an_acquisition_runs_with_one_participant_in_another_process(host)
     assert coordinator.state is CoordinatorState.IDLE
     assert set(coordinator.participants) == {"shutter", "camera"}
     assert host.running() == 1  # and the camera really was somewhere else
+
+
+async def test_cm2_a_process_child_reports_to_its_parent_by_address(host):
+    """The child's parent is not in its process. Its address names the
+    parent, the link reaches it, and a Fault the device reports arrives at
+    the Coordinator -- which publishes it, as a root -- without anything
+    subscribing to anything."""
+    coordinator = Coordinator(
+        source=DeviceSpec("source", SimulatedTimingSource, ready_timeout=10.0),
+        participants=[
+            DeviceSpec(
+                "camera",
+                partial(FaultyDevice, Fail.REPORT, on="StartDevice"),
+                ready_timeout=10.0,
+                heartbeat=HEARTBEAT,
+                placement=Placement.PROCESS,
+            ),
+        ],
+        launcher=Launcher(host),
+    )
+    ref = spawn(coordinator, name="engine")
+    clients = Parent()
+    ref.tell(Subscribe(spawn(clients, name="client")))
+    await asyncio.sleep(0)
+
+    assert await ask(ref, StartAcquisition(2, "fish"), timeout=15) == AcquisitionStarted()
+    assert await until(lambda: clients.faults)
+
+    assert clients.faults == [Fault(ActorRef(None, "engine/camera"), "the driver reported a warning", False)]
+    await ask(ref, StopAcquisition(), timeout=15)
 
 
 # --- CR1: a child lives as long as its link -----------------------------------

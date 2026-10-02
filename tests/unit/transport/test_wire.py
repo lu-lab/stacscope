@@ -1,9 +1,9 @@
 """X1 -- the wire frame: everything the codec deliberately does not carry.
 
 The codec encodes a message's fields. What surrounds a message on its way to
-a mailbox -- who it is for, who to answer, and how urgently -- belongs to the
-transport, and has to survive the trip just as exactly. A lost ``reply_to`` is
-an ``ask`` that hangs; a lost priority is a ``StopDevice`` queued behind a
+a mailbox -- who it is for, who sent it, and how urgently -- belongs to the transport,
+and has to survive the trip just as exactly. A lost sender is an answer
+with nowhere to go (CM7); a lost priority is a ``StopDevice`` queued behind a
 refill loop.
 """
 
@@ -26,26 +26,26 @@ def ref(address: str) -> ActorRef:
 
 
 def frame(**fields) -> bytes:
-    return msgpack.packb({"t": "coordinator", "p": 1, "r": None, "m": b"", **fields})
+    return msgpack.packb({"t": "coordinator", "p": 1, "s": None, "m": b"", **fields})
 
 
 class Unregistered:
     """Not a message. Nothing stops an actor from telling one locally."""
 
 
-def test_a_frame_round_trips_with_its_destination_priority_and_reply_address(wire):
-    sent = Envelope(StartDevice("fish", 7), reply_to=ref("coordinator#reply-3"))
+def test_cm7_a_frame_round_trips_with_its_destination_priority_and_sender(wire):
+    sent = Envelope(StartDevice("fish", 7), sender=ref("coordinator"))
 
     packed = wire.pack("coordinator/camera", sent, Priority.URGENT)
     to, received, priority = wire.unpack(packed, resolve=ref)
 
     assert to == "coordinator/camera"
     assert received.msg == StartDevice("fish", 7)
-    assert received.reply_to.address == "coordinator#reply-3"
+    assert received.sender.address == "coordinator"
     assert priority is Priority.URGENT
 
 
-def test_a_told_message_arrives_told_and_not_answerable(wire):
+def test_a_message_from_outside_any_actor_arrives_with_no_sender(wire):
     packed = wire.pack("viewer", Envelope(SourcePhase(Phase.COOLDOWN)), Priority.LOW)
 
     to, received, priority = wire.unpack(packed, resolve=ref)
@@ -58,15 +58,15 @@ def test_an_unregistered_message_is_refused_where_it_is_sent(wire):
         wire.pack("coordinator", Envelope(Unregistered()), Priority.NORMAL)
 
 
-def test_an_unregistered_reply_address_is_refused_where_it_is_sent(wire):
-    """``reply_to`` is not part of the message, so the codec never sees it."""
-    with pytest.raises(CodecError, match="reply address"):
-        wire.pack("coordinator", Envelope(StopDevice(), reply_to="coordinator"), Priority.NORMAL)
+def test_a_sender_that_is_not_a_ref_is_refused_where_it_is_sent(wire):
+    """The sender is not part of the message, so the codec never sees it."""
+    with pytest.raises(CodecError, match="sender"):
+        wire.pack("coordinator", Envelope(StopDevice(), sender="coordinator"), Priority.NORMAL)
 
 
-def test_a_reply_address_that_resolves_nowhere_is_refused_on_arrival(wire):
+def test_a_sender_that_resolves_nowhere_is_refused_on_arrival(wire):
     """Better a loud frame than a silent ``ask`` that can never be answered."""
-    packed = wire.pack("coordinator", Envelope(StopDevice(), reply_to=ref("nobody")), Priority.NORMAL)
+    packed = wire.pack("coordinator", Envelope(StopDevice(), sender=ref("nobody")), Priority.NORMAL)
 
     with pytest.raises(CodecError, match="nobody"):
         wire.unpack(packed, resolve=lambda address: None)
@@ -78,7 +78,7 @@ def test_a_reply_address_that_resolves_nowhere_is_refused_on_arrival(wire):
         b"",
         b"\xc1 not msgpack at all",
         msgpack.packb([1, 2, 3]),
-        msgpack.packb({"t": "coordinator", "p": 1, "r": None}),
+        msgpack.packb({"t": "coordinator", "p": 1, "s": None}),
         frame(p=99),
         frame(t=None),
         frame(m=msgpack.packb({"type": "NoSuchMessage"})),

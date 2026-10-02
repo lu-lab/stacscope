@@ -145,7 +145,8 @@ class Rig:
         self.device = kind()
         self.ref = self.parent.spawn_child(self.device, name="camera")
         self.listener = Listener()
-        self.ref.tell(Subscribe(spawn(self.listener, clock=self.clock)))
+        # A child reports to its parent, and the root publishes: listen there.
+        self.parent.ref.tell(Subscribe(spawn(self.listener, clock=self.clock)))
 
     async def ask(self, msg):
         return await ask(self.ref, msg, timeout=1.0, clock=self.clock)

@@ -63,7 +63,8 @@ async def rig(request):
     device = SimulatedCamera(name, bus=bus, trigger="camera_trigger", n_slots=6, **request.param)
     ref = parent.spawn_child(device, name="camera")
     listener = Listener()
-    ref.tell(Subscribe(spawn(listener, clock=clock)))
+    # A child reports to its parent, and the root publishes: listen there.
+    parent.ref.tell(Subscribe(spawn(listener, clock=clock)))
     await clock.advance(0)
 
     async def trigger(n: int) -> None:

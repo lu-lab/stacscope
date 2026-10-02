@@ -101,7 +101,8 @@ async def ueye_camera(camera: int, report, **config):
     opening = time.monotonic()
     ref = parent.spawn_child(device, name="ueye")
     listener = Listener()
-    ref.tell(Subscribe(spawn(listener)))
+    # A child reports to its parent, and the root publishes: listen there.
+    parent.ref.tell(Subscribe(spawn(listener)))
     try:
         await asyncio.wait(
             [asyncio.ensure_future(device.started.wait()), asyncio.ensure_future(device.stopped.wait())],

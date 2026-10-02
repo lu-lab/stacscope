@@ -95,7 +95,7 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     Answers ``SetProperty``, ``SetPropertyLabel`` and ``GetProperty`` with
     ``PropertyValue``, or ``Rejected``. While armed, a change that alters the
     frame format is refused; if the camera accepts one anyway, the device
-    puts it back, answers ``Rejected`` and publishes a fatal ``Fault``,
+    puts it back, answers ``Rejected`` and reports a fatal ``Fault``,
     since frames of the new format may already have been written.
 
     Answers ``GetShortestTriggerPeriod`` with ``ShortestTriggerPeriod``: the

@@ -122,7 +122,7 @@ class BufferRecording(Recording):
                 if error is not None and not self._recorder_reported:
                     self._recorder_reported = True
                     reason = f"recording to {self._recorder.path} failed: {error}"
-                    self.publish(Fault(self.ref, reason, fatal=True))
+                    self.report(Fault(self.ref, reason, fatal=True))
             case _:
                 await super().handle(msg)
 

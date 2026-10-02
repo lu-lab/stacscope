@@ -41,17 +41,19 @@ class _NextCycle:
 
 
 class TimingSource(Actor):
-    """IDLE → ARMED → WARMUP → RUN → COOLDOWN → IDLE, published as ``SourcePhase``.
+    """IDLE → ARMED → WARMUP → RUN → COOLDOWN → IDLE, reported as ``SourcePhase``.
 
     - ``StartDevice``: ``arm()``, reply ``DeviceReady``.
     - ``Go``: ``warmup()``, then ``run_cycle()`` once per cycle.
     - ``Finish``, or the cycle count running out: after the current cycle,
-      ``cooldown()`` then ``drain()``; publishes ``SourceFinished``.
+      ``cooldown()`` then ``drain()``; reports ``SourceFinished``.
     - ``StopDevice``: safe in any phase. Idle: no-op. Armed: ``disarm()``.
       Running: finishes as above first. Replies ``DeviceStopped`` when idle.
 
-    A command in the wrong phase is answered ``Rejected``, or published as a
-    non-fatal ``Fault`` if it was told rather than asked. Phases are announced
+    Phases and ``SourceFinished`` are reported to the parent, or published by
+    a source that is a root. A command in the wrong phase is answered
+    ``Rejected``, or reported as a non-fatal ``Fault`` if it came with no
+    sender. Phases are announced
     as they are *entered*, which for a buffered source is when they are
     committed, ahead of when they play.
     """
@@ -116,7 +118,7 @@ class TimingSource(Actor):
             case StopDevice():
                 await self._stop()
             case _:
-                pass  # ignored, told or asked, as every actor does (user, 2026-09-30)
+                await super().handle(msg)  # ignored, told or asked, but a Fault goes up
 
     async def _next_cycle(self) -> None:
         if self.phase is not Phase.RUN:
@@ -136,7 +138,7 @@ class TimingSource(Actor):
         await self.drain()
         self._finishing = False
         self._enter(Phase.IDLE)
-        self.publish(SourceFinished())
+        self.report(SourceFinished())
         waiters, self._stop_waiters = self._stop_waiters, []
         for waiter in waiters:
             waiter.tell(DeviceStopped())
@@ -151,14 +153,14 @@ class TimingSource(Actor):
                 self.reply(DeviceStopped())
             case _:
                 self._finishing = True
-                if self.reply_to is not None:
-                    self._stop_waiters.append(self.reply_to)
+                if self.sender is not None:
+                    self._stop_waiters.append(self.sender)
 
     def _enter(self, phase: Phase) -> None:
         if (self.phase, phase) not in _LEGAL:
             raise RuntimeError(f"illegal phase transition {self.phase.name} → {phase.name}")
         self.phase = phase
-        self.publish(SourcePhase(phase))
+        self.report(SourcePhase(phase))
 
     def _refuse(self, msg: object, *allowed: Phase) -> bool:
         if self.phase in allowed:
@@ -167,7 +169,7 @@ class TimingSource(Actor):
         return True
 
     def _reject(self, reason: str) -> None:
-        if self.reply_to is not None:
+        if self.sender is not None:
             self.reply(Rejected(reason))
         else:
-            self.publish(Fault(self.ref, reason, fatal=False))
+            self.report(Fault(self.ref, reason, fatal=False))

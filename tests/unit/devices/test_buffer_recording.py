@@ -48,7 +48,8 @@ class Rig:
         self.device = cls("b" + uuid.uuid4().hex[:20], shape=(4, 6), n_slots=8, **kwargs)
         self.ref = self.parent.spawn_child(self.device, name="camera")
         self.listener = Listener()
-        self.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name="listener")))
+        # A child reports to its parent, and the root publishes: listen there.
+        self.parent.ref.tell(Subscribe(spawn(self.listener, clock=self.clock, name="listener")))
 
     async def started(self):
         await self.clock.advance(0)

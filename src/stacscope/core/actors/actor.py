@@ -6,8 +6,8 @@ import re
 from collections.abc import Callable
 
 from stacscope.core.actors.mailbox import Mailbox, Priority
-from stacscope.core.actors.messages import Heartbeat, HeartbeatReply, Subscribe, Unsubscribe
-from stacscope.core.actors.ref import ActorRef, Envelope, LocalTransport, Transport
+from stacscope.core.actors.messages import Fault, Heartbeat, HeartbeatReply, Subscribe, Unsubscribe
+from stacscope.core.actors.ref import ActorRef, Envelope, LocalTransport, Transport, current_sender
 from stacscope.core.actors.supervision import ChildWatch, HeartbeatPolicy
 from stacscope.core.ports.clock import Clock, MonotonicClock
 
@@ -33,17 +33,24 @@ class Actor:
     ``teardown`` runs in a ``finally`` covering both ``setup`` and ``run``, so a
     device opened partway through a failed ``setup`` is still released.
     Subclasses normally override ``handle`` and leave ``run`` as the message loop.
+
+    An actor knows its ``parent`` by address, and tells it what nobody asked
+    for with ``report``. Every message arrives with its ``sender``, and
+    ``reply`` answers it.
     """
 
     def __init__(self) -> None:
         self._mailbox = Mailbox()
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
-        self._reply_to: ActorRef | None = None
+        self._sender: ActorRef | None = None
         self._children: list[ChildWatch] = []
         self._child_names: set[str] = set()
         self._subscribers: dict[ActorRef, None] = {}  # ordered set
         self.ref: ActorRef | None = None
+        self.parent: ActorRef | None = None
+        """Who this actor reports to; ``None`` for a root. Set at spawn, and
+        always the actor's own address less its last segment."""
         self.clock: Clock = MonotonicClock()
         self.started = asyncio.Event()
         """Set once ``setup`` has returned and the mailbox is being served."""
@@ -69,31 +76,49 @@ class Actor:
                 case _WakeUp():
                     pass  # only here to end the wait above
                 case msg:
-                    self._reply_to = envelope.reply_to
+                    self._sender = envelope.sender
                     try:
                         await self.handle(msg)
                     finally:
-                        self._reply_to = None
+                        self._sender = None
 
     async def handle(self, msg: object) -> None:
-        pass
+        """Act on one message. The default passes a ``Fault`` to the parent
+        (a root publishes it) and ignores everything else, so a subclass
+        ends its own match with ``case _: await super().handle(msg)``, and
+        acts on a ``Fault`` only in a case of its own."""
+        # Every actor's use for a Fault is to pass it up (user, 2026-10-02):
+        # it climbs until something acts on it, and the root tells the
+        # clients. Anything else an actor has no use for is ignored, told or
+        # asked (user, 2026-09-30).
+        if isinstance(msg, Fault):
+            self.report(msg)
 
     async def teardown(self) -> None:
         pass
 
     @property
-    def reply_to(self) -> ActorRef | None:
-        """Reply address of the message being handled; ``None`` if it was told.
+    def sender(self) -> ActorRef | None:
+        """Who sent the message being handled: an actor, an ``ask``'s
+        one-shot address, or ``None`` from outside any actor.
 
-        Capture it to reply after ``handle`` returns.
+        Capture it to answer after ``handle`` returns.
         """
-        return self._reply_to
+        return self._sender
 
     def reply(self, msg: object) -> None:
-        """Answer the message being handled. A no-op if it was told, not asked,
-        so a handler works the same either way."""
-        if self._reply_to is not None:
-            self._reply_to.tell(msg)
+        """Answer the message being handled, by telling its sender. A no-op
+        when it has none."""
+        if self._sender is not None:
+            self._sender.tell(msg)
+
+    def report(self, msg: object, priority: Priority = Priority.NORMAL) -> None:
+        """Tell the parent something nobody asked for: a ``Fault``, a phase.
+        A root has no parent, and publishes it instead."""
+        if self.parent is not None:
+            self.parent.tell(msg, priority)
+        else:
+            self.publish(msg, priority)
 
     def publish(self, msg: object, priority: Priority = Priority.NORMAL) -> None:
         """Send ``msg`` to every current subscriber."""
@@ -131,8 +156,8 @@ class Actor:
         in ``handle``, so they prove the runtime is alive however long a
         handler runs."""
         if isinstance(envelope.msg, Heartbeat):
-            if envelope.reply_to is not None and not self.stopped.is_set():
-                envelope.reply_to.tell(HeartbeatReply())
+            if envelope.sender is not None and not self.stopped.is_set():
+                envelope.sender.tell(HeartbeatReply(), sender=self.ref)
             return
         self._mailbox.put(envelope, priority)
 
@@ -191,44 +216,45 @@ def adopt(
 def spawn(
     actor: Actor,
     *,
-    parent: Actor | None = None,
+    parent: "Actor | ActorRef | None" = None,
     clock: Clock | None = None,
     heartbeat: HeartbeatPolicy | None = None,
     link: Link | None = None,
     name: str | None = None,
-    address: str | None = None,
 ) -> ActorRef:
     """Start ``actor`` on the running event loop and return its address.
 
     ``name`` must match ``[A-Za-z0-9_.-]+``; by default it is derived from the
     class name. With a ``parent``, the address is the parent's path plus the
-    name, and the actor's exit is reported to the parent as ``ChildExited``.
+    name and the actor reports to it; a parent ``Actor`` also hears the
+    actor's exit, as ``ChildExited``.
 
-    ``address`` places the actor at an explicit path instead. It is for an
-    actor whose parent is in another process: the hierarchy it belongs to is
-    real, but no part of it is here to hang the name from.
+    A parent given as an ``ActorRef`` is in another process: the actor hangs
+    from its address and reports to it, and whoever holds the link watches
+    it from the far side.
     """
-    if address is not None and parent is not None:
-        raise ValueError("an actor with a parent takes its address from it")
     if name is None:
         name = f"{type(actor).__name__}-{next(_default_ids)}"
     elif not _NAME.fullmatch(name):
         raise ValueError(f"actor name {name!r} must match {_NAME.pattern}")
-    if parent is not None:
-        _reserve(parent, name)
-    if address is None:
-        address = name if parent is None else f"{parent.ref.address}/{name}"
+    local_parent = parent if isinstance(parent, Actor) else None
+    if local_parent is not None:
+        _reserve(local_parent, name)
+        parent = local_parent.ref
+    address = name if parent is None else f"{parent.address}/{name}"
 
     transport: Transport = LocalTransport(actor._receive)
     ref = actor.ref = ActorRef(link(transport) if link else transport, address)
+    actor.parent = parent
     if clock is not None:
         actor.clock = clock
 
     watch = None
-    if parent is not None:
-        watch = _watch(parent, ref, name, heartbeat, actor.clock, None)
+    if local_parent is not None:
+        watch = _watch(local_parent, ref, name, heartbeat, actor.clock, None)
 
     async def lifecycle() -> None:
+        current_sender.set(ref)  # this task is the actor, so its tells are from it
         cancelled = False
         try:
             await actor._lifecycle()

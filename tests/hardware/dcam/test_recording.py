@@ -93,7 +93,8 @@ async def flash(camera: int, folder: pathlib.Path, settings=SETTINGS, **options)
     )
     ref = parent.spawn_child(device, name="flash")
     listener = Listener()
-    ref.tell(Subscribe(spawn(listener)))
+    # A child reports to its parent, and the root publishes: listen there.
+    parent.ref.tell(Subscribe(spawn(listener)))
     try:
         await asyncio.wait(
             [asyncio.ensure_future(device.started.wait()), asyncio.ensure_future(device.stopped.wait())],

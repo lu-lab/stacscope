@@ -610,6 +610,11 @@ blocked inside the driver made it take whole cycles -- 150 ms at a 50 ms MAIN,
 900 ms at 300 ms -- and every other actor starved with it."""
 
 
+SLOW_CALL = 0.005
+"""Seconds: a call into the adapter longer than this is noted as a possible
+cause of a loop hold (CM51)."""
+
+
 class Watched:
     """The adapter, observed. At each write once output is playing: when it
     came, how many samples had been written before it, how much was still
@@ -627,9 +632,29 @@ class Watched:
         self.playing = None
         self.written = 0
         self.writes: list[tuple[float, int, int, float]] = []
+        self.slow: list[tuple[float, str, float]] = []
+        """(when it began, which call, seconds) for every call into the
+        adapter that held the event loop longer than SLOW_CALL: the
+        candidates for a loop hold (CM51)."""
 
     def __getattr__(self, name):
         return getattr(self.output, name)
+
+    def _timed(self, name: str, call):
+        began = time.monotonic()
+        try:
+            return call()
+        finally:
+            took = time.monotonic() - began
+            if took > SLOW_CALL:
+                self.slow.append((began, name, took))
+
+    def space_available(self) -> int:
+        # The call that may ask is_task_done, 16 ms at the median on Dev1.
+        return self._timed("space_available", self.output.space_available)
+
+    def samples_played(self) -> int:
+        return self._timed("samples_played", self.output.samples_played)
 
     async def go(self) -> None:
         await self.output.go()
@@ -639,7 +664,11 @@ class Watched:
         if self.playing is not None:
             queued = self.written - generated(self.output._ao)
             self.writes.append((time.monotonic(), self.written, queued, float(ao[0, 0])))
+        began = time.monotonic()
         await self.output.write(ao, do, label=label)
+        took = time.monotonic() - began
+        if took > SLOW_CALL:
+            self.slow.append((began, "write", took))
         self.written += ao.shape[1]
 
     def plays_at(self, sample: int) -> float:
@@ -886,7 +915,14 @@ async def test_h9_a_long_run_at_the_instruments_depth(report, main):
     the plan's conditions for going higher. With it comes how late the loop
     woke just before that refill, which says whether the dip was the
     operating system or the refill itself; and how many refills were thin,
-    which says whether it was one event or a habit."""
+    which says whether it was one event or a habit.
+
+    CM51, the loop-lag probe: the ticker is a 10 ms timer on the loop, and
+    how late each fires is how long the loop was held. The worst holds are
+    reported with when they came and any call into the adapter that was
+    running across them -- a write, or a space check that asked
+    ``is_task_done`` -- so a hold like the 57 ms one seen in the core review
+    can be put down to the driver or to something else in the process."""
     ticks: list[tuple[float, float]] = []
 
     async def ticker(ref, output):
@@ -906,6 +942,8 @@ async def test_h9_a_long_run_at_the_instruments_depth(report, main):
         held = max((lag for t, lag in ticks if at - 0.1 <= t <= at + 0.02), default=0.0)
         thin = int(np.sum(queued < THIN))
         flag = f" -- BELOW {THIN * 1000:.0f} ms" if queued.min() < THIN else ""
+        report(f"{ms(BUFFER_SAMPLES)} buffer, {main / RATE * 1000:.0f} ms volume: loop holds "
+               + holds(ticks, run.output))
         report(f"{ms(BUFFER_SAMPLES)} buffer, {main / RATE * 1000:.0f} ms volume, {SOAK_SECONDS:.0f} s: "
                f"{dry}; {len(queued)} refills, queued at a refill {queued.min() * 1000:.1f} ms at "
                f"least{flag}, "
@@ -917,6 +955,32 @@ async def test_h9_a_long_run_at_the_instruments_depth(report, main):
     else:
         report(f"{ms(BUFFER_SAMPLES)} buffer, {main / RATE * 1000:.0f} ms volume: {dry}, no refills")
     assert run.underflow is None, f"the instrument's depth ran dry: {dry}"
+
+
+def holds(ticks: list[tuple[float, float]], output: Watched, worst: int = 5) -> str:
+    """The loop-lag probe's findings (CM51): how the holds are spread, and
+    the worst few, each with when it came and the adapter calls that ran
+    across it."""
+    if not ticks:
+        return "none measured"
+    late = np.array([lag for _, lag in ticks]) - 0.01
+    lines = [
+        f"{len(ticks)} ticks; late by {np.median(late) * 1000:.1f} ms median, "
+        f"{np.percentile(late, 99) * 1000:.1f} ms at the 99th percentile; "
+        f"{int(np.sum(late > THIN))} over {THIN * 1000:.0f} ms"
+    ]
+    for end, lag in sorted(ticks, key=lambda tick: tick[1], reverse=True)[:worst]:
+        start = end - lag
+        across = [
+            f"{name} {took * 1000:.0f} ms"
+            for began, name, took in output.slow
+            if began < end and began + took > start
+        ]
+        lines.append(
+            f"{(lag - 0.01) * 1000:.0f} ms at {start - output.playing:.1f} s"
+            f" ({', '.join(across) or 'no adapter call'})"
+        )
+    return "; ".join(lines)
 
 
 # --- H10: the last digital samples, seen at a pin ------------------------------------

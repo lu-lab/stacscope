@@ -4322,10 +4322,130 @@ policy, or state the Coordinator shouldn't hold.
   - The plan's "Coordinator and timing source" section is out of date (it
     stops only the devices that were ready, and calls FAULTED terminal); it
     is to be rewritten when these are built.
+- *Decided on the communication-model observations 1–7 (user,
+  2026-10-02), Claude's recommendations accepted:*
+  - **1. A child lost mid-handshake.** In STARTING, a lost required device
+    (or the source) fails the start at once with its reason, rather than
+    costing its `ready_timeout`; a lost optional one is dropped from the
+    wait and left out. In STOPPING, a lost device counts as done and is
+    reported as lost, not "stop not confirmed".
+  - **2.** Settled by "now playing"; `SoftwareTimed`'s docstring is
+    corrected when that is built.
+  - **3. The recorder stays a child actor** (option A; user). Recording is
+    a kind of buffer consumer, and another format or consumer should be
+    another actor. B, a worker thread owned by the role, was smaller but
+    hand-rolls the supervision the runtime gives, and holds the camera's
+    handler through a long flush.
+    - Arm: "open file" spawns the recorder and returns; the device is
+      ARMING and keeps the asker. `RecorderStarted` from the recorder →
+      ARMED, answer `DeviceReady`. The recorder's `ChildExited` while
+      ARMING → undo the arm, answer `Rejected` with its reason.
+      `StopDevice` while ARMING stops the recorder and disarms; the
+      Coordinator's `ready_timeout` is the only deadline. Capture starting
+      before the file is confirmed is harmless: no trigger comes before
+      `Go`, and the recorder reads from the acquisition's start in the
+      ring.
+    - Disarm: `FinishRecording(published)`, then DISARMING;
+      `RecordingFinished(frames)` → check `frames` against `published`,
+      answer `DeviceStopped`. A `ChildExited` with an error first fails
+      the stop as a failed `close_recording` does today. While DISARMING
+      the camera's handler is free (it refuses changes until disarmed).
+    - Generally: a role may hold the device's answer until its own child
+      reports; `TimedDevice` keeps the pending answer.
+    - Names stay recording-specific until a second consumer exists (user:
+      no specifics of other consumers for now).
+    - `Rig` reads the Coordinator's state and devices through item 4's
+      messages, keeping actor objects only for startup and shutdown.
+  - **Every actor has its parent's address** (user), set by the runtime.
+    Needed by the recorder, by a `SoftwareTimed` device subscribing to its
+    parent, and by the parked halt. How it is set, and what goes to it, is
+    in the parent/child rule below.
+  - **A parent may wait on its children, never blocking** (user): as a
+    state, like the Coordinator arming its devices. Such waits run only
+    from parent to child; devices do not check on each other, which would
+    risk circular dependencies.
+  - **4. What a remote client needs.** `GetStatus` → `Status(state,
+    acquisition, devices)` (each device's name, whether it is the source,
+    required, present), also published to clients on every change. The
+    Coordinator numbers acquisitions; `AcquisitionStarted`,
+    `AcquisitionStopped` and `Status` carry the number. Faults and phases
+    are not stamped: a test pins that the source's IDLE arrives before its
+    `DeviceStopped` and `SourceFinished`.
+  - **5. Subscribers.** The Coordinator no longer subscribes every device.
+    A `SoftwareTimed` device subscribes to its parent in `setup`; a
+    subscriber that is one of the Coordinator's devices hears phases only,
+    any other hears everything. A device subscriber is dropped on its
+    `ChildExited`; remote clients are the gateway's to fan out and prune.
+  - **6. The shared event loop.** No structural change. A loop-lag probe
+    (a periodic timer recording how late it fires) runs in the H9 soak on
+    `Dev1-sim`, to find the cause of the 57 ms hold. Whether the gateway
+    runs in the engine's process is an M6 decision; placing the source in
+    a process of its own is the fallback, and works through the relay.
+  - **7. The relay stays.** The direct path was wanted because relayed
+    phases queued behind a blocked Coordinator, which item 1's states fix;
+    across processes the relay needs no routing between links, and a
+    relaunch of either end needs nothing. This closes "Software timing,
+    direct" below.
+- *The parent/child rule (user, 2026-10-02),* from a pattern the user saw
+  in the decisions above: a child is synchronized with its parent, but it
+  never waits on it; it advances its own state instead. Same strength as
+  "a ref is the only handle": an exception is proposed and discussed on its
+  own.
+  - **Commands go down; answers and reports go up.** Only a parent sends a
+    child a request that expects an answer. A child tells its parent
+    answers and reports, and never waits on a reply from it. A child that
+    needs its parent to decide something reports it and holds its state.
+  - **An actor waits only on its children, as a state.** A parent's state
+    holds the answers outstanding and a deadline (STARTING). A child "waits"
+    on its parent by being in a state that names the command it takes next:
+    IDLE takes `StartDevice`, ARMED takes `Go` or `StopDevice`.
+  - **A child knows its parent only by address.** It speaks its own
+    protocol and the parent adapts, as the recorder knows nothing of the
+    camera but its buffer's name.
+  - **Siblings never answer each other.** They coordinate through their
+    common parent. That makes the system deadlock-free by construction:
+    every wait follows a tree edge downward, and a tree has no cycles. It
+    is also why the Coordinator relays the timing phases (user): the
+    overhead is minimal and relaying is the Coordinator's role. This
+    settles item 7 for good.
+  - **Clients outside the tree** (the gateway, the rig, a CLI, tests) may
+    send any actor a request, and no actor waits on them.
+  - **A child's address is its lineage** (user). The runtime sets
+    `parent: ActorRef` at spawn, `None` for a root, and its address is
+    always the child's less its last segment (a test pins it). For a
+    process child the link makes it with `ref_to`, as it already routes to
+    the parent.
+  - **Unprompted reports go to the parent by that address:** a device's
+    `Fault`, the source's `SourcePhase` and `SourceFinished`, the recorder's
+    `RecorderStarted`. The Coordinator then subscribes to nothing.
+    Publishing is for listeners that opted in: clients outside the tree,
+    and a child subscribing to its parent's phases (item 5).
+  - **Every actor's use for a `Fault` is to pass it to its parent** (user);
+    a root publishes it. This is not an exception to ignoring what an actor
+    has no use for: every actor has this use. An actor that acts on a
+    child's `Fault` (the Coordinator aborting on a fatal one) handles it in
+    its own case, and a fault rises until something handles it or a root
+    publishes it.
+  - *Checked against the code (2026-10-02):* no child asks its parent, no
+    actor asks a sibling, every report up is a tell, and the adapters send
+    no messages. Departures, to fix when this is built:
+    - Parents wait by blocking in their handlers (`Coordinator._start`,
+      `_stop_everyone`, `BufferRecording`'s open and close). Items 1 and 3
+      cover them. **Not yet covered:** `Coordinator._relaunch`, which for a
+      process child waits inside the handler up to the host's
+      `connect_timeout` (15 s); it becomes a state too.
+    - Every device hears its siblings' refs today, in `DeviceLaunched` and
+      in each relayed `Fault`'s `source`, because the Coordinator
+      subscribes every device to itself. Item 5 ends it; a test is to pin
+      that a device receives no other actor's ref.
+    - `child.py` spawns a process child with `address=` and no parent;
+      `spawn` gains the parent ref for that case.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.
-  - *Software timing, direct.* A `SoftwareTimed` device should hear the
+  - *Software timing, direct.* **Closed (user, 2026-10-02): the relay
+    stays** (the core review's observation 7). What follows is the
+    question as it stood. A `SoftwareTimed` device should hear the
     source's phases from the source, not relayed by the Coordinator. Open:
     whether the Coordinator supplies the device with the source's address,
     or the source with the device's; and how that survives a relaunch of

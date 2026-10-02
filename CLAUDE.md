@@ -40,9 +40,15 @@ in the plan's "Open items → The core review". Its four bugs are fixed
 (CR1–CR4), among them a process child that stopped its device 30 s after
 launch. Before the observations, the user went through the core design
 principles and decided changes to them (the same section, "Principles,
-decided while going through…"); none is built yet. **Next: discuss its
-communication-model observations (1–7) with the user**, before the gateway,
-the session model or any open item.
+decided while going through…"). The communication-model observations 1–7
+are decided too, and so is **the parent/child rule** that came out of them:
+commands go down, answers and reports go up; an actor waits only on its
+children, as a state; siblings never answer each other, so nothing can
+deadlock; a child reports to its parent by its parent's address; every
+actor's use for a `Fault` is to pass it to its parent. None of it is built
+yet. **Next: the user chooses** between building these, the gateway, the
+session model or another open item. Ask; any build starts with an
+acceptance-test list for their approval.
 
 `notes/instrument-dev-box.md` has the machine, its wiring, and how to run
 each hardware suite on the day testing resumes.
@@ -383,9 +389,10 @@ section explains why.
   keep taking plain constructor arguments and `DeviceSpec`s.
 - **An actor ignores a message it has no use for, told or asked** (user,
   2026-09-30): no answer, no Fault. Be conservative about sending messages.
-  The Coordinator still relays `SourcePhase`. Direct subscription for
-  software-timed devices, and a deep dive on the communication model, are
-  deferred: the plan's "Open items → The communication model".
+  A `Fault` is never "no use": every actor passes one to its parent
+  (decided 2026-10-02, not built). The Coordinator relays `SourcePhase`,
+  for good (the parent/child rule, in the plan's "Open items → The core
+  review").
 - **Method:** each test goes red before its implementation goes green. Tests
   that pass on the first implementation get a mutation check: break the code
   on purpose and confirm a test fails. It earns its keep: in Milestone 3 it

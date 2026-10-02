@@ -116,7 +116,7 @@ class Recording:
                 await super().handle(msg)
 
     def _set_save_directory(self, path: str) -> None:
-        if self.state is DeviceState.ARMED:
+        if self.state is not DeviceState.IDLE:
             # The file is already open where it was.
             self._reject("the save directory cannot change during an acquisition")
         elif not Path(path).is_dir():

@@ -20,10 +20,17 @@ from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, Sto
 
 class DeviceState(Enum):
     IDLE = "idle"
+    ARMING = "arming"
+    """Armed but for a part a role holds open until one of its children
+    reports -- a recorder saying it has started. Not yet answered."""
     ARMED = "armed"
     """Prepared, and from here until ``StopDevice`` the acquisition may be
     under way: a hardware-timed device cannot tell the difference, because
     nothing tells it when the first trigger arrives."""
+    DISARMING = "disarming"
+    """Disarmed but for a part a role holds open until one of its children
+    reports -- a recorder saying the file holds every frame. Not yet
+    answered; the next arm is refused until it is."""
 
 
 class NotReady(Exception):
@@ -35,9 +42,14 @@ class TimedDevice(Actor):
     """IDLE ↔ ARMED, driven by ``StartDevice`` and ``StopDevice``.
 
     - ``StartDevice``: ``arm()``, then reply ``DeviceReady``.
-    - ``StopDevice``: safe in either state, and always confirmed. Idle is a
+    - ``StopDevice``: safe in any state, and always confirmed. Idle is a
       no-op; armed calls ``disarm()``, which is where a device reaches its own
       safe state.
+    - A role whose part ends in a child's report calls ``hold()`` from
+      ``arm`` or ``disarm``: the device is then ARMING or DISARMING, the
+      answer waits, and the role ends it with ``complete_arm``, ``fail_arm``
+      or ``complete_disarm``. A ``StopDevice`` while arming refuses the arm
+      and disarms.
     - Death, however it comes, still disarms and closes: hardware is never
       left running because an actor died.
 
@@ -57,6 +69,9 @@ class TimedDevice(Actor):
     """
 
     _arm_undo_failed: bool = False
+    _holding: bool = False
+    _arm_asker = None
+    _stop_askers: tuple = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Refuses, with ``TypeError``, a device whose roles are listed out of
@@ -132,14 +147,67 @@ class TimedDevice(Actor):
 
     # --- the protocol ------------------------------------------------------
 
+    def hold(self) -> None:
+        """Called by a role from ``arm`` or ``disarm`` when its part ends in
+        one of its children's reports: the device's answer waits, ARMING or
+        DISARMING, until the role calls ``complete_arm``, ``fail_arm`` or
+        ``complete_disarm``."""
+        # Held, not awaited: an actor waits on its children only as a state
+        # (the parent/child rule). The handler returns, and the device goes on
+        # answering queries and refusing changes meanwhile.
+        self._holding = True
+
+    def complete_arm(self) -> None:
+        """The held part of the arm is done: ARMED, and ``DeviceReady``."""
+        if self.state is DeviceState.ARMING:
+            self.state = DeviceState.ARMED
+            self._answer_arm(DeviceReady())
+
+    async def fail_arm(self, reason: str) -> None:
+        """The held part of the arm failed: disarm everything, answer
+        ``Rejected`` and report a fatal ``Fault``, as for an arm that raised.
+        If that disarm fails too, the device dies of it once answered."""
+        if self.state is not DeviceState.ARMING:
+            return
+        reason = f"{type(self).__name__} failed to arm: {reason}"
+        failed = None
+        try:
+            await self._disarm()
+        except Exception as exc:
+            failed = exc
+            reason += f"; disarm also failed: {exc!r}"
+        self._holding = False
+        self.state = DeviceState.IDLE
+        self._answer_arm(Rejected(reason))
+        self.report(Fault(self.ref, reason, fatal=True))
+        if failed is not None:
+            raise failed  # failed in both directions: nothing is known about the hardware
+
+    def complete_disarm(self, problem: str | None = None) -> None:
+        """The held part of the disarm is done: IDLE, and ``DeviceStopped``.
+        A ``problem`` -- a file short of its frames -- is reported as a fatal
+        ``Fault`` first; the stop is still confirmed, because the hardware
+        did reach its safe state."""
+        if self.state is not DeviceState.DISARMING:
+            return
+        if problem is not None:
+            self.report(Fault(self.ref, problem, fatal=True))
+        self.state = DeviceState.IDLE
+        askers, self._stop_askers = self._stop_askers, ()
+        for asker in askers:
+            asker.tell(DeviceStopped())
+
+    def _answer_arm(self, answer: object) -> None:
+        asker, self._arm_asker = self._arm_asker, None
+        if asker is not None:
+            asker.tell(answer)
+
     async def handle(self, msg: object) -> None:
         match msg:
             case StartDevice(root_filename, cycles):
                 await self._start(msg, root_filename, cycles)
             case StopDevice():
-                if self.state is DeviceState.ARMED:
-                    await self._disarm()
-                self.reply(DeviceStopped())
+                await self._stop()
             case _:
                 # Ignored, told or asked (user, 2026-09-30), except a Fault,
                 # which the base passes up. An asker that sent the wrong thing
@@ -150,6 +218,7 @@ class TimedDevice(Actor):
         if self.state is not DeviceState.IDLE:
             self._reject(f"{type(msg).__name__} is not valid while {self.state.name}")
             return
+        self._holding = False
         try:
             await self.arm(root_filename, cycles)
         except NotReady as exc:
@@ -162,8 +231,32 @@ class TimedDevice(Actor):
             if self._arm_undo_failed:
                 raise  # answered first, so the Coordinator need not time out
             return
+        if self._holding:
+            self._holding = False
+            self.state = DeviceState.ARMING
+            self._arm_asker = self.sender
+            return
         self.state = DeviceState.ARMED
         self.reply(DeviceReady())
+
+    async def _stop(self) -> None:
+        asker = () if self.sender is None else (self.sender,)
+        if self.state is DeviceState.IDLE:
+            self.reply(DeviceStopped())
+            return
+        if self.state is DeviceState.DISARMING:
+            self._stop_askers += asker
+            return
+        if self.state is DeviceState.ARMING:
+            self._answer_arm(Rejected("stopped before it was ready"))
+        self._holding = False
+        await self._disarm()
+        if self._holding:
+            self._holding = False
+            self.state = DeviceState.DISARMING
+            self._stop_askers = asker
+            return
+        self.reply(DeviceStopped())
 
     async def _disarm(self) -> None:
         self.state = DeviceState.IDLE  # never disarmed twice, even if it raises
@@ -171,7 +264,8 @@ class TimedDevice(Actor):
 
     async def teardown(self) -> None:
         try:
-            if self.state is DeviceState.ARMED:
+            if self.state in (DeviceState.ARMED, DeviceState.ARMING):
+                self._answer_arm(Rejected("the device stopped"))
                 await self._disarm()
         finally:
             await self.close()

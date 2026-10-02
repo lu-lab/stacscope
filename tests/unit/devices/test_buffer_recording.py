@@ -22,8 +22,15 @@ import tifffile
 from stacscope.adapters.simulated import SimulatedCamera, VirtualClock
 from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, describe, spawn
 from stacscope.core.buffer import ImageBuffer
-from stacscope.core.devices import BufferRecording, TimedDevice
-from stacscope.core.protocol import DeviceReady, DeviceStopped, FinishRecording, StartDevice, StopDevice
+from stacscope.core.devices import BufferRecording, DeviceState, TimedDevice
+from stacscope.core.protocol import (
+    DeviceReady,
+    DeviceStopped,
+    FinishRecording,
+    SetSaveDirectory,
+    StartDevice,
+    StopDevice,
+)
 from stacscope.core.recording import TIFFRecorder
 
 DEADLINE = 5.0
@@ -336,3 +343,98 @@ def test_l17_buffer_recording_needs_a_buffer_to_record():
 
         class NoBuffer(BufferRecording, TimedDevice):
             pass
+
+
+# --- CM33-CM38: the recorder is a child the camera hears from ----------------------
+#
+# The camera holds its answer, ARMING or DISARMING, until its recorder
+# reports; it never waits on it in a handler, and never reads it as an
+# object. Its handler stays free meanwhile.
+
+
+class SlowStart(TIFFRecorder):
+    """A recorder whose file takes a second, on the camera's clock, to open."""
+
+    async def setup(self):
+        await self.clock.sleep(1.0)
+        await super().setup()
+
+
+class SlowStartCamera(SimulatedCamera):
+    recorder = SlowStart
+
+
+async def test_cm33_the_arm_is_answered_once_the_recorder_reports_it_has_started(rigs, tmp_path):
+    rig = rigs(cls=SlowStartCamera, save_directory=tmp_path)
+    await rig.started()
+    starting = asyncio.ensure_future(rig.ask(StartDevice("run-01", -1)))
+    await rig.clock.advance(0)
+
+    assert rig.device.state is DeviceState.ARMING
+    assert not starting.done()
+    await rig.clock.advance(1.0)
+
+    assert await starting == DeviceReady()
+    assert rig.device.state is DeviceState.ARMED
+    assert (tmp_path / "run-01_camera.tif").exists()
+
+
+async def test_cm35_a_stop_while_arming_finishes_the_recorder_and_disarms(rigs, tmp_path):
+    """The recorder is told to finish with what the acquisition published --
+    nothing, before ``Go`` -- as at any stop, and the camera gives its frame
+    memory back."""
+    rig = rigs(cls=SlowStartCamera, save_directory=tmp_path)
+    await rig.started()
+    starting = asyncio.ensure_future(rig.ask(StartDevice("run-01", -1)))
+    await rig.clock.advance(0)
+
+    stopping = asyncio.ensure_future(rig.ask(StopDevice()))
+    await rig.clock.advance(1.0)
+    await until(lambda: stopping.done(), "the stop was never answered")
+
+    assert isinstance(await starting, Rejected)
+    assert await stopping == DeviceStopped()
+    assert rig.device.state is DeviceState.IDLE
+    assert rig.device.capture._slots is None
+    assert len(read(tmp_path / "run-01_camera.tif")) == 0
+    assert rig.faults() == []
+
+
+async def test_cm36_the_stop_is_answered_once_the_recorder_reports_every_frame(rigs, tmp_path):
+    rig = rigs(cls=SlowCamera, save_directory=tmp_path)
+    await rig.started()
+    assert await rig.ask(StartDevice("run-01", -1)) == DeviceReady()
+    rig.trigger(6)
+    await rig.published(6)
+
+    stopping = asyncio.ensure_future(rig.ask(StopDevice()))
+    await rig.clock.advance(0)
+    assert rig.device.state is DeviceState.DISARMING
+    assert not stopping.done()
+    await until(lambda: stopping.done(), "the stop was never answered")
+
+    assert await stopping == DeviceStopped()
+    assert rig.device.state is DeviceState.IDLE
+    assert len(read(tmp_path / "run-01_camera.tif")) == 6
+    assert rig.faults() == []
+
+
+async def test_cm38_while_disarming_the_camera_answers_and_refuses_changes(rigs, tmp_path):
+    """Its handler is free while the recorder finishes: a change is refused
+    rather than left waiting, and so is the next acquisition, until the file
+    is whole."""
+    rig = rigs(cls=SlowCamera, save_directory=tmp_path)
+    await rig.started()
+    assert await rig.ask(StartDevice("run-01", -1)) == DeviceReady()
+    rig.trigger(6)
+    await rig.published(6)
+    stopping = asyncio.ensure_future(rig.ask(StopDevice()))
+    await rig.clock.advance(0)
+
+    moved = await rig.ask(SetSaveDirectory(str(tmp_path)))
+    again = await rig.ask(StartDevice("run-02", -1))
+
+    assert not stopping.done(), "asked and answered while the recorder was still writing"
+    assert isinstance(moved, Rejected) and isinstance(again, Rejected)
+    assert "DISARMING" in again.reason
+    await until(lambda: stopping.done(), "the stop was never answered")

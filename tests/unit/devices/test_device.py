@@ -254,3 +254,150 @@ async def test_a_device_that_cannot_reach_its_safe_state_dies_rather_than_confir
     assert rig.device.calls == [
         ("arm", "run-01", 3), "disarm", "close",
     ], "teardown does not try the jammed shutter a second time"  # fmt: skip
+
+
+# --- CM32: a role may hold the device's answer ------------------------------------
+#
+# A role whose part ends in a child's report -- a recorder saying it has
+# started, or that the file holds every frame -- cannot answer by waiting in
+# the handler: the parent/child rule makes that wait a state. The base keeps
+# the asker, and the role completes or fails the answer when its child says.
+
+
+class Held(FakeDevice):
+    """A device whose arm, and optionally disarm, a role holds open until
+    told ``"complete"``, ``"fail"`` or ``"done"``."""
+
+    def __init__(self, *, hold_disarm=False, **kwargs):
+        super().__init__(**kwargs)
+        self.hold_disarm = hold_disarm
+
+    async def arm(self, root_filename, cycles):
+        await super().arm(root_filename, cycles)
+        self.hold()
+
+    async def disarm(self):
+        await super().disarm()
+        if self.hold_disarm:
+            self.hold()
+
+    async def handle(self, msg):
+        match msg:
+            case "complete":
+                self.complete_arm()
+            case "fail":
+                await self.fail_arm("the part that was held failed")
+            case "done":
+                self.complete_disarm()
+            case "done badly":
+                self.complete_disarm("the file is short")
+            case _:
+                await super().handle(msg)
+
+
+async def test_cm32_a_held_arm_is_answered_when_the_role_completes_it():
+    rig = Rig()
+    rig.device = Held()
+    rig.ref = rig.parent.spawn_child(rig.device, name="held")
+    answer = asyncio.create_task(rig.start())
+    await rig.clock.advance(0)
+
+    assert rig.device.state is DeviceState.ARMING
+    assert not answer.done(), "held, not answered"
+    rig.ref.tell("complete")
+    await rig.clock.advance(0)
+
+    assert await answer == DeviceReady()
+    assert rig.device.state is DeviceState.ARMED
+
+
+async def test_cm32_a_held_arm_that_fails_is_undone_and_refused():
+    rig = Rig()
+    rig.device = Held()
+    rig.ref = rig.parent.spawn_child(rig.device, name="held")
+    answer = asyncio.create_task(rig.start())
+    await rig.clock.advance(0)
+
+    rig.ref.tell("fail")
+    await rig.clock.advance(0)
+
+    reply = await answer
+    assert isinstance(reply, Rejected) and "the part that was held failed" in reply.reason
+    assert rig.device.state is DeviceState.IDLE
+    assert rig.device.calls[-1] == "disarm", "undone"
+    [fault] = rig.listener.faults()
+    assert fault.fatal, "as any arm that fails: the acquisition must not proceed"
+
+
+async def test_cm32_a_held_disarm_is_answered_when_the_role_completes_it():
+    rig = Rig()
+    rig.device = Held(hold_disarm=True)
+    rig.ref = rig.parent.spawn_child(rig.device, name="held")
+    starting = asyncio.create_task(rig.start())
+    await rig.clock.advance(0)
+    rig.ref.tell("complete")
+    await rig.clock.advance(0)
+    assert await starting == DeviceReady()
+
+    stopping = asyncio.create_task(rig.ask(StopDevice()))
+    await rig.clock.advance(0)
+    assert rig.device.state is DeviceState.DISARMING
+    assert not stopping.done()
+    rig.ref.tell("done")
+    await rig.clock.advance(0)
+
+    assert await stopping == DeviceStopped()
+    assert rig.device.state is DeviceState.IDLE
+
+
+async def test_cm32_a_held_disarm_that_fails_is_a_fatal_fault_and_still_confirmed():
+    """As a file that will not close: the hardware is disarmed, the data may
+    be short, and the user is told."""
+    rig = Rig()
+    rig.device = Held(hold_disarm=True)
+    rig.ref = rig.parent.spawn_child(rig.device, name="held")
+    starting = asyncio.create_task(rig.start())
+    await rig.clock.advance(0)
+    rig.ref.tell("complete")
+    await rig.clock.advance(0)
+    await starting
+
+    stopping = asyncio.create_task(rig.ask(StopDevice()))
+    await rig.clock.advance(0)
+    rig.ref.tell("done badly")
+    await rig.clock.advance(0)
+
+    assert await stopping == DeviceStopped()
+    [fault] = rig.listener.faults()
+    assert fault.fatal and "the file is short" in fault.reason
+
+
+async def test_cm32_a_stop_while_arming_refuses_the_arm_and_disarms():
+    rig = Rig()
+    rig.device = Held()
+    rig.ref = rig.parent.spawn_child(rig.device, name="held")
+    starting = asyncio.create_task(rig.start())
+    await rig.clock.advance(0)
+
+    assert await rig.ask(StopDevice()) == DeviceStopped()
+
+    assert isinstance(await starting, Rejected)
+    assert rig.device.state is DeviceState.IDLE
+    assert rig.device.calls[-1] == "disarm"
+
+
+async def test_cm32_while_disarming_a_start_is_refused():
+    rig = Rig()
+    rig.device = Held(hold_disarm=True)
+    rig.ref = rig.parent.spawn_child(rig.device, name="held")
+    starting = asyncio.create_task(rig.start())
+    await rig.clock.advance(0)
+    rig.ref.tell("complete")
+    await rig.clock.advance(0)
+    await starting
+    rig.ref.tell(StopDevice())
+    await rig.clock.advance(0)
+
+    reply = await rig.start()
+
+    assert isinstance(reply, Rejected) and "DISARMING" in reply.reason

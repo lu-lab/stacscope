@@ -37,7 +37,7 @@ import tifffile
 
 from stacscope.core.actors import Actor, Priority
 from stacscope.core.buffer import Frame, ImageBuffer, MetaField, Overrun
-from stacscope.core.protocol import FinishRecording, RecordingFinished
+from stacscope.core.protocol import FinishRecording, RecorderStarted, RecordingFinished
 
 DEVICE_TICKS_TAG = 65000
 """TIFF tag holding a page's device time, in the device's raw ticks."""
@@ -58,11 +58,11 @@ _TAGS = (
 
 
 @dataclass(frozen=True)
-class _WriterFailed:
-    """From the writer thread to its own actor, in-process only: the actor
-    ends with ``error`` now, rather than when it is next told to finish."""
+class _WriterEnded:
+    """From the writer thread to its own actor, in-process only: the thread
+    is done, with ``error`` or ``None``."""
 
-    error: BaseException
+    error: BaseException | None
 
 
 class TIFFRecorder(Actor):
@@ -70,17 +70,20 @@ class TIFFRecorder(Actor):
     ``buffer_name`` to a new TIFF file at ``path``. ``source`` names the
     device, for the file's description.
 
-    Launching opens the buffer and creates the file. It fails if the buffer
-    is on another acquisition, if ``path`` exists (a file is never written
-    over) or if its directory does not.
+    Launching opens the buffer and creates the file, then reports
+    ``RecorderStarted`` to its parent. It fails if the buffer is on another
+    acquisition, if ``path`` exists (a file is never written over) or if
+    its directory does not.
 
     Told ``FinishRecording(frames)``, it writes up to that many frames,
-    closes the file, answers ``RecordingFinished(frames)`` and stops. It
-    ends with an error instead, as soon as it happens, if a frame was
-    overwritten before it was written (``Overrun``), the buffer started
-    another acquisition, or a write failed; the file is closed first, so
-    the frames written stay readable. Stopped before it is told, it closes
-    the file with what it has. ``frames_written`` counts them.
+    closes the file, answers ``RecordingFinished(frames)`` and stops; it
+    goes on handling messages while it writes. It ends with an error
+    instead, as soon as it happens, if a frame was overwritten before it
+    was written (``Overrun``), the buffer started another acquisition, or a
+    write failed; the file is closed first, so the frames written stay
+    readable. Stopped before it is told, it closes the file with what it
+    has; stopped once told, it writes them all first. ``frames_written``
+    counts them.
     """
 
     def __init__(self, buffer_name: str, acquisition_id: int, path: Path, *, source: str = "") -> None:
@@ -93,6 +96,7 @@ class TIFFRecorder(Actor):
         # Set on the loop, read by the writer thread: each is one reference,
         # written once, so neither needs a lock.
         self._target: int | None = None
+        self._finisher = None
         self._abort = False
         self._reader: ImageBuffer | None = None
         # (tag code, metadata field) for each field the producer fills.
@@ -100,7 +104,6 @@ class TIFFRecorder(Actor):
         self._file = None
         self._tiff: tifffile.TiffWriter | None = None
         self._thread: threading.Thread | None = None
-        self._done: asyncio.Future | None = None
 
     async def setup(self) -> None:
         self._reader = ImageBuffer.open(self.buffer_name)
@@ -114,28 +117,35 @@ class TIFFRecorder(Actor):
         self._file = open(self.path, "xb")
         self._tiff = tifffile.TiffWriter(self._file, bigtiff=True)
         loop = asyncio.get_running_loop()
-        self._done = loop.create_future()
         self._thread = threading.Thread(target=self._run, args=(loop,), name=f"TIFFRecorder {self.path.name}")
         self._thread.start()
+        self.report(RecorderStarted())
 
     async def handle(self, msg: object) -> None:
         match msg:
             case FinishRecording(frames):
+                # Not awaited: the answer is the thread's to give, when it is
+                # done (the parent/child rule: a wait is a state). The thread
+                # reads the target on its next pass.
                 self._target = frames
-                # Shielded: the actor stopping mid-wait must not cancel the
-                # future the thread will still resolve.
-                error = await asyncio.shield(self._done)
+                self._finisher = self.sender
+            case _WriterEnded(error):
                 if error is not None:
-                    raise error
-                self.reply(RecordingFinished(self.frames_written))
+                    raise error  # the parent hears it as this actor's exit
+                if self._finisher is not None:
+                    # URGENT, as its exit will be: at NORMAL, the ChildExited
+                    # that follows the stop would overtake it at the parent.
+                    self._finisher.tell(RecordingFinished(self.frames_written), Priority.URGENT)
                 self.stop()
-            case _WriterFailed(error):
-                raise error
             case _:
                 await super().handle(msg)
 
     async def teardown(self) -> None:
-        self._abort = True
+        # Told to finish, it finishes, whoever stops it: a parent's exit waits
+        # for a child that is finishing, never cuts it short (user,
+        # 2026-10-02). Otherwise it closes the file with what it has.
+        if self._target is None:
+            self._abort = True
         try:
             if self._thread is not None:
                 # The thread closes the file itself, after its last write.
@@ -175,11 +185,9 @@ class TIFFRecorder(Actor):
             loop.call_soon_threadsafe(self._writer_ended, error)
 
     def _writer_ended(self, error: BaseException | None) -> None:
-        self._done.set_result(error)
-        if error is not None and self._target is None:
-            # Nobody is waiting on a finish: end the actor now, so the camera
-            # hears it mid-acquisition and the acquisition stops.
-            self.ref.tell(_WriterFailed(error), Priority.URGENT)
+        # URGENT: a failure mid-acquisition must reach the camera now, so the
+        # acquisition stops.
+        self.ref.tell(_WriterEnded(error), Priority.URGENT)
 
     def _write_all(self) -> None:
         reader = self._reader

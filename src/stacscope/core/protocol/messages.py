@@ -308,6 +308,13 @@ class SaveDirectory:
 
 @message
 @dataclass(frozen=True, slots=True)
+class RecorderStarted:
+    """From a recorder to its parent: its file is open and it is reading the
+    buffer, so the parent's arm can complete."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
 class FinishRecording:
     """The acquisition being recorded ended at ``frames`` frames: write up to
     that many, close the file, and stop. Replied ``RecordingFinished``; a

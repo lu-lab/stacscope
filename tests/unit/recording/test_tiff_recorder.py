@@ -20,9 +20,9 @@ import numpy as np
 import pytest
 import tifffile
 
-from stacscope.core.actors import Actor, ChildExited, ask, describe, spawn
+from stacscope.core.actors import Actor, ChildExited, Fault, ask, describe, spawn
 from stacscope.core.buffer import ImageBuffer, Layout, MetaField, Metadata, Overrun, TimeSource
-from stacscope.core.protocol import FinishRecording, RecordingFinished
+from stacscope.core.protocol import FinishRecording, RecorderStarted, RecordingFinished
 from stacscope.core.recording import DEVICE_TICKS_TAG, HOST_TIME_TAG, TIFFRecorder
 
 STAMPED = Metadata(
@@ -459,3 +459,83 @@ async def test_l10_a_recorder_stopped_before_its_finish_closes_the_file(producer
 
     assert recorder.exit_error is None
     assert len(read(path)) == 3
+
+
+# --- CM33, CM39: the recorder as a child that reports ------------------------------
+
+
+class Slower(Slow):
+    delay = 0.05
+
+
+class Hearing(Parent):
+    """A parent that keeps everything its recorder tells it."""
+
+    def __init__(self):
+        super().__init__()
+        self.heard = []
+
+    async def handle(self, msg):
+        self.heard.append(msg)
+        await super().handle(msg)
+
+
+async def test_cm33_a_recorder_reports_to_its_parent_once_its_file_is_open(producer, tmp_path):
+    """The camera knows its recorder only by its reports: started, which
+    completes the camera's arm, and finished. Nothing is read off the
+    recorder object."""
+    cam = producer()
+    parent = Hearing()
+    spawn(parent, name="camera" + uuid.uuid4().hex[:8])
+    recorder = TIFFRecorder(cam.name, cam.acquisition_id, tmp_path / "run-01_camera.tif")
+    parent.spawn_child(recorder, name="recorder")
+
+    deadline = time.monotonic() + DEADLINE
+    while RecorderStarted() not in parent.heard:
+        assert time.monotonic() < deadline, "never reported started"
+        await asyncio.sleep(0.005)
+    assert (tmp_path / "run-01_camera.tif").exists()
+    recorder.stop()
+    await ended(recorder)
+
+
+async def test_cm39_finishing_does_not_hold_the_recorders_mailbox(producer, tmp_path):
+    """Told to finish, it sets its target and goes on handling messages
+    while its thread writes; the answer comes when the thread is done. A
+    Fault told to it meanwhile is passed up at once -- the proof its handler
+    is free."""
+    cam = producer(n_slots=16)
+    parent = Hearing()
+    spawn(parent, name="camera" + uuid.uuid4().hex[:8])
+    recorder = Slower(cam.name, cam.acquisition_id, tmp_path / "run-01_camera.tif")
+    ref = parent.spawn_child(recorder, name="recorder")
+    await asyncio.wait_for(recorder.started.wait(), DEADLINE)
+    cam.publish(10)  # half a second of writing
+
+    finishing = asyncio.ensure_future(finish(ref, 10))
+    await asyncio.sleep(0.05)
+    probe = Fault(ref, "probe", False)
+    ref.tell(probe)
+    await asyncio.sleep(0.05)
+
+    assert probe in parent.heard and not finishing.done()
+    assert await finishing == RecordingFinished(10)
+    await ended(recorder)
+
+
+async def test_cm39_a_recorder_stopped_while_finishing_finishes_first(producer, tmp_path):
+    """Its handler no longer waits for the thread, so a stop now lands while
+    it is finishing. A parent's exit waits for such a child, and the child
+    writes every frame it was told of: finishing is never cut short."""
+    cam = producer(n_slots=16)
+    path = tmp_path / "run-01_camera.tif"
+    recorder = Slow(cam.name, cam.acquisition_id, path)
+    _, ref = await launch(recorder)
+    cam.publish(6)
+
+    ref.tell(FinishRecording(6))
+    await asyncio.sleep(0.02)
+    recorder.stop()
+    await ended(recorder)
+
+    assert len(read(path)) == 6

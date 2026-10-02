@@ -18,12 +18,12 @@ soon as it happens, and the acquisition stops. A file that cannot be created
 (it exists, or its directory does not) refuses the acquisition.
 """
 
-import asyncio
 from pathlib import Path
 
-from stacscope.core.actors import Actor, ChildExited, Fault, describe
+from stacscope.core.actors import Actor, ActorRef, ChildExited, Fault
+from stacscope.core.devices.device import DeviceState
 from stacscope.core.devices.recording import Recording
-from stacscope.core.protocol import FinishRecording
+from stacscope.core.protocol import FinishRecording, RecorderStarted, RecordingFinished
 from stacscope.core.recording import TIFFRecorder
 
 
@@ -34,28 +34,37 @@ class BufferRecording(Recording):
 
     ``recorder`` is the recorder's class, ``TIFFRecorder`` unless a device
     replaces it. It is built as ``recorder(buffer_name, acquisition_id,
-    path, source=name)`` and must answer ``FinishRecording`` as
-    ``TIFFRecorder`` does, and count ``frames_written``.
+    path, source=name)`` and started as the device's child. Like
+    ``TIFFRecorder``, it must report ``RecorderStarted`` to its parent once
+    its file is open, and answer ``FinishRecording(frames)`` with
+    ``RecordingFinished(frames written)`` before it stops.
 
     Everything ``Recording`` does still applies: an empty stem records
     nothing, a stem with no save directory refuses the arm, and
     ``SetSaveDirectory`` moves the files.
 
-    - The arm is refused if the recorder does not start.
-    - A recorder that ends with an error during an acquisition is published
+    - The arm is answered once the recorder reports it has started (the
+      device is ARMING until then), and refused if it does not start.
+    - A recorder that ends with an error during an acquisition is reported
       as a fatal ``Fault`` at once.
-    - At the stop, a file short of the frames published is a fatal
-      ``Fault``, unless that failure was already reported.
+    - The stop is answered once the recorder reports how many frames it
+      wrote (the device is DISARMING until then). A file short of the
+      frames published is a fatal ``Fault``, unless that failure was
+      already reported.
     - A device that closes while recording stops its recorder, which closes
       the file with what it has written. A recorder already told to finish
-      writes every frame published first, so the close waits for it.
+      writes every frame published first, and the close waits for it.
     """
 
     recorder: type[Actor] = TIFFRecorder
     file_suffix: str = ".tif"
 
-    _recorder: Actor | None = None
-    _recorder_reported: bool = False
+    _recorder: ActorRef | None = None
+    """The recorder, while it is this device's business: from its launch
+    until it reports its last frame, or its failure is reported."""
+    _recorder_path: Path | None = None
+    _told: int | None = None
+    """The frame count the recorder was told to finish with."""
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -76,58 +85,62 @@ class BufferRecording(Recording):
         recorder = self.recorder(self.buffer_name, acquisition, path, source=self.name)
         # Named by acquisition: the last recorder's name is released only once
         # its exit has been reported, which may be after the next arm.
-        self.spawn_child(recorder, name=f"recorder-{acquisition}")
-        waits = [asyncio.ensure_future(recorder.started.wait()), asyncio.ensure_future(recorder.stopped.wait())]
-        try:
-            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for wait in waits:
-                wait.cancel()
-        if not recorder.started.is_set():
-            raise RuntimeError(f"the recorder for {path} did not start: {describe(recorder.exit_error)}")
-        self._recorder = recorder
-        self._recorder_reported = False
+        self._recorder = self.spawn_child(recorder, name=f"recorder-{acquisition}")
+        self._recorder_path = path
+        self._told = None
+        # The arm completes when the recorder says its file is open. Capture
+        # starting before then is harmless: no trigger comes before Go, and
+        # the recorder reads from the acquisition's start in the ring.
+        self.hold()
 
     async def close_recording(self) -> None:
-        recorder = self._recorder
-        if not recorder.stopped.is_set():
-            # Every frame this acquisition will have is published by now:
-            # ImageStreaming's last pass ran before this.
-            published = self.writer.published() - self.writer.acquisition_start
-            recorder.ref.tell(FinishRecording(published))
-            # Waited on its exit, not asked: a recorder that dies while
-            # finishing would leave an ask unanswered.
-            await recorder.stopped.wait()
-        else:
-            published = None
-        # Let go only once it has stopped: a camera cancelled during the wait
-        # (a shutdown) leaves it to close, which stops it.
-        self._recorder = None
-        if recorder.exit_error is not None:
-            if self._recorder_reported:
-                return  # published when it happened; the stop adds nothing
-            self._recorder_reported = True
-            raise RuntimeError(f"the recorder for {recorder.path} failed: {describe(recorder.exit_error)}")
-        if published is not None and recorder.frames_written != published:
-            raise RuntimeError(
-                f"{recorder.path} holds {recorder.frames_written} of the {published} frames published"
-            )
+        if self._recorder is None:
+            return  # gone, and its failure reported when it happened
+        # Every frame this acquisition will have is published by now:
+        # ImageStreaming's last pass ran before this.
+        self._told = self.writer.published() - self.writer.acquisition_start
+        self._recorder.tell(FinishRecording(self._told))
+        self.hold()  # answered when the recorder says the file holds them
 
     async def handle(self, msg: object) -> None:
         match msg:
-            case ChildExited(child, error) if self._recorder is not None and child == self._recorder.ref:
-                # Mid-acquisition: the frames it missed are gone from the ring,
-                # so the acquisition cannot be completed. Published now, so the
-                # Coordinator aborts rather than running on unrecorded.
-                if error is not None and not self._recorder_reported:
-                    self._recorder_reported = True
-                    reason = f"recording to {self._recorder.path} failed: {error}"
-                    self.report(Fault(self.ref, reason, fatal=True))
+            case RecorderStarted() if self._from_recorder():
+                self.complete_arm()
+            case RecordingFinished(frames) if self._from_recorder():
+                self._recorder = None  # it stops after answering: its exit is no news
+                problem = None
+                if frames != self._told:
+                    # Checked here rather than trusting the recorder's word, as
+                    # the Flash checks its DCIMG file: a recorder may be any class.
+                    problem = (
+                        f"recording may be truncated: {self._recorder_path} holds {frames} "
+                        f"of the {self._told} frames published"
+                    )
+                self.complete_disarm(problem)
+            case ChildExited(child, error) if self._recorder is not None and child == self._recorder:
+                await self._recorder_exited(error)
             case _:
                 await super().handle(msg)
 
+    def _from_recorder(self) -> bool:
+        return self._recorder is not None and self.sender == self._recorder
+
+    async def _recorder_exited(self, error: str | None) -> None:
+        self._recorder = None
+        path, why = self._recorder_path, error or "it stopped"
+        match self.state:
+            case DeviceState.ARMING:
+                await self.fail_arm(f"the recorder for {path} did not start: {why}")
+            case DeviceState.DISARMING:
+                self.complete_disarm(f"recording may be truncated: the recorder for {path} failed: {why}")
+            case DeviceState.ARMED if error is not None:
+                # Mid-acquisition: the frames it missed are gone from the ring,
+                # so the acquisition cannot be completed. Reported now, so the
+                # Coordinator aborts rather than running on unrecorded.
+                self.report(Fault(self.ref, f"recording to {path} failed: {error}", fatal=True))
+
     async def close(self) -> None:
         # The recorder is already gone: a parent's exit stops its children
-        # before its teardown, waiting for one told to finish (CM10).
+        # before its teardown, and waits for one told to finish (CM10).
         self._recorder = None
         await super().close()

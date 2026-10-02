@@ -4176,7 +4176,8 @@ policy, or state the Coordinator shouldn't hold.
       happen if another message arrives meanwhile, decided per action.
       Waits have been used as backpressure, which made a stop wait behind
       them; one idea (user) is a wait during which only messages of higher
-      priority than the current one are taken. To be discussed.
+      priority than the current one are taken. Decided: see the
+      priority-gated wait below.
     - **There are no special kinds of message.** A reply is an ordinary
       message told to the asker. `ask` is shorthand for a pattern: send,
       expect a reply from the recipient, act on the reply or on a timeout.
@@ -4204,9 +4205,11 @@ policy, or state the Coordinator shouldn't hold.
       virtual time still drives it. Favour whatever is most robust in each
       case; internal threads are not ruled out.
     - **Hardware waits use a priority-gated wait** (Claude's recommendation,
-      under discussion): at a marked wait, the actor takes only messages of
-      higher priority than the one it is handling. Waits on other actors are
-      states instead.
+      accepted by the user, 2026-10-02): at a marked wait, the actor takes
+      only messages of higher priority than the one it is handling. Waits on
+      other actors are states instead. Two needs settled it: a stop must get
+      through the source's refill wait, and so must the timer that announces
+      a phase as it starts playing.
     - **Every envelope carries its sender.** A reply is an ordinary tell
       back to the sender; `ask` remains a convenience for roots. The wire's
       reply field becomes the sender.
@@ -4250,6 +4253,75 @@ policy, or state the Coordinator shouldn't hold.
       - *Open question.* What a halt writes while idle, or before any
         COOLDOWN is set: a safe sample named in the rig config, or the last
         COOLDOWN played.
+- *Principles, decided while going through the Coordinator/TimingSource
+  split (user, 2026-10-02):*
+  - **The split stands.** The Coordinator knows who takes part and
+    whether they are ready; the source knows when.
+  - **FAULTED is folded into the rule for a lost required device.** The
+    source counts as a device that is always required: while it is lost,
+    every `StartAcquisition` is refused, naming it, until it is relaunched.
+    No state is latched.
+  - **Supervision stays in the Coordinator.** It is a consequence of being
+    the top-level actor, and it is what makes coordinating an acquisition
+    simple.
+  - **`SourcePhase(RUN)` must be synced with the start of the first MAIN
+    cycle**, for software-timed devices. Today it is not: the base enters
+    RUN as soon as `warmup()` has committed WARMUP, which for the DAQ source
+    is usually before the sample clock has started. RUN is announced early
+    by the whole of WARMUP plus the start-up, or, when WARMUP is longer than
+    the hardware buffer, by the buffer and the FIFO. COOLDOWN is early by up
+    to the same.
+  - **Every `SourcePhase` means "now playing"** (user): WARMUP when the
+    clock starts, RUN at the first MAIN sample, COOLDOWN at its first
+    sample, IDLE once output has drained. The source's own phase still
+    changes when samples are queued, which keeps the MAIN → COOLDOWN handoff
+    gapless; only the announcement moves. The mechanism (Claude's proposal,
+    accepted):
+    - The source knows the sample index where each phase starts, from its
+      count of samples queued.
+    - The `SignalOutput` port gains `samples_played()`: on NI,
+      `total_samp_per_chan_generated`, which the adapter already reads
+      (0.03 ms); in simulation, from the clock. Covered by the contract
+      suite.
+    - The source schedules a self-message for when the phase should start
+      playing; when it arrives, it checks `samples_played()` and announces,
+      or re-arms. It reaches the source through the priority-gated wait.
+    - A source with no buffer announces at once: the base asks the subclass
+      where a phase starts, and the default is now. That keeps a camera
+      source possible.
+    - The precision is the control flow's: about a millisecond in-process,
+      a few across processes. On Windows, event-loop timers may be no finer
+      than the system timer (often 15.6 ms); measure on `Dev1-sim` before
+      relying on it.
+  - **An acquisition stopped before the first MAIN plays never announces
+    RUN** (user). A device waiting for RUN never starts its routine, and is
+    stopped with everything else.
+- *Principles, decided while going through the three information flows
+  (user, 2026-10-02):* where the flows meet is a message or a stamp that
+  converts between them.
+  - **One host clock.** Frames are stamped on the monotonic clock the
+    actors use (`time.monotonic_ns`, the performance counter on Windows
+    from 3.13, about 1 µs), not the wall clock (`time.time_ns`), which can
+    jump. Each file gets one wall-clock anchor for the date and time.
+    Affects the metadata's `host_time_ns`, TIFF tag 65001, and the uEye and
+    simulated captures. Today the two clocks cannot be compared, so a
+    software-timed device's own record cannot be reconciled with frames.
+  - **Mapping a frame to its cycle or waveform is the client's job.** The
+    engine keeps the facts (`MainApplied`'s tag and sample, each frame's
+    sequence, lost frames fatal so counting holds); the client that
+    designed the waveform knows the pulses per MAIN on each camera's line
+    and the camera's own rule (N − 1 in synchronous readout). Building it
+    in would mix waveform and camera logic, as sizing a recording from
+    pulses did.
+  - **`MainApplied` stays at queue time**, the one exception to "now
+    playing": it says where the MAIN plays (`sample`), not that it is
+    playing, and a closed loop needs it early to queue the next. Its
+    docstring is to say so.
+  - The principles walk is done. Next: the communication-model
+    observations 1–7, below.
+  - The plan's "Coordinator and timing source" section is out of date (it
+    stops only the devices that were ready, and calls FAULTED terminal); it
+    is to be rewritten when these are built.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

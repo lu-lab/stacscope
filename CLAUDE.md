@@ -38,8 +38,11 @@ The user has not ordered these. Ask before starting one.
 core and the communication model came before anything new; its findings are
 in the plan's "Open items → The core review". Its four bugs are fixed
 (CR1–CR4), among them a process child that stopped its device 30 s after
-launch. **Next: discuss its communication-model observations (1–7) with the
-user**, before the gateway, the session model or any open item.
+launch. Before the observations, the user went through the core design
+principles and decided changes to them (the same section, "Principles,
+decided while going through…"); none is built yet. **Next: discuss its
+communication-model observations (1–7) with the user**, before the gateway,
+the session model or any open item.
 
 `notes/instrument-dev-box.md` has the machine, its wiring, and how to run
 each hardware suite on the day testing resumes.

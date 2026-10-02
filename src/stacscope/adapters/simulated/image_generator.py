@@ -74,7 +74,7 @@ class TestImageGenerator:
                 index,
                 hw_frame=self._hw_frame,
                 device_ticks=self._hw_frame * self._ticks_per_frame,
-                host_time_ns=time.time_ns(),
+                host_time_ns=time.monotonic_ns(),  # the actors' clock, not the wall clock
             )
             self._hw_frame += 1
             writer.publish(1)

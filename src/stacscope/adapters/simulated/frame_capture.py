@@ -217,7 +217,7 @@ class SimulatedFrameCapture:
         self._stamps[slot] = (
             self._hw_frame,
             round(self.clock.now() * self._metadata.device_clock_hz),
-            time.time_ns(),
+            time.monotonic_ns(),  # the actors' clock, not the wall clock, which can jump
         )
         self._hw_frame += 1
         self._next_hw_frame = self._hw_frame

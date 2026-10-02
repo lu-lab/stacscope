@@ -14,6 +14,12 @@ the first page's description lists along with the clock they come from:
     65000  device_ticks   the camera's clock, in raw ticks
     65001  host_time_ns   the computer's clock when the frame was seen
 
+The computer's clock is its monotonic clock, in nanoseconds: steady, and the
+same clock every part of STACScope keeps its own record on, but with no date
+of its own. The description's wall_clock_anchor pairs one reading of it with
+the date and time (wall_time, UTC), taken as the file opened; a page's date
+is wall_time_ns + (host_time_ns - anchor host_time_ns).
+
 Every frame is written, or the recording fails. A recorder that falls so far
 behind that the camera overwrites a frame it has not written yet ends with
 an error, and so does one whose disk is full. The camera then stops the
@@ -30,6 +36,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -103,6 +110,7 @@ class TIFFRecorder(Actor):
         self._tags: list[tuple[int, str]] = []
         self._file = None
         self._tiff: tifffile.TiffWriter | None = None
+        self._anchor: dict[str, object] = {}
         self._thread: threading.Thread | None = None
 
     async def setup(self) -> None:
@@ -116,6 +124,15 @@ class TIFFRecorder(Actor):
         # would leave a window for another writer.
         self._file = open(self.path, "xb")
         self._tiff = tifffile.TiffWriter(self._file, bigtiff=True)
+        # Host times are on the monotonic clock, which can be compared with
+        # every actor's record but says nothing of the date: one reading of
+        # each, together, converts them all (CM48, CM49).
+        host, wall = time.monotonic_ns(), time.time_ns()
+        self._anchor = {
+            "host_time_ns": host,
+            "wall_time_ns": wall,
+            "wall_time": datetime.fromtimestamp(wall / 1e9, UTC).isoformat(),
+        }
         loop = asyncio.get_running_loop()
         self._thread = threading.Thread(target=self._run, args=(loop,), name=f"TIFFRecorder {self.path.name}")
         self._thread.start()
@@ -201,6 +218,7 @@ class TIFFRecorder(Actor):
                 "device_time_source": reader.metadata.device_time_source.name,
                 "device_clock_hz": reader.metadata.device_clock_hz,
                 "frame_tags": {str(code): name for code, name in tags},
+                "wall_clock_anchor": self._anchor,
             }
         )
         self._tags = tags

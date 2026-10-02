@@ -26,6 +26,7 @@ still holds makes the segment's close raise ``BufferError``.
 """
 
 import asyncio
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ __all__ = [
     "Rig",
     "buffers",
     "test_a_closed_capture_refuses_to_be_used",
+    "test_host_time_is_the_monotonic_clock_the_actors_use",
     "test_a_lost_frame_raises_frames_lost",
     "test_a_refused_attach_does_not_hold_the_segment_open",
     "test_after_detach_no_reference_to_any_slot_remains",
@@ -387,6 +389,23 @@ async def test_stamps_are_consecutive_frame_by_frame(rig, buffers):
         assert (np.diff(stamps["device_ticks"]) > 0).all()
     if MetaField.HOST_TIME in fields:
         assert (np.diff(stamps["host_time_ns"]) >= 0).all()
+
+
+async def test_host_time_is_the_monotonic_clock_the_actors_use(rig, buffers):
+    """CM48. One host clock: a frame's host time is ``time.monotonic_ns``,
+    the clock every actor's own record is kept on, so a software-timed
+    device's log lines up with the frames. Not the wall clock, which can
+    jump; each file carries one wall-clock anchor instead."""
+    await _capturing(rig, buffers)
+    if MetaField.HOST_TIME not in rig.capture.metadata().fields:
+        pytest.skip("this capture stamps no host time")
+    before = time.monotonic_ns()
+    await rig.trigger(2)
+    after = time.monotonic_ns()
+
+    stamps = rig.capture.stamps(0, 2)
+
+    assert all(before <= int(t) <= after for t in stamps["host_time_ns"])
 
 
 async def test_stamps_follow_their_frames_around_the_ring(rig, buffers):

@@ -34,7 +34,8 @@ class Clock(Protocol):
 
 
 class MonotonicClock:
-    """Wall-clock implementation over the event loop's own timers."""
+    """Real-time implementation over the event loop's own timers, on the
+    monotonic clock."""
 
     def now(self) -> float:
         return time.monotonic()

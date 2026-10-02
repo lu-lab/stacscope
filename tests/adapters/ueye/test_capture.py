@@ -493,13 +493,14 @@ async def test_u6_an_error_from_the_queue_is_raised(open_capture, fake, segments
 
 async def test_u7_stamps_come_from_each_frames_info(open_capture, fake, segments):
     """hw_frame is u64FrameNumber and device_ticks u64TimestampDevice, as the
-    driver gave them for that frame; host time is when the adapter took it."""
+    driver gave them for that frame; host time is when the adapter took it,
+    on the monotonic clock the actors use (CM48), never the wall clock."""
     capture = open_capture(fake)
     await capturing(capture, segments)
-    before = time.time_ns()
+    before = time.monotonic_ns()
     await triggered(fake, 3)
     await capture.wait_frames(0, 1.0)
-    after = time.time_ns()
+    after = time.monotonic_ns()
 
     stamps = capture.stamps(0, 3)
 

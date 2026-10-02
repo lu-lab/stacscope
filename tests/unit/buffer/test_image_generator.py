@@ -54,7 +54,9 @@ def test_each_frame_shows_only_its_own_bar(rig):
 def test_metadata_is_filled_like_a_camera(rig):
     generator, reader = rig()
     cursor = reader.cursor()
+    before = time.monotonic_ns()
     generator.emit(3)
+    after = time.monotonic_ns()
 
     assert reader.metadata.fields == MetaField.HW_FRAME | MetaField.DEVICE_TIME | MetaField.HOST_TIME
     assert reader.metadata.device_time_source is TimeSource.CAMERA
@@ -62,7 +64,9 @@ def test_metadata_is_filled_like_a_camera(rig):
     assert [int(f.meta["hw_frame"]) for f in frames] == [0, 1, 2]
     ticks = [int(f.meta["device_ticks"]) for f in frames]
     assert ticks[1] - ticks[0] == ticks[2] - ticks[1] > 0
-    assert all(int(f.meta["host_time_ns"]) > 0 for f in frames)
+    # The monotonic clock the actors use (CM48): the wall clock can jump, and
+    # the two cannot be compared.
+    assert all(before <= int(f.meta["host_time_ns"]) <= after for f in frames)
 
 
 def test_a_camera_drop_can_be_simulated(rig):

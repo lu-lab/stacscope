@@ -637,7 +637,7 @@ class UEyeFrameCapture:
             # Read before the unlock: the manual says the info matches the
             # image only while it is locked.
             self._call("is_GetImageInfo", self._h, mem_id, info, ctypes.sizeof(info))
-            host = time.time_ns()
+            host = time.monotonic_ns()  # the actors' clock (CM48): the wall clock can jump
         finally:
             self._call("is_UnlockSeqBuf", self._h, mem_id, self._memories[index][0])
         with self._state:

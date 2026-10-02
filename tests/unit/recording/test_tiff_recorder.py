@@ -183,6 +183,7 @@ async def test_l2_each_page_carries_its_frames_time_stamps(producer, tmp_path):
     assert [t[HOST_TIME_TAG] for t in stamps] == [10**12, 10**12 + 1, 10**12 + 2]
     with tifffile.TiffFile(path) as tf:
         description = json.loads(tf.pages[0].description)
+    description.pop("wall_clock_anchor")  # CM49
     assert description == {
         "source": "camera",
         "buffer": cam.name,
@@ -191,6 +192,28 @@ async def test_l2_each_page_carries_its_frames_time_stamps(producer, tmp_path):
         "device_clock_hz": 1e7,
         "frame_tags": {str(DEVICE_TICKS_TAG): "device_ticks", str(HOST_TIME_TAG): "host_time_ns"},
     }
+
+
+async def test_cm49_the_file_carries_one_wall_clock_anchor(producer, tmp_path):
+    """Host times are on the monotonic clock (CM48), which says nothing of
+    the date. The file pairs one reading of it with the wall clock, taken
+    together as it opened, so every page's host time converts to a date."""
+    cam = producer()
+    path = tmp_path / "run-01_camera.tif"
+    recorder = TIFFRecorder(cam.name, cam.acquisition_id, path, source="camera")
+    before = (time.monotonic_ns(), time.time_ns())
+    _, ref = await launch(recorder)
+    after = (time.monotonic_ns(), time.time_ns())
+
+    cam.publish(1)
+    await finish(ref, 1)
+    await ended(recorder)
+
+    with tifffile.TiffFile(path) as tf:
+        anchor = json.loads(tf.pages[0].description)["wall_clock_anchor"]
+    assert before[0] <= anchor["host_time_ns"] <= after[0]
+    assert before[1] <= anchor["wall_time_ns"] <= after[1]
+    assert anchor["wall_time"].endswith("+00:00"), "ISO 8601, in UTC"
 
 
 async def test_l2_a_producer_with_no_clock_gets_no_time_tags(producer, tmp_path):

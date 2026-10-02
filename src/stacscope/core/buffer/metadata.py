@@ -8,7 +8,7 @@ offset  format  field           meaning
 0       u64     sequence        global frame index; always written
 8       u64     hw_frame        the device's own frame number
 16      i64     device_ticks    device clock, raw ticks (see device_clock_hz)
-24      i64     host_time_ns    host wall clock when the producer saw the frame
+24      i64     host_time_ns    monotonic host clock when the producer saw it
 32      u64     flags           reserved, 0
 ======  ======  ==============  ===============================================
 

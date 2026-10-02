@@ -34,14 +34,17 @@ class Listener(Actor):
 
 class Factory:
     """Makes a fresh instance per launch: the n-th launch uses the n-th maker
-    (the last one repeats). Keeps every instance made."""
+    (the last one repeats). Keeps every instance made. Launches are counted,
+    not instances, so a maker that raises still uses up its turn."""
 
     def __init__(self, *makers):
         self.makers = makers
         self.made = []
+        self.launches = 0
 
     def __call__(self):
-        maker = self.makers[min(len(self.made), len(self.makers) - 1)]
+        maker = self.makers[min(self.launches, len(self.makers) - 1)]
+        self.launches += 1
         self.made.append(maker())
         return self.made[-1]
 

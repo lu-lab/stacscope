@@ -1,4 +1,4 @@
-"""C1–C5 — the Coordinator.
+"""C1–C5 — the Coordinator, and CR2–CR3 from the core review.
 
 Run against ``SimulatedTimingSource``, whose phases are no-ops: nothing here
 may depend on the source being an AO board.
@@ -11,6 +11,7 @@ from timing_support import PERIOD, READY_TIMEOUT, Dev, Factory, Rig
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
 from stacscope.core.actors import Accepted, AskTimeout, Rejected, ask
+from stacscope.core.devices import NotReady, TimedDevice
 from stacscope.core.protocol import (
     AcquisitionStarted,
     AcquisitionStopped,
@@ -71,6 +72,35 @@ async def test_c2_the_source_itself_can_be_the_laggard():
     assert isinstance(await starting, Rejected)
     assert "warmup" not in rig.source.calls
     assert "stop" in rig.devices["camera"].names()
+
+
+class Refuser(TimedDevice):
+    """Refuses every arm, as a camera with no save directory set does."""
+
+    async def arm(self, root_filename, cycles):
+        raise NotReady("no save directory is set")
+
+
+async def test_cr3_a_refusal_is_reported_with_its_reason_not_as_a_timeout():
+    """CR3. Found by the core review (2026-10-02): the Coordinator reduced each
+    device's answer to ready-or-not, so a device that refused at once was
+    reported as "not ready within timeout", and its reason -- what the user
+    must fix before the next start -- reached nobody, because a ``NotReady``
+    refusal publishes no Fault of its own. Each device not ready is named with
+    its own reason, beside any that really did time out."""
+    rig = Rig(camera=Refuser(), laggard=SimulatedDevice(never_ready=True))
+    starting = rig.request(StartAcquisition(-1, "run-01"))
+
+    await rig.clock.advance(READY_TIMEOUT)
+
+    reply = await starting
+    assert isinstance(reply, Rejected)
+    assert "camera (no save directory is set)" in reply.reason
+    assert f"laggard (no reply within {READY_TIMEOUT} s)" in reply.reason
+    assert any("no save directory is set" in f.reason for f in rig.listener.faults()), (
+        "a client that did not ask hears why too"
+    )
+    assert rig.coordinator.state is CoordinatorState.IDLE
 
 
 # --- C3 ------------------------------------------------------------------------
@@ -286,3 +316,48 @@ async def test_relaunch_is_refused_unless_the_device_is_gone_and_nothing_is_runn
     await rig.start()
     assert isinstance(await rig.call(Relaunch("shutter")), Rejected), "not mid-acquisition"
     assert len(shutter.made) == 1
+
+
+# --- CR2: a relaunch that cannot launch ----------------------------------------
+
+
+def unbuildable():
+    raise RuntimeError("camera driver not found")
+
+
+async def test_cr2_a_relaunch_that_cannot_launch_is_refused_and_the_coordinator_survives():
+    """CR2. Found by the core review (2026-10-02): the launch ran inside the
+    Coordinator's handler with nothing to catch it, so a factory that raised
+    -- or a process launch raising ``LaunchFailed``, as a camera whose driver
+    is still wedged would -- killed the Coordinator. The asker heard nothing,
+    and the source and every device ran on unsupervised, since a parent's
+    exit does not stop its children. Relaunching a device that has just
+    failed is exactly when its launch is likeliest to fail again."""
+    camera = Factory(lambda: SimulatedDevice(fail_in_setup=True), unbuildable, SimulatedDevice)
+    rig = Rig(camera=camera)
+    await rig.clock.advance(0)
+    assert "camera" not in rig.coordinator.participants
+
+    reply = await rig.call(Relaunch("camera"))
+
+    assert isinstance(reply, Rejected)
+    assert "camera" in reply.reason and "camera driver not found" in reply.reason
+    assert not rig.coordinator.stopped.is_set(), "the Coordinator survives"
+    assert "camera" not in rig.coordinator.participants, "and the device is still lost"
+    assert await rig.call(Relaunch("camera")) == Accepted(), "so it can be tried again"
+    assert await rig.start() == AcquisitionStarted()
+
+
+async def test_cr2_a_source_relaunch_that_cannot_launch_leaves_it_faulted():
+    source = Factory(lambda: SimulatedTimingSource(cycle_period=PERIOD, fail_on_cycle=1), unbuildable)
+    rig = Rig(source=source, camera=SimulatedDevice())
+    await rig.start()
+    await rig.clock.advance(2.0)
+    assert rig.coordinator.state is CoordinatorState.FAULTED
+
+    reply = await rig.call(Relaunch("source"))
+
+    assert isinstance(reply, Rejected) and "camera driver not found" in reply.reason
+    assert not rig.coordinator.stopped.is_set()
+    assert rig.coordinator.state is CoordinatorState.FAULTED
+    assert rig.coordinator.source is None

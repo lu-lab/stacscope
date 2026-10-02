@@ -21,6 +21,7 @@ from stacscope.core.actors import (
     Rejected,
     Subscribe,
     ask,
+    describe,
 )
 from stacscope.core.protocol import (
     AcquisitionStarted,
@@ -75,8 +76,9 @@ class Coordinator(Actor):
     - ``StartAcquisition``: ``StartDevice`` to every participant and the
       source, concurrently, each with its own timeout. All ``DeviceReady`` →
       ``Go`` to the source, reply ``AcquisitionStarted``. Otherwise abort:
-      reply ``Rejected``, publish a non-fatal ``Fault``, ``StopDevice`` to
-      everyone (laggards included, so none is left armed), back to Idle.
+      reply ``Rejected`` naming each device not ready and why, publish a
+      non-fatal ``Fault``, ``StopDevice`` to everyone (laggards included, so
+      none is left armed), back to Idle.
     - ``StopAcquisition``: ``Finish`` to the source. On ``SourceFinished`` —
       requested or because the cycle count ran out — ``StopDevice`` to
       everyone, then reply ``AcquisitionStopped``.
@@ -87,8 +89,9 @@ class Coordinator(Actor):
       source's is fatal: everyone is stopped and the Coordinator is Faulted,
       refusing ``StartAcquisition`` until the source is relaunched.
     - ``Relaunch(name)``: spawn a fresh instance of a lost device from its
-      spec, when Idle or Faulted. Relaunching the source leaves Faulted. Never
-      automatic: when to relaunch is the user's call.
+      spec, when Idle or Faulted. Relaunching the source leaves Faulted. A
+      launch that fails is answered ``Rejected`` with why, and the device
+      stays lost. Never automatic: when to relaunch is the user's call.
     - Every launch is published as ``DeviceLaunched(name, ref)``.
     """
 
@@ -174,12 +177,14 @@ class Coordinator(Actor):
     async def _start(self, start: StartDevice) -> None:
         self.state = CoordinatorState.STARTING
         devices = self._devices()
-        ready = await asyncio.gather(
+        answers = await asyncio.gather(
             *(self._ready(ref, start, spec.ready_timeout) for spec, ref in devices)
         )
-        laggards = [spec.name for (spec, _), ok in zip(devices, ready) if not ok]
-        if laggards:
-            reason = f"not ready within timeout: {', '.join(laggards)}"
+        # Each with its own reason: a refusal says what to fix, which a
+        # timeout cannot, and a NotReady refusal publishes no Fault of its own.
+        not_ready = [f"{spec.name} ({why})" for (spec, _), why in zip(devices, answers) if why]
+        if not_ready:
+            reason = f"not ready: {'; '.join(not_ready)}"
             self.publish(Fault(self.ref, reason, fatal=False))
             self.reply(Rejected(reason))
             await self._stop_everyone()
@@ -189,11 +194,17 @@ class Coordinator(Actor):
         self.state = CoordinatorState.RUNNING
         self.reply(AcquisitionStarted())
 
-    async def _ready(self, ref: ActorRef, start: StartDevice, timeout: float) -> bool:
+    async def _ready(self, ref: ActorRef, start: StartDevice, timeout: float) -> str | None:
+        """``None`` if the device answered ready; otherwise why it is not."""
         try:
-            return await ask(ref, start, timeout=timeout, clock=self.clock) == DeviceReady()
+            answer = await ask(ref, start, timeout=timeout, clock=self.clock)
         except AskTimeout:
-            return False
+            return f"no reply within {timeout} s"
+        if answer == DeviceReady():
+            return None
+        if isinstance(answer, Rejected):
+            return answer.reason
+        return f"answered {type(answer).__name__}"
 
     async def _stop_everyone(self) -> None:
         devices = self._devices()
@@ -251,20 +262,29 @@ class Coordinator(Actor):
     async def _relaunch(self, name: str) -> None:
         if self._refuse(Relaunch(name), CoordinatorState.IDLE, CoordinatorState.FAULTED):
             return
-        if name == self._source_spec.name:
-            if self.source is not None:
-                self._reject(f"{name} is running; only a lost device can be relaunched")
-                return
-            await self._launch_source()
-            self.state = CoordinatorState.IDLE
-        elif name in self._specs:
-            if name in self.participants:
-                self._reject(f"{name} is running; only a lost device can be relaunched")
-                return
-            await self._launch(self._specs[name])
-        else:
+        is_source = name == self._source_spec.name
+        if not is_source and name not in self._specs:
             self._reject(f"no device named {name!r} is configured")
             return
+        running = self.source is not None if is_source else name in self.participants
+        if running:
+            self._reject(f"{name} is running; only a lost device can be relaunched")
+            return
+        # Caught here, not left to end the Coordinator: a device that has just
+        # failed is the likeliest to fail its relaunch (a wedged driver), and
+        # the Coordinator's death would leave everything else unsupervised --
+        # a parent's exit does not stop its children. Nothing was registered
+        # before the launch raised, so the device is simply still lost.
+        try:
+            if is_source:
+                await self._launch_source()
+            else:
+                await self._launch(self._specs[name])
+        except Exception as exc:  # noqa: BLE001 - any launch failure leaves it lost, never the Coordinator dead
+            self._reject(f"{name} could not be relaunched: {describe(exc)}")
+            return
+        if is_source:
+            self.state = CoordinatorState.IDLE
         self.reply(Accepted())
 
     def _lost_required(self) -> list[str]:

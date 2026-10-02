@@ -4,11 +4,12 @@ Run as ``python -m stacscope.core.transport.child <endpoint> <token> <address>``
 by ``ProcessHost``. A fresh interpreter, holding nothing of the parent's but
 the factory it is sent.
 
-Every wait here is bounded and every ending is an exit. A child that cannot
-reach its endpoint, or is never told what to be, exits rather than lingering;
-one whose link home is closed stops its device -- running the ``teardown`` that
-releases the hardware -- and exits too. An orphan holding a camera open is
-worse than no child at all.
+Every wait while starting is bounded, and every ending is an exit. A child
+that cannot reach its endpoint, or is never told what to be, exits rather than
+lingering. Once its device is running, the child serves it for as long as the
+link home stays open; when the link closes, it stops its device -- running the
+``teardown`` that releases the hardware -- and exits too. An orphan holding a
+camera open is worse than no child at all.
 """
 
 import asyncio
@@ -39,19 +40,25 @@ UNBUILT = 12
 """Told what to be, and could not be it. The parent is given the reason."""
 
 
-async def serve(endpoint: str, token: str, address: str) -> int:
-    connected = await _connect(endpoint)
+async def serve(
+    endpoint: str, token: str, address: str, *, bootstrap_timeout: float = CONNECT_TIMEOUT
+) -> int:
+    """Connect to the host at ``endpoint``, build the device it sends, and
+    serve it as ``address`` until the link closes or the device stops.
+    Returns the exit code. ``bootstrap_timeout`` bounds each step of
+    starting: connecting, being told what to be, and the device's setup."""
+    connected = await _connect(endpoint, bootstrap_timeout)
     if connected is None:
         return UNREACHABLE
     reader, writer = connected
 
     send_frame(writer, msgpack.packb({"token": token}))
-    factory = _field(await _bounded(read_frame(reader)), "factory")
+    factory = _field(await _bounded(read_frame(reader), bootstrap_timeout), "factory")
     if not isinstance(factory, bytes):
         return UNINSTRUCTED
 
     connection = Connection(reader, writer, Wire(Codec(MESSAGES)))
-    actor = await _build(factory, address)
+    actor = await _build(factory, address, bootstrap_timeout)
     if isinstance(actor, str):
         send_frame(writer, msgpack.packb({"error": actor}))
         await connection.close()
@@ -61,7 +68,11 @@ async def serve(endpoint: str, token: str, address: str) -> int:
     serving = asyncio.create_task(connection.serve())
     send_frame(writer, msgpack.packb({"ready": address}))
 
-    await _either(connection.closed.wait(), actor.stopped.wait())
+    # Unbounded, unlike everything above: the device runs for as long as the
+    # acquisitions do. A bound here once stopped every healthy device 30 s
+    # after launch (CR1). It cannot strand an orphan: the operating system
+    # closes the link when the engine's process ends, however it ends.
+    await _either(connection.closed.wait(), actor.stopped.wait(), timeout=None)
     actor.stop()  # whether the link went or the device did, this process is done
     await _bounded(actor.stopped.wait(), STOP_GRACE)
     # The last word: why the device ended, so that a death here reads the same
@@ -76,16 +87,16 @@ async def serve(endpoint: str, token: str, address: str) -> int:
     return 0
 
 
-async def _connect(endpoint: str):
+async def _connect(endpoint: str, timeout: float):
     host, _, port = endpoint.rpartition(":")
     try:
-        return await asyncio.wait_for(asyncio.open_connection(host, int(port)), CONNECT_TIMEOUT)
+        return await asyncio.wait_for(asyncio.open_connection(host, int(port)), timeout)
     except (OSError, TimeoutError, ValueError) as exc:
         print(f"no engine at {endpoint}: {exc!r}", file=sys.stderr)
         return None
 
 
-async def _build(factory: bytes, address: str) -> Actor | str:
+async def _build(factory: bytes, address: str, timeout: float) -> Actor | str:
     """The actor, or why there is not one. Construction and ``setup`` both
     count: a device that cannot open its hardware has not started."""
     try:
@@ -93,17 +104,21 @@ async def _build(factory: bytes, address: str) -> Actor | str:
         spawn(actor, address=address)
     except Exception as exc:
         return repr(exc)
-    await _either(actor.started.wait(), actor.stopped.wait())
-    if not actor.started.is_set():
-        return describe(actor.exit_error)
-    return actor
+    await _either(actor.started.wait(), actor.stopped.wait(), timeout=timeout)
+    if actor.started.is_set():
+        return actor
+    if actor.stopped.is_set():
+        return describe(actor.exit_error) or "the device stopped while starting"
+    actor.stop()  # its setup is still running; leaving the process ends it
+    return f"the device did not finish starting within {timeout} s"
 
 
-async def _either(*waits) -> None:
-    """Return when the first of ``waits`` does. The rest are abandoned."""
+async def _either(*waits, timeout: float | None) -> None:
+    """Return when the first of ``waits`` does, or after ``timeout``. The rest
+    are abandoned."""
     tasks = [asyncio.create_task(wait) for wait in waits]
     try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=CONNECT_TIMEOUT)
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
     finally:
         for task in tasks:
             task.cancel()

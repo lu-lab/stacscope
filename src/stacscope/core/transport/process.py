@@ -119,9 +119,10 @@ class ProcessHost:
     ) -> ActorRef:
         """Start ``factory`` as an actor in a new process, supervised by ``parent``.
 
-        Returns once the actor is running and reachable -- or raises, so that a
-        device which cannot start says so now rather than at the beginning of
-        an experiment.
+        Returns once the actor is running and reachable -- or raises
+        ``LaunchFailed``, so that a device which cannot start says so now
+        rather than at the beginning of an experiment. The device's ``setup``
+        must finish within the host's ``connect_timeout``.
         """
         if self._server is None:
             raise LaunchFailed(f"{name}: the process host has not been started")
@@ -217,7 +218,14 @@ class ProcessHost:
                 f"{name}: no process connected within {self._connect_timeout} s"
             ) from None
         send_frame(writer, msgpack.packb({"factory": payload}))
-        frame = await asyncio.wait_for(read_frame(reader), self._connect_timeout)
+        try:
+            # The device's setup runs inside this wait: opening a camera can be
+            # the slowest step of a launch.
+            frame = await asyncio.wait_for(read_frame(reader), self._connect_timeout)
+        except TimeoutError:
+            raise LaunchFailed(
+                f"{name}: did not finish starting within {self._connect_timeout} s"
+            ) from None
         error = _field(frame, "error")
         if error is not None:
             raise LaunchFailed(f"{name}: {error}")

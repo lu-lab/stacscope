@@ -4032,6 +4032,11 @@ machine and how to run each hardware suite when testing resumes.
   messages, so whether the session model comes first is worth deciding
   before either starts.
 
+**2026-10-02: a core review comes first** (user). Its findings are in
+"Open items → The core review". Bugs A–D are fixed (CR1–CR4, 2026-10-02);
+next, the communication-model observations are discussed, before any item
+above starts.
+
 2. **Data flow** — generic ring buffer, producer/consumer, contract tests, synthetic producer. The contract suite runs on both CI legs, so POSIX unlink/persistence semantics and `track=False` are exercised rather than assumed.
 3. **Device actors against simulation** — multi-device registry, per-device READY/timeout, shared root filename, software-timed participation. *(Done 2026-09-19; see "Milestone 3" above.)*
 4. **Process transport** — run a simulated device out-of-process and prove fault isolation before the real driver arrives: kill the process, watch the heartbeat fire `ChildExited`, confirm the registry recovers and the engine survives. Doing this in simulation first means the DCAM adapter lands into a boundary already known to work. *(Done 2026-09-19; see "Milestone 4" above.)*
@@ -4070,6 +4075,97 @@ is itself STACScope, a proxy suits one needing translation, its own reconnect
 policy, or state the Coordinator shouldn't hold.
 
 ## Open items
+
+- **The core review (2026-10-02).** The user asked for a deep review of the
+  core and the communication model before anything new is added. Claude read
+  the runtime, protocol, Coordinator, timing source, device roles, transport
+  and rig in full, and probed each suspected bug on the real clock with
+  simulated parts.
+  - *Bugs, each confirmed by a probe or by reading; the user chose to fix
+    them first (CR1–CR4, below):*
+    - **A.** A process child stopped its device 30 s after launch, cleanly
+      (`ChildExited(error=None)`, measured at 30.1 s). `child.serve` waited for
+      "link closed or device stopped" through `_either`, whose 30 s bound
+      (`CONNECT_TIMEOUT`) is meant for the bootstrap. G13 never saw it: each
+      run ended inside 30 s of launch. It may explain G13's unreproduced
+      208 s failure (unconfirmed). Found beside it: a device setup slower
+      than the host's `connect_timeout` (15 s) raised a bare `TimeoutError`
+      from `ProcessHost.launch`, not `LaunchFailed`, so the rig reported
+      "TimeoutError()"; and the child's own bound on setup, had it run out
+      first, returned `None` where a reason was due.
+    - **B.** A `Relaunch` whose factory raised, or whose process launch raised
+      `LaunchFailed`, killed the Coordinator: the asker got no reply, and the
+      source and devices ran on with no supervisor, since a parent's exit
+      does not stop its children.
+    - **C.** The Coordinator turned a device's refusal into "not ready within
+      timeout": `_ready` reduced every reply to a bool. A `NotReady` refusal
+      publishes no Fault, so its reason ("no MAIN waveform has been set", "no
+      save directory is set") reached nobody.
+    - **D.** A `SoftwareTimed` routine that raised failed in silence: the task's
+      exception was collected only at disarm, by
+      `gather(return_exceptions=True)`, and dropped.
+  - *Fixed (2026-10-02), each test red first; 632 green on 3.14t and 3.14:*
+    - **CR1** (`tests/integration/test_process_launch.py`): a child serves
+      its device until the link closes, however long (run in-process
+      against the host's half of the handshake, with the bound at 0.2 s);
+      and a setup that outlasts the host's wait is `LaunchFailed` naming the
+      device. The wait after "ready" is now unbounded: the OS closes the
+      link when the engine's process ends, so it cannot strand an orphan.
+      `child.serve` takes `bootstrap_timeout` for the test. The 40 s probe
+      that found A now sees the child still running. `SimulatedDevice`
+      gained `setup_time`.
+    - **CR2** (`tests/unit/timing/test_coordinator.py`): a relaunch whose
+      launch raises is answered `Rejected` with why; the Coordinator lives,
+      the device stays lost and may be relaunched again; a failed source
+      relaunch stays Faulted. `Factory` in `timing_support.py` now counts
+      launches, so a maker that raises uses its turn.
+    - **CR3** (same file): a failed start names each device not ready with
+      its own reason, `not ready: camera (no save directory is set);
+      laggard (no reply within 2.0 s)`, in the reply and the Fault.
+    - **CR4** (`tests/unit/devices/test_software_timed.py`): a routine that
+      raises is published as a fatal Fault when it does (Claude's choice of
+      fatal: the device can no longer do its part); one cancelled by a stop
+      or one that finishes is not. Mutation-checked.
+  - *Communication-model observations, for discussion after the fixes (user,
+    2026-10-02):*
+    1. The Coordinator's mailbox is blocked while it starts or stops devices
+       (`_start` / `_stop_everyone` await asks inside `handle`), so
+       `ChildExited`, `Fault` and `SourcePhase` queue behind them. On an abort,
+       a software-timed device gets `StopDevice` before the relayed COOLDOWN
+       or IDLE. A device that dies during start costs its whole
+       `ready_timeout`: an ask to a dead actor has no fast failure.
+    2. A phase is published when it is committed, not when it plays: RUN is
+       published once WARMUP is written, before output starts. The lead is
+       WARMUP plus the buffer depth, plus mailbox latency. `SoftwareTimed`'s
+       docstring ("a driven variable at RUN, with the first image")
+       overstates it.
+    3. Two ways to reach an actor: `BufferRecording` holds the recorder
+       object (`started`, `stopped`, `frames_written`; `RecordingFinished` is
+       never read), and `Rig` reads `coordinator.state` and `participants`
+       directly. Fine in one process; the gateway cannot do it.
+    4. Nothing a remote client needs yet: no message queries the
+       Coordinator's state or registry, and no state transitions are
+       published (only `DeviceLaunched`). Published messages (`Fault`,
+       `SourcePhase`, `SourceFinished`) carry no acquisition identity; with
+       today's ordering no misattribution was found.
+    5. One subscriber list per actor: clients and devices share the
+       Coordinator's, so every device, process children included, receives
+       every Fault and `DeviceLaunched`. Dead subscribers are never pruned.
+    6. The timing source shares the engine's event loop. Anything that holds
+       it eats the ~37 ms refill margin (one run saw a 57 ms hold). Today the
+       cameras are process children, so only the Coordinator shares it.
+    7. Already open (below): process-placed devices reach only the
+       Coordinator, which is why phases are relayed.
+  - *Smaller:* the codec trusts a frame's fields on decode (a missing field
+    raises `KeyError`, which closes the link, against `Connection.serve`'s
+    intent of skipping one bad frame; field types are not checked), which
+    matters once the gateway takes frames from outside. `tell` to a remote
+    ref can raise `CodecError` in the sender; to a local one it cannot.
+  - *Sound:* the runtime is small and consistent (exactly one `ChildExited`,
+    heartbeats answered on receipt, guaranteed teardown); arm and disarm
+    failure semantics are careful; role order is enforced; placement is
+    transparent to the Coordinator; the buffer path never touches control.
+    None of the problems is structural.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

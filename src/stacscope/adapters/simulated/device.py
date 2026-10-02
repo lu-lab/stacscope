@@ -8,24 +8,28 @@ class SimulatedDevice(Actor):
     """Answers ``StartDevice`` after ``ready_delay`` (or never, if
     ``never_ready``) and ``StopDevice`` at once. Records every command with
     the virtual time it arrived. ``fail_in_setup`` simulates a device that
-    cannot be initialized."""
+    cannot be initialized, and ``setup_time`` one slow to initialize."""
 
     def __init__(
         self,
         ready_delay: float = 0.0,
         never_ready: bool = False,
         fail_in_setup: bool = False,
+        setup_time: float = 0.0,
     ) -> None:
         super().__init__()
         self.ready_delay = ready_delay
         self.never_ready = never_ready
         self.fail_in_setup = fail_in_setup
+        self.setup_time = setup_time
         self.calls: list[tuple] = []
 
     def names(self) -> list[str]:
         return [call[0] for call in self.calls]
 
     async def setup(self) -> None:
+        if self.setup_time:
+            await self.clock.sleep(self.setup_time)
         if self.fail_in_setup:
             raise RuntimeError("simulated device failed to initialize")
 

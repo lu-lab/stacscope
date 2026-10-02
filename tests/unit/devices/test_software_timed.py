@@ -1,4 +1,4 @@
-"""D8–D9 — a participant that acts during the acquisition on its own clock.
+"""D8–D9, and CR4 from the core review — a participant that acts during the acquisition on its own clock.
 
 The pressure box is the case: serial commands, seconds at a time, against
 sub-second volume rates. It can never be part of the acquisition loop, but it
@@ -68,6 +68,15 @@ class Unwinding(Driven):
             await super().routine()
         finally:
             self.calls.append("routine cleanup")
+
+
+class Failing(Driven):
+    """A routine whose hardware goes away partway, as a serial port can."""
+
+    async def routine(self):
+        await self.clock.sleep(STEP)
+        self.calls.append(("set", 5.0, self.clock.now()))
+        raise OSError("serial port went away")
 
 
 class Listener(Actor):
@@ -244,3 +253,54 @@ async def test_a_cut_short_routine_unwinds_before_the_safe_state():
 
     assert await rig.ask(StopDevice()) == DeviceStopped()
     assert rig.device.calls[-2:] == ["routine cleanup", "safe"]
+
+
+# --- CR4: a routine that fails is reported -------------------------------------
+
+
+def faults(rig):
+    return [m for m in rig.listener.heard if isinstance(m, Fault)]
+
+
+async def test_cr4_a_routine_that_fails_is_a_fatal_fault_when_it_happens():
+    """CR4. Found by the core review (2026-10-02): the routine's exception sat
+    in its task until disarm gathered it with ``return_exceptions=True`` and
+    dropped it. A pressure box whose serial port died mid-run went unreported,
+    and the acquisition ran on without the experiment it was meant to drive.
+    Fatal, because the device can no longer do its part; published when it
+    happens, so the Coordinator stops the acquisition instead of the user
+    finding out from the data. The device stays armed until that stop, which
+    still reaches the safe state."""
+    rig = Rig(cls=Failing)
+    await rig.arm()
+    await rig.phase(Phase.RUN)
+
+    await rig.clock.advance(STEP)
+    await rig.clock.advance(0)
+
+    [fault] = faults(rig)
+    assert fault.fatal and "serial port went away" in fault.reason
+    assert fault.source == rig.ref
+    assert await rig.ask(StopDevice()) == DeviceStopped()
+    assert rig.device.setting == 0.0, "vented"
+    assert len(faults(rig)) == 1, "reported once, not again at the stop"
+
+
+async def test_cr4_a_routine_that_ends_or_is_cut_short_is_not_a_fault():
+    """The other half of CR4: a cancelled routine is how every stop mid-run
+    ends, and a finished one is the normal case. Neither may read as a
+    failure, or every acquisition would end in a fatal fault."""
+    rig = Rig()
+    await rig.arm()
+    await rig.phase(Phase.RUN)
+    await rig.clock.advance(1.5 * STEP)
+    assert await rig.ask(StopDevice()) == DeviceStopped()
+
+    await rig.arm()
+    await rig.phase(Phase.RUN)
+    await rig.clock.advance(4 * STEP)
+    assert "routine done" in rig.device.calls
+    assert await rig.ask(StopDevice()) == DeviceStopped()
+    await rig.clock.advance(0)
+
+    assert faults(rig) == []

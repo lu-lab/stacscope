@@ -20,6 +20,7 @@ camera is responsible for its own recording.
 
 import asyncio
 
+from stacscope.core.actors import Fault
 from stacscope.core.devices.device import DeviceState
 from stacscope.core.protocol import Phase, SourcePhase
 
@@ -41,7 +42,9 @@ class SoftwareTimed:
 
     A routine is cancelled when the device stops, before the adapter's
     ``disarm`` reaches its safe state: an interrupted experiment vents the
-    pressure and closes the shutter like any other.
+    pressure and closes the shutter like any other. A routine that raises is
+    published as a fatal ``Fault`` when it does; the device stays armed until
+    it is stopped.
     """
 
     start_phase: Phase = Phase.RUN
@@ -65,6 +68,17 @@ class SoftwareTimed:
     def _start_routine(self) -> None:
         if self._routine is None:
             self._routine = asyncio.create_task(self.routine())
+            self._routine.add_done_callback(self._routine_ended)
+
+    def _routine_ended(self, routine: asyncio.Task) -> None:
+        # Reported here, as it happens: otherwise the exception waits in the
+        # task until disarm gathers it, which drops it, and the acquisition
+        # runs on without the experiment the routine was driving. A
+        # cancellation is how every stop mid-routine ends, so it is not one.
+        if routine.cancelled() or routine.exception() is None:
+            return
+        reason = f"{type(self).__name__} routine failed: {routine.exception()!r}"
+        self.publish(Fault(self.ref, reason, fatal=True))
 
     async def disarm(self) -> None:
         routine, self._routine = self._routine, None

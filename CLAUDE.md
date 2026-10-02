@@ -33,6 +33,14 @@ next: M6, the ZeroMQ gateway, then M7, integration on the instrument. Its
 - ETL waveforms.
 
 The user has not ordered these. Ask before starting one.
+
+**First, though (user, 2026-10-02): the core review.** A deep review of the
+core and the communication model came before anything new; its findings are
+in the plan's "Open items → The core review". Its four bugs are fixed
+(CR1–CR4), among them a process child that stopped its device 30 s after
+launch. **Next: discuss its communication-model observations (1–7) with the
+user**, before the gateway, the session model or any open item.
+
 `notes/instrument-dev-box.md` has the machine, its wiring, and how to run
 each hardware suite on the day testing resumes.
 

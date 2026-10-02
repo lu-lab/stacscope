@@ -1,4 +1,4 @@
-"""X4, X5 -- a device in a process of its own.
+"""X4, X5 -- a device in a process of its own -- and CR1 from the core review.
 
 These are real-clock tests: a fresh interpreter has a real one. Everything
 here is therefore bounded twice over -- by a deadline of its own and by the
@@ -10,8 +10,10 @@ is the whole claim of this milestone: the Coordinator cannot tell.
 """
 
 import asyncio
+import pickle
 from functools import partial
 
+import msgpack
 import pytest
 
 from stacscope.adapters.simulated import SimulatedDevice, SimulatedTimingSource
@@ -27,7 +29,8 @@ from stacscope.core.protocol import (
     StopDevice,
 )
 from stacscope.core.timing import Coordinator, CoordinatorState, DeviceSpec, Launcher, Placement
-from stacscope.core.transport import LaunchFailed, ProcessHost
+from stacscope.core.transport import LaunchFailed, ProcessHost, child
+from stacscope.core.transport.stream import read_frame, send_frame
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -125,3 +128,61 @@ async def test_an_acquisition_runs_with_one_participant_in_another_process(host)
     assert coordinator.state is CoordinatorState.IDLE
     assert set(coordinator.participants) == {"shutter", "camera"}
     assert host.running() == 1  # and the camera really was somewhere else
+
+
+# --- CR1: a child lives as long as its link -----------------------------------
+
+
+async def test_cr1_a_child_runs_until_its_link_closes_however_long_that_is():
+    """CR1. Found by the core review (2026-10-02): once its device was ready,
+    the child waited for "link closed or device stopped" through a helper
+    still carrying the bootstrap's 30 s bound. When it ran out, the child
+    stopped a healthy device and exited cleanly, so every process-placed
+    device -- both cameras on the instrument -- ended 30 s after launch, and
+    the Coordinator heard a clean stop. Every G13 run ended inside 30 s, so
+    nothing on the hardware showed it.
+
+    Run in this process, against the host's half of the handshake, so the
+    bound can be shortened: five bounds pass, and the child is still serving."""
+    links: asyncio.Queue = asyncio.Queue()
+
+    async def accept(reader, writer):
+        await links.put((reader, writer))
+
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    host, port = server.sockets[0].getsockname()[:2]
+    serving = asyncio.create_task(
+        child.serve(f"{host}:{port}", "token", "engine/camera", bootstrap_timeout=0.2)
+    )
+    try:
+        reader, writer = await asyncio.wait_for(links.get(), 5)
+        assert msgpack.unpackb(await read_frame(reader)) == {"token": "token"}
+        send_frame(writer, msgpack.packb({"factory": pickle.dumps(SimulatedDevice)}))
+        assert msgpack.unpackb(await asyncio.wait_for(read_frame(reader), 5)) == {"ready": "engine/camera"}
+
+        await asyncio.sleep(1.0)
+        assert not serving.done(), "the child gave up on a healthy link"
+
+        writer.close()
+        assert await asyncio.wait_for(serving, 5) == 0, "and ends when the link does"
+    finally:
+        serving.cancel()
+        server.close()
+
+
+async def test_cr1_a_device_slower_to_start_than_the_host_waits_is_a_launch_failure():
+    """The host bounds the whole bootstrap, the device's setup included. A
+    setup that outlasts it raised a bare ``TimeoutError`` from ``launch``, so
+    the rig reported "TimeoutError()" and nothing named the device or said
+    what it had been waiting for."""
+    host = ProcessHost(connect_timeout=4.0)
+    await host.start()
+    actor = Parent()
+    spawn(actor, name="engine")
+    await asyncio.sleep(0)
+    try:
+        with pytest.raises(LaunchFailed, match=r"camera: did not finish starting within 4\.0 s"):
+            await host.launch(actor, name="camera", factory=partial(SimulatedDevice, setup_time=60.0))
+        assert host.running() == 0
+    finally:
+        await host.close()

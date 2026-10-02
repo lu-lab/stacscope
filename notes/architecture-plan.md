@@ -4440,6 +4440,101 @@ policy, or state the Coordinator shouldn't hold.
       that a device receives no other actor's ref.
     - `child.py` spawns a process child with `address=` and no parent;
       `spawn` gains the parent ref for that case.
+- *Building it: acceptance tests CM1–CM51 (approved by the user,
+  2026-10-02).* Seven steps, each leaving the suite green. Six details
+  were settled with the list:
+  1. A `Fault`'s default lives in `Actor.handle`: it passes the Fault to
+     the parent and ignores the rest. Every `case _:` calls
+     `super().handle(msg)`; an actor acting on a Fault has its own case.
+  2. With a sender on every envelope, told and asked are the same: a
+     refusal is `Rejected` to the sender; a `Fault` only when there is no
+     sender (a tell from outside the tree).
+  3. `Status` carries each device's ref, for clients; devices never get it.
+  4. A process relaunch runs the host's launch as a task that tells the
+     Coordinator the outcome: a launch is not another actor's reply.
+  5. An acquisition takes its number when its start begins.
+  6. `report(msg)`: to the parent, or published by a root. For `Fault`,
+     `SourcePhase`, `SourceFinished`; the source still publishes
+     `MainApplied` / `MainDiscarded`.
+
+  **Step 1, addresses and reports (runtime).** CM1 `parent` is set at
+  spawn, its address the child's less its last segment; `None` for a root.
+  CM2 a process child's `parent` reaches the engine: a Fault it reports
+  arrives at the Coordinator (integration). CM3 `report` tells the parent,
+  or a root publishes. CM4 a Fault's default is the parent; a grandchild's
+  climbs to the root, which publishes it. CM5 an actor handling a Fault in
+  its own case stops it there. CM6 every envelope carries its sender: from
+  inside an actor (or a task it started) its ref, from outside `None`, an
+  `ask`'s its one-shot address; `reply` answers the sender, told or asked.
+  CM7 the sender crosses a link (the wire's `r` field).
+
+  **Step 2, time and lifetime (runtime).** CM8 `Clock.call_later`,
+  cancellable, fired by `VirtualClock` at its deadline. CM9 `tell_later`
+  delivers to the actor's own mailbox on its clock; cancellable; the
+  actor's exit cancels it. CM10 a parent's exit stops its children first,
+  in reverse launch order, then runs its `teardown`, also when it died of
+  an error. CM11 a child mid-message finishes first, and is not reported
+  lost. CM12 the same for a process child: the Coordinator's exit ends its
+  process, and the device's `teardown` runs (integration). CM13 the
+  priority-gated wait: messages above the handler's priority are handled
+  as they arrive, the rest held until it returns, FIFO kept. CM14 an error
+  in a message handled during the wait ends the actor as anywhere else.
+
+  **Step 3, the Coordinator.** CM15 while STARTING it answers `GetStatus`
+  and passes Faults on. CM16 each `ready_timeout` is a self-message; a late
+  `DeviceReady` is ignored and that device stopped with the rest. CM17 a
+  required device or the source lost while STARTING fails the start at
+  once, naming it and why. CM18 an optional one is dropped and the start
+  goes on. CM19 a device lost while STOPPING counts as done, reported lost.
+  CM20 during an abort, a phase reaches phase subscribers before the stop
+  handshake ends. CM21 a relaunch is a state: `GetStatus` answered during a
+  slow launch, a second `Relaunch` of the same device `Rejected`,
+  `StartAcquisition` refused while a required device relaunches. CM22
+  FAULTED is gone: a lost source refuses starts, naming it, like any
+  required device. CM23 the Coordinator subscribes to no device and no
+  device to itself; device Faults reach it by address, a fatal one
+  aborting. CM24 a `SoftwareTimed` device subscribes to its parent in
+  `setup` and hears phases only; across a run with a fault and a relaunch,
+  no device receives any ref but its own and its parent's. CM25 a client
+  subscriber hears everything. CM26 a device subscriber is dropped on its
+  exit. CM27 `GetStatus` → `Status(state, acquisition, devices)`, each
+  device's name, source, required, present and ref. CM28 `Status` is
+  published on every change. CM29 acquisitions are numbered in
+  `AcquisitionStarted`, `AcquisitionStopped` and `Status`. CM30 the
+  source's IDLE reaches the Coordinator before its `DeviceStopped` and
+  `SourceFinished`. CM31 the new messages cross the codec.
+
+  **Step 4, devices.** CM32 a role may hold the arm's answer: ARMING with
+  the asker kept; completed → ARMED, `DeviceReady`; failed → undone,
+  `Rejected`, IDLE. CM33 `BufferRecording` is ARMING until the recorder
+  reports `RecorderStarted`. CM34 a recorder that fails to start undoes the
+  arm, `Rejected` with its reason. CM35 `StopDevice` while ARMING stops the
+  recorder and disarms. CM36 disarm sends `FinishRecording(published)`,
+  DISARMING; `RecordingFinished(frames)` with the full count →
+  `DeviceStopped`; short fails the stop as today. CM37 a recorder that
+  exits with an error while DISARMING fails the stop as today. CM38 while
+  DISARMING the handler answers queries and refuses `StartDevice`. CM39 the
+  recorder answers `FinishRecording` without blocking its mailbox.
+
+  **Step 5, "now playing".** CM40 `samples_played()` in the port contract
+  suite: 0 before the clock, never above written, growing while playing,
+  held after a stop. CM41 WARMUP announced when the clock starts. CM42 RUN
+  once `samples_played()` reaches WARMUP's length, never before, within a
+  timer interval after. CM43 COOLDOWN at its first sample, IDLE once
+  drained. CM44 stopped before the first MAIN plays: WARMUP, COOLDOWN,
+  IDLE, no RUN; a device waiting for RUN never starts its routine. CM45 a
+  source with no buffer announces at once (the base default). CM46 RUN is
+  on time through a long refill wait (the gated wait). CM47 announcements
+  never overtake each other. Docstrings: `SoftwareTimed`, `MainApplied`.
+
+  **Step 6, one host clock.** CM48 every capture that stamps host time
+  uses `time.monotonic_ns`. CM49 each TIFF carries one wall-clock anchor.
+
+  **Step 7, clients.** CM50 the rig works only through messages
+  (`rig.device`, `rig.source`, `close` from `Status`); stopping the
+  Coordinator stops every device. CM51 a loop-lag probe in the H9 soak (a
+  measurement, on `Dev1-sim`). Then the plan's "Coordinator and timing
+  source" section is rewritten and CLAUDE.md brought up to date.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

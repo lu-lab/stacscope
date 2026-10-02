@@ -273,9 +273,12 @@ async def test_l15_each_acquisition_gets_its_own_recorder_and_file(rigs, tmp_pat
 
 
 async def test_l16_a_camera_that_goes_while_recording_takes_its_recorder_with_it(rigs, tmp_path):
-    """A parent's exit does not stop its children, so the role must: a
-    recorder outliving its camera would hold the file open and the buffer
-    mapped. The file is closed with what was written."""
+    """A recorder outliving its camera would hold the file open and the
+    buffer mapped. A parent's exit stops its children before its own
+    teardown (CM10), so the recorder is stopped before the camera's disarm
+    could tell it how many frames to write: it closes the file with what it
+    had written, which a shutdown mid-acquisition may leave short. An
+    acquisition stopped first (``StopDevice``) records every frame."""
     rig = rigs(save_directory=tmp_path)
     await rig.started()
     assert await rig.ask(StartDevice("run-01", -1)) == DeviceReady()
@@ -285,7 +288,7 @@ async def test_l16_a_camera_that_goes_while_recording_takes_its_recorder_with_it
 
     await rig.stop()
 
-    assert len(read(tmp_path / "run-01_camera.tif")) == 3
+    assert len(read(tmp_path / "run-01_camera.tif")) <= 3, "readable, with what was written"
     assert writer_threads() == [], "the writer thread was joined"
 
 

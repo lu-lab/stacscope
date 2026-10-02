@@ -127,12 +127,7 @@ class BufferRecording(Recording):
                 await super().handle(msg)
 
     async def close(self) -> None:
-        """Stops a recorder still running, then closes whatever is below. A
-        recorder already told to finish writes every frame first."""
-        # A parent's exit does not stop its children: left running, the
-        # recorder would hold the file open and the segment mapped.
-        recorder, self._recorder = self._recorder, None
-        if recorder is not None and not recorder.stopped.is_set():
-            recorder.stop()
-            await recorder.stopped.wait()
+        # The recorder is already gone: a parent's exit stops its children
+        # before its teardown, waiting for one told to finish (CM10).
+        self._recorder = None
         await super().close()

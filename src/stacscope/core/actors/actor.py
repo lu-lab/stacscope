@@ -3,13 +3,13 @@
 import asyncio
 import itertools
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from stacscope.core.actors.mailbox import Mailbox, Priority
 from stacscope.core.actors.messages import Fault, Heartbeat, HeartbeatReply, Subscribe, Unsubscribe
 from stacscope.core.actors.ref import ActorRef, Envelope, LocalTransport, Transport, current_sender
 from stacscope.core.actors.supervision import ChildWatch, HeartbeatPolicy
-from stacscope.core.ports.clock import Clock, MonotonicClock
+from stacscope.core.ports.clock import Clock, MonotonicClock, Scheduled
 
 type Link = Callable[[Transport], Transport]
 """Wraps the transport a new actor is reached through (composition-root hook)."""
@@ -44,6 +44,8 @@ class Actor:
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
         self._sender: ActorRef | None = None
+        self._priority: Priority | None = None
+        self._deadlines: list[Scheduled] = []
         self._children: list[ChildWatch] = []
         self._child_names: set[str] = set()
         self._subscribers: dict[ActorRef, None] = {}  # ordered set
@@ -63,24 +65,75 @@ class Actor:
 
     async def run(self) -> None:
         while not self._stopping:
-            envelope: Envelope = await self._mailbox.get()
-            match envelope.msg:
-                case Subscribe(subscriber):
-                    # Refs are equal by address, so a relaunched actor's ref is
-                    # equal to its dead predecessor's and a plain assignment
-                    # would keep the old key -- and publish into the void.
-                    self._subscribers.pop(subscriber, None)
-                    self._subscribers[subscriber] = None
-                case Unsubscribe(subscriber):
-                    self._subscribers.pop(subscriber, None)
-                case _WakeUp():
-                    pass  # only here to end the wait above
-                case msg:
-                    self._sender = envelope.sender
-                    try:
-                        await self.handle(msg)
-                    finally:
-                        self._sender = None
+            envelope, priority = await self._mailbox.take()
+            await self._dispatch(envelope, priority)
+
+    async def _dispatch(self, envelope: Envelope, priority: Priority) -> None:
+        match envelope.msg:
+            case Subscribe(subscriber):
+                # Refs are equal by address, so a relaunched actor's ref is
+                # equal to its dead predecessor's and a plain assignment
+                # would keep the old key -- and publish into the void.
+                self._subscribers.pop(subscriber, None)
+                self._subscribers[subscriber] = None
+            case Unsubscribe(subscriber):
+                self._subscribers.pop(subscriber, None)
+            case _WakeUp():
+                pass  # only here to end the wait in run
+            case msg:
+                # Saved and put back, not cleared: a message handled during a
+                # gated wait runs inside the handler that is waiting.
+                outer = self._sender, self._priority
+                self._sender, self._priority = envelope.sender, priority
+                try:
+                    await self.handle(msg)
+                finally:
+                    self._sender, self._priority = outer
+
+    async def gated[T](self, aw: Awaitable[T]) -> T:
+        """Await ``aw`` -- a wait on this actor's own hardware -- handling,
+        meanwhile, only messages more urgent than the one being handled. The
+        rest stay queued, in order, until the handler returns. Returns what
+        ``aw`` returns. An error from a message handled meanwhile abandons the
+        wait and propagates, as it would from the handler itself.
+
+        A wait on another actor is never this: it is a state.
+        """
+        # Re-entrant by design: the urgent message runs inside this handler,
+        # so a handler that gates must leave its state consistent at the wait
+        # (the source's refill wait leaves only "stop when you can" for a
+        # StopDevice to set). Outside a handler there is nothing to gate on.
+        waiting = asyncio.ensure_future(aw)
+        above = self._priority
+        try:
+            while True:
+                taking = asyncio.ensure_future(self._mailbox.take(above=above))
+                try:
+                    await asyncio.wait({waiting, taking}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    if not taking.done():
+                        taking.cancel()
+                if taking.done() and not taking.cancelled():
+                    await self._dispatch(*taking.result())
+                    continue  # whatever was taken is handled before the wait ends
+                return waiting.result()
+        finally:
+            if not waiting.done():
+                waiting.cancel()
+
+    def tell_later(self, seconds: float, msg: object, priority: Priority = Priority.NORMAL) -> Scheduled:
+        """Tell this actor ``msg`` after ``seconds`` on its clock: a deadline,
+        or a check to make later. Cancel what is returned to call it off; the
+        actor's exit cancels any still pending."""
+        scheduled: Scheduled
+
+        def deliver() -> None:
+            self._deadlines.remove(scheduled)
+            self.ref.tell(msg, priority, sender=self.ref)
+
+        scheduled = self.clock.call_later(seconds, deliver)
+        self._deadlines.append(scheduled)
+        return scheduled
 
     async def handle(self, msg: object) -> None:
         """Act on one message. The default passes a ``Fault`` to the parent
@@ -170,6 +223,9 @@ class Actor:
             self.exit_error = exc
         finally:
             try:
+                for scheduled in self._deadlines:
+                    scheduled.cancel()
+                await self._stop_children()
                 await self.teardown()
             except Exception as exc:
                 if self.exit_error is None:
@@ -180,6 +236,18 @@ class Actor:
                 for watch in list(self._children):
                     watch.close()
                 self.stopped.set()
+
+
+    async def _stop_children(self) -> None:
+        """A parent's exit stops its children first, last launched first, so
+        nothing is left running with nobody supervising it."""
+        # Decided by the user (2026-10-02), reversing the rule that children
+        # outlive their parent. Each is waited for: a child finishing a message
+        # (a recorder told to finish) completes it, never cut short. Closed
+        # first, so a child stopped this way is not reported as lost.
+        for watch in reversed(list(self._children)):
+            watch.close()
+            await watch.stop_child()
 
 
 def describe(error: BaseException | None) -> str | None:
@@ -200,17 +268,20 @@ def adopt(
     heartbeat: HeartbeatPolicy | None = None,
     clock: Clock | None = None,
     on_release: Callable[[], None] | None = None,
+    on_stop: Callable[[], Awaitable[None]] | None = None,
 ) -> ChildWatch:
     """Supervise a child this actor did not start -- one in another process.
 
     Supervision needs only an address: exits are reported by whoever notices
     them, and a heartbeat travels like any other message. ``on_release`` runs
     with the name, just before ``ChildExited``, for whatever else the far side
-    owns -- a process to be reaped, a connection to be closed.
+    owns -- a process to be reaped, a connection to be closed. ``on_stop``
+    stops the child and returns once it has ended; the parent's exit awaits
+    it, as it does every child's stop.
     """
     name = child.address.rsplit("/", 1)[-1]
     _reserve(parent, name)
-    return _watch(parent, child, name, heartbeat, clock or parent.clock, on_release)
+    return _watch(parent, child, name, heartbeat, clock or parent.clock, on_release, on_stop)
 
 
 def spawn(
@@ -249,9 +320,16 @@ def spawn(
     if clock is not None:
         actor.clock = clock
 
+    async def stop() -> None:
+        actor.stop()
+        # The task, not ``stopped``: a task cancelled before its first step
+        # (everything is, when a loop shuts down) never runs the code that
+        # sets ``stopped``, and its parent would wait for ever.
+        await asyncio.wait({actor._task})
+
     watch = None
     if local_parent is not None:
-        watch = _watch(local_parent, ref, name, heartbeat, actor.clock, None)
+        watch = _watch(local_parent, ref, name, heartbeat, actor.clock, None, stop)
 
     async def lifecycle() -> None:
         current_sender.set(ref)  # this task is the actor, so its tells are from it
@@ -285,6 +363,7 @@ def _watch(
     heartbeat: HeartbeatPolicy | None,
     clock: Clock,
     on_release: Callable[[], None] | None,
+    stop: Callable[[], Awaitable[None]] | None,
 ) -> ChildWatch:
     watch: ChildWatch
 
@@ -294,7 +373,7 @@ def _watch(
         if on_release is not None:
             on_release()
 
-    watch = ChildWatch(parent.ref, child, release)
+    watch = ChildWatch(parent.ref, child, release, stop)
     parent._children.append(watch)
     if heartbeat is not None:
         watch.start_heartbeat(heartbeat, clock)

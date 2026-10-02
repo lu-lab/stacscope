@@ -160,6 +160,7 @@ class ProcessHost:
             ref,
             heartbeat=heartbeat or self._heartbeat,
             on_release=lambda: self._release(name),
+            on_stop=lambda: self._stop(name),
         )
         child.tasks = [
             asyncio.create_task(child.connection.serve()),
@@ -175,15 +176,7 @@ class ProcessHost:
         that does not is killed, because a shutdown that can hang is not one.
         """
         children, self._children = list(self._children.values()), {}
-        for child in children:
-            await child.connection.close()
-        for child in children:
-            try:
-                await asyncio.wait_for(child.process.wait(), STOP_GRACE)
-            except TimeoutError:
-                await self._kill(child.process)
-            for task in child.tasks:
-                task.cancel()
+        await self._shut_down(children)
         if self._server is not None:
             self._server.close()
             # Bounded: waiting on it means waiting for every connection to be
@@ -193,6 +186,23 @@ class ProcessHost:
             except TimeoutError:
                 pass
             self._server = None
+
+    async def _stop(self, name: str) -> None:
+        """Shut one child down, as ``close`` does: its parent is exiting."""
+        child = self._children.pop(name, None)
+        if child is not None:
+            await self._shut_down([child])
+
+    async def _shut_down(self, children: list[_Child]) -> None:
+        for child in children:
+            await child.connection.close()
+        for child in children:
+            try:
+                await asyncio.wait_for(child.process.wait(), STOP_GRACE)
+            except TimeoutError:
+                await self._kill(child.process)
+            for task in child.tasks:
+                task.cancel()
 
     # --- the bootstrap handshake -------------------------------------------
     #

@@ -2,8 +2,18 @@
 
 import asyncio
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import Protocol
+
+
+class Scheduled(Protocol):
+    """A call ``call_later`` has scheduled."""
+
+    def cancel(self) -> None:
+        """Make sure it never runs. Harmless once it has."""
+        ...
+
+    def cancelled(self) -> bool: ...
 
 
 class Clock(Protocol):
@@ -15,6 +25,11 @@ class Clock(Protocol):
 
     async def wait_for[T](self, aw: Awaitable[T], timeout: float) -> T:
         """Await ``aw``; cancel it and raise ``TimeoutError`` after ``timeout`` seconds."""
+        ...
+
+    def call_later(self, seconds: float, callback: Callable[[], object]) -> Scheduled:
+        """Run ``callback`` on the event loop after ``seconds``, unless it is
+        cancelled first. Nothing waits for it."""
         ...
 
 
@@ -29,3 +44,6 @@ class MonotonicClock:
 
     async def wait_for[T](self, aw: Awaitable[T], timeout: float) -> T:
         return await asyncio.wait_for(aw, timeout)
+
+    def call_later(self, seconds: float, callback: Callable[[], object]) -> Scheduled:
+        return asyncio.get_running_loop().call_later(seconds, callback)

@@ -163,6 +163,25 @@ async def test_closing_the_link_lets_the_device_release_its_hardware(host, paren
     assert asyncio.get_running_loop().time() - started < 2.0
 
 
+async def test_cm12_a_parents_exit_stops_its_process_child_and_releases_its_hardware(host, parent, tmp_path):
+    """A parent's exit stops its children, in its process or not. For a
+    process child that means the orderly shutdown above -- the link closes,
+    the device runs its teardown, the process exits -- and the parent's exit
+    waits for it, so nothing is left holding a camera unsupervised. Not
+    reported as lost: the parent asked for it."""
+    note = tmp_path / "released.txt"
+    await host.launch(parent, name="camera", factory=partial(FaultyDevice, note=str(note)))
+    process = host.process("camera")
+
+    parent.stop()
+    await asyncio.wait_for(parent.stopped.wait(), 10.0)
+
+    assert process.returncode == 0, "it had already exited when the parent's exit finished"
+    assert note.read_text(encoding="utf-8") == "released"
+    assert host.running() == 0
+    assert parent.exits == []
+
+
 async def test_shutting_down_after_a_death_waits_for_nothing(parent):
     """A dead child's socket is nobody's to hold. Left open on this side,
     shutdown waits on a connection that will never close -- which is how this

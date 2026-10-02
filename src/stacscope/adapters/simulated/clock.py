@@ -3,7 +3,7 @@
 import asyncio
 import heapq
 import itertools
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 
 # Loop iterations granted after each timer fires, so woken tasks can run to
 # their next await (and possibly register new timers) before time moves on.
@@ -34,6 +34,11 @@ class VirtualClock:
         task.cancel()
         raise TimeoutError
 
+    def call_later(self, seconds: float, callback: Callable[[], object]) -> "_Call":
+        timer = self._timer(seconds)
+        timer.add_done_callback(lambda fut: None if fut.cancelled() else callback())
+        return _Call(timer)
+
     async def advance(self, seconds: float) -> None:
         """Move time forward, firing every deadline reached, in order."""
         await _settle()
@@ -51,6 +56,19 @@ class VirtualClock:
         fut = asyncio.get_running_loop().create_future()
         heapq.heappush(self._timers, (self._now + seconds, next(self._seq), fut))
         return fut
+
+
+class _Call:
+    """A ``call_later`` in virtual time: its timer, which ``advance`` fires."""
+
+    def __init__(self, timer: asyncio.Future[None]) -> None:
+        self._timer = timer
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+
+    def cancelled(self) -> bool:
+        return self._timer.cancelled()
 
 
 async def _settle() -> None:

@@ -1,6 +1,7 @@
 """Priority mailbox: the receive side of every actor, whatever the transport."""
 
 import asyncio
+import heapq
 import itertools
 from enum import IntEnum
 
@@ -25,12 +26,31 @@ class Mailbox:
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.PriorityQueue[tuple[Priority, int, object]] = asyncio.PriorityQueue()
+        self._heap: list[tuple[Priority, int, object]] = []
         self._seq = itertools.count()
+        self._waiters: list[asyncio.Future[None]] = []
 
     def put(self, msg: object, priority: Priority = Priority.NORMAL) -> None:
-        self._queue.put_nowait((priority, next(self._seq), msg))
+        heapq.heappush(self._heap, (priority, next(self._seq), msg))
+        waiters, self._waiters = self._waiters, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
     async def get(self) -> object:
-        _, _, msg = await self._queue.get()
+        msg, _ = await self.take()
         return msg
+
+    async def take(self, above: Priority | None = None) -> tuple[object, Priority]:
+        """The next message and its priority, waiting for one if need be.
+        With ``above``, only a message more urgent than that priority is
+        taken; the rest stay queued, in order."""
+        while True:
+            # Nothing is awaited between the check and the pop, so a getter
+            # cancelled while waiting never takes a message with it.
+            if self._heap and (above is None or self._heap[0][0] < above):
+                priority, _, msg = heapq.heappop(self._heap)
+                return msg, priority
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            await waiter

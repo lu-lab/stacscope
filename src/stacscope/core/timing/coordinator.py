@@ -271,9 +271,9 @@ class Coordinator(Actor):
             return
         # Caught here, not left to end the Coordinator: a device that has just
         # failed is the likeliest to fail its relaunch (a wedged driver), and
-        # the Coordinator's death would leave everything else unsupervised --
-        # a parent's exit does not stop its children. Nothing was registered
-        # before the launch raised, so the device is simply still lost.
+        # the Coordinator's death would stop every other device with it. Nothing
+        # was registered before the launch raised, so the device is simply
+        # still lost.
         try:
             if is_source:
                 await self._launch_source()

@@ -1,7 +1,7 @@
 """Parent-side watch over one child: exit reporting and heartbeat liveness."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from stacscope.core.actors.ask import AskTimeout, ask
@@ -29,10 +29,17 @@ class ChildWatch:
     the old incarnation may linger unreachable; it is simply never heard from.
     """
 
-    def __init__(self, parent: ActorRef, child: ActorRef, release: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        parent: ActorRef,
+        child: ActorRef,
+        release: Callable[[], None],
+        stop: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._parent = parent
         self._child = child
         self._release = release
+        self._stop = stop
         self._reported = False
         self._heartbeat: asyncio.Task[None] | None = None
 
@@ -51,6 +58,11 @@ class ChildWatch:
         """The parent is exiting; stop watching without reporting."""
         self._reported = True
         self._stop_heartbeat()
+
+    async def stop_child(self) -> None:
+        """Stop the child and return once it has ended."""
+        if self._stop is not None:
+            await self._stop()
 
     def _stop_heartbeat(self) -> None:
         if self._heartbeat is not None and self._heartbeat is not asyncio.current_task():

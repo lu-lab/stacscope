@@ -3779,6 +3779,8 @@ consolidated later. Consolidation is not part of this work.
   keep its file open and its reader mapped. The role must stop its recorder
   in `close`, which runs on every exit, clean or not. Whether the runtime
   should stop a dead parent's children in general is a separate question.
+  *Since CM10 (2026-10-02) it does, before the parent's `teardown`, and
+  the role's own stop is gone.*
 - **`TimedDevice` ignores `ChildExited`** (unknown messages are ignored). A
   recorder that dies mid-acquisition would go unheard, so the role handles
   it.
@@ -3982,7 +3984,8 @@ vendor packages, so this needs none). `kind` is a short name (`orca_flash`,
   devices**. Found by G8: closed the other way, the Coordinator published
   "participant … exited" and "timing source lost" Faults for a deliberate
   shutdown. Then the process host, then in-process devices and the source,
-  since a parent's exit does not stop its children.
+  since a parent's exit does not stop its children. *(Since CM10 it does;
+  the rig is simplified in CM50.)*
 
 **G13, on the instrument** (`tests/hardware/rig/`, gated on
 `STACSCOPE_RIG_CONFIG`, plus `STACSCOPE_CAMERA_TRIGGER` and

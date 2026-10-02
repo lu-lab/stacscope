@@ -154,8 +154,8 @@ class System:
         return int(np.count_nonzero(line & ~np.concatenate(([False], line[:-1]))))
 
     async def close(self):
-        # A parent's exit does not stop its children: the camera holds a
-        # segment, and the source a pump on the clock.
+        # Stopping the Coordinator would now stop the others too (CM10); each
+        # is stopped and waited for here, camera first, all the same.
         for actor in (self.camera, self.source, self.coordinator):
             if not actor.stopped.is_set():
                 actor.stop()

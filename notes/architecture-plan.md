@@ -4647,6 +4647,11 @@ policy, or state the Coordinator shouldn't hold.
       still run the instrument's depth dry. H5 (no gap down to the
       floor, loop held 16 ms at most), H6 (updates 39–85 ms for a 50 ms
       volume, 92–309 ms for 300 ms) and H8 (6 steps in order) as before.
+    - **H10 on `Dev1`**, run after, with P0.1 wired to PFI9
+      (`STACSCOPE_FEEDBACK=PFI9`): 6 passed. Every case, wrapping or not,
+      counted 32 of 32 rising and 32 of 32 falling edges, so the line
+      ended low and `TAIL_PAD` still covers the 64 samples the board
+      drops. DO generated is the length written plus 64.
     - `tests/hardware/dcam` (DAQ-triggered on `Dev1/port0/line0`): 170
       passed, 9 skipped, in 614 s. The three new skips are CM48 (host time
       is `time.monotonic_ns`), once per format: the Flash stamps no host

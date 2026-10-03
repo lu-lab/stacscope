@@ -4630,9 +4630,23 @@ policy, or state the Coordinator shouldn't hold.
       probe's lateness is mostly that quantization: 5.9 ms median is one
       tick less the 10 ms asked, and 21 ms is two ticks. An announcement
       waiting on a timer (RUN, once `samples_played()` reaches WARMUP's
-      length) can be one tick late, and occasionally two. The 57 ms hold
-      did not recur on `Dev1-sim`; it was seen on `Dev1`, where H9 was not
-      rerun.
+      length) can be one tick late, and occasionally two.
+    - `tests/hardware/nidaqmx` on **`Dev1`**, the physical board (the
+      user asked Claude to run it; H10 skipped, P0.1→PFI9 not wired): 47
+      passed, 6 skipped, in 220 s. **H9 with the CM51 probe, 60 s each:**
+      on the real board the loop is quiet. 50 ms volume: 3822 ticks, late
+      by 5.9 ms median and 6.1 ms at the 99th percentile (one tick every
+      time), 1 over 20 ms, worst 25 ms with no adapter call running;
+      refills never below 34.9 ms queued, none below 20 ms, the loop held
+      35 ms at most. 300 ms volume: worst tick 8 ms late, none over 20 ms,
+      refills never below 42.7 ms. **The 57 ms hold did not recur.** The
+      two-tick lateness seen on `Dev1-sim` is the simulator's driver,
+      which held the loop in earlier rehearsals too. H7: a 32.8 ms buffer
+      survives 20 ms stalls and runs dry on 30 ms; a 50 ms buffer survives
+      40 ms and runs dry on 50 ms, so a hold like the 57 ms one would
+      still run the instrument's depth dry. H5 (no gap down to the
+      floor, loop held 16 ms at most), H6 (updates 39–85 ms for a 50 ms
+      volume, 92–309 ms for 300 ms) and H8 (6 steps in order) as before.
     - `tests/hardware/dcam` (DAQ-triggered on `Dev1/port0/line0`): 170
       passed, 9 skipped, in 614 s. The three new skips are CM48 (host time
       is `time.monotonic_ns`), once per format: the Flash stamps no host

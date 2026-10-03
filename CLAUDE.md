@@ -55,8 +55,10 @@ answers `GetStatus`; a role can hold a device's answer (ARMING /
 DISARMING), and the recorder is reached only by message; every
 `SourcePhase` means "now playing"; frames are stamped on
 `time.monotonic_ns`. **The user has yet to review the judgment calls listed
-under "Built"**, and the `Dev1-sim` and instrument runs listed there are
-still to do. **Next: the user chooses** between the gateway, the session
+under "Built"**. The `Dev1-sim` and instrument runs listed there were done
+on 2026-10-03 and all passed. The results are recorded there, with the
+finding that an asyncio timer on Windows wakes only on the ~15.6 ms tick.
+**Next: the user chooses** between the gateway, the session
 model or another open item. Ask; any build starts with an acceptance-test
 list for their approval.
 

@@ -4609,13 +4609,45 @@ policy, or state the Coordinator shouldn't hold.
       WARMUP's commit.
     - Devices hear no phases unless they ask; tests that listened on a
       child device now listen on its parent.
-  - *Not run here, for a machine with the hardware:*
-    - On `Dev1-sim` (Claude may run it): the CM40 contract tests against
-      the NI adapter, G14–G15, and H9 with the CM51 probe. Whether
-      event-loop timers on Windows are fine enough for the announcements
-      (often 15.6 ms) is still to be measured there.
-    - On the instrument (the user): G13, and the camera suites, whose
-      listeners moved to the device's parent.
+  - *Run on the instrument dev box (2026-10-03, by Claude, with the
+    user's permission for digital outputs and both cameras; AO at 0 V
+    throughout):*
+    - Default suite: 716 passed.
+    - `tests/adapters/nidaqmx` (fake and `Dev1-sim`): 106 passed, 1
+      skipped (the simulator stalls rather than running dry). CM40's
+      `samples_played` tests and G14–G15 pass on `Dev1-sim`.
+    - `tests/hardware/nidaqmx` on `Dev1-sim`, the rehearsal: 35 passed, 18
+      skipped (running dry, and H10 without its wire), as before. H9 with
+      the CM51 probe, 60 s each: 50 ms volume, 3249 ticks, late by 5.9 ms
+      median, 21.4 ms at the 99th percentile, worst 36 ms; 300 ms volume,
+      5.9 / 21.2 / 27 ms. None of the worst holds had an adapter call
+      running across it. No gap; the thinnest refill margins (0.0 and
+      2.2 ms) are the simulator's pacing, as in earlier rehearsals.
+    - **Timer granularity, measured on its own** (a scratch script, no
+      hardware; `ProactorEventLoop`, 3.14t): `asyncio.sleep` of 1, 5 and
+      10 ms each took about 15.9 ms, and 20 ms took about 31 ms. A loop
+      timer here wakes only on the Windows tick, about 15.6 ms. So the
+      probe's lateness is mostly that quantization: 5.9 ms median is one
+      tick less the 10 ms asked, and 21 ms is two ticks. An announcement
+      waiting on a timer (RUN, once `samples_played()` reaches WARMUP's
+      length) can be one tick late, and occasionally two. The 57 ms hold
+      did not recur on `Dev1-sim`; it was seen on `Dev1`, where H9 was not
+      rerun.
+    - `tests/hardware/dcam` (DAQ-triggered on `Dev1/port0/line0`): 170
+      passed, 9 skipped, in 614 s. The three new skips are CM48 (host time
+      is `time.monotonic_ns`), once per format: the Flash stamps no host
+      time. M2 4008 frames at 801.7/s, no loss; M1 depth 1 in all nine
+      conditions; V4–V5 as before; V6 11.079 / 20.083 ms.
+    - `tests/hardware/ueye` (triggered on `Dev1/port0/line2`): 122 passed,
+      4 skipped, in 280 s. CM48 passes on the uEye. W2 and W4: 200 of 200
+      at 20 fps full-frame RAW10, W4 recording 200 pages; W3 and Z3 still
+      end on the first lost frame at 0.97 of the shortest period.
+    - G13: 100 cycles, 3100 of 3100 Flash frames, 100 of 100 uEye pages,
+      no Faults. Launch 4.8 s, start 0.31 s, idle 5.51 s after, close
+      0.52 s (2026-10-01: start 0.2 s, close 0.3 s; close now goes through
+      the Coordinator, CM50).
+    - Left as found: no `stacscope_test_*` task in MAX, no recordings on
+      E:, the Flash at INTERNAL / EDGE / NEGATIVE / AREA.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

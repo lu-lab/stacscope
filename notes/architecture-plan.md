@@ -4044,8 +4044,11 @@ machine and how to run each hardware suite when testing resumes.
     config interface; the rig config stays inside `app/` until then;
   - logging and error reporting;
   - checking a waveform against the cameras' timing floors;
-  - the communication model;
-  - ETL waveforms.
+  - ETL waveforms;
+  - the emergency halt, whose shape is parked (the core review's
+    principles).
+  The communication model was decided and built in the core review
+  (CM1–CM51, 2026-10-02).
 - The user has not ordered these. The gateway carries the session's
   messages, so whether the session model comes first is worth deciding
   before either starts.
@@ -4053,7 +4056,9 @@ machine and how to run each hardware suite when testing resumes.
 **2026-10-02: a core review comes first** (user). Its findings are in
 "Open items → The core review". Bugs A–D are fixed (CR1–CR4, 2026-10-02);
 next, the communication-model observations are discussed, before any item
-above starts.
+above starts. **Done**: the communication model was built as CM1–CM51
+(2026-10-02), run on `Dev1-sim` and the instrument (2026-10-03), and its
+judgment calls confirmed (2026-10-05). Next, the user chooses an item above.
 
 2. **Data flow** — generic ring buffer, producer/consumer, contract tests, synthetic producer. The contract suite runs on both CI legs, so POSIX unlink/persistence semantics and `track=False` are exercised rather than assumed.
 3. **Device actors against simulation** — multi-device registry, per-device READY/timeout, shared root filename, software-timed participation. *(Done 2026-09-19; see "Milestone 3" above.)*
@@ -4566,7 +4571,8 @@ policy, or state the Coordinator shouldn't hold.
       parent's published Faults, and its default passed each straight
       back up. The Coordinator filters what devices hear (phases only), and
       the base `handle` never passes a Fault back to the parent it came
-      from (Claude's call: a Fault that came down is no report from below).
+      from (Claude's call, confirmed by the user 2026-10-05: a Fault that
+      came down is no report from below).
     - **A process child's setup reached the host too early.** A device
       that reports in `setup` (a `SoftwareTimed` device subscribing to its
       parent) sent a frame before the bootstrap's "ready", which the host
@@ -4576,10 +4582,13 @@ policy, or state the Coordinator shouldn't hold.
       `RecordingFinished` and stops; its `ChildExited` travels URGENT and
       overtook the NORMAL answer. The recorder now sends that last answer
       URGENT. The hazard is general: any child that reports and then stops.
+      It was fixed case by case (here, and the relaunch's `_Launched`); the
+      user then made it a runtime rule (2026-10-05, "The exit waits for
+      the child's mail" below).
     - **A parent waiting for ever on a child cancelled before it ran** (at
       loop shutdown every task is cancelled; one cancelled before its first
       step never sets `stopped`). The parent waits on the child's task.
-  - *Judgment calls, for the user to confirm or change:*
+  - *Judgment calls, all confirmed by the user (2026-10-05):*
     - Losing the source is reported as a non-fatal `Fault` ("timing source
       lost: …"), since the Coordinator carries on; a client waiting on a
       stop is answered `AcquisitionStopped`, as for any required device,
@@ -4667,6 +4676,84 @@ policy, or state the Coordinator shouldn't hold.
       the Coordinator, CM50).
     - Left as found: no `stacscope_test_*` task in MAX, no recordings on
       E:, the Flash at INTERNAL / EDGE / NEGATIVE / AREA.
+- *The exit waits for the child's mail (decided by the user, 2026-10-05).*
+  - **The race.** A child that tells its parent something and then stops
+    could have its `ChildExited` handled first. The exit is put in the
+    parent's mailbox at URGENT, and the mailbox takes by priority, so it
+    overtook the child's NORMAL message already queued there. Found with
+    the recorder's `RecordingFinished`, and fixed there by sending it
+    URGENT. The hazard is general: any child that reports and then stops.
+  - **The rule.** Nothing a child sent before its exit was noticed is
+    handled after its `ChildExited`. When the exit arrives and a message
+    from that child is still queued, the exit is placed immediately behind
+    the last of them to be taken. With nothing of the child's queued, the
+    exit is URGENT as before. No message's priority changes, and a gated
+    wait still takes only what is more urgent than its handler, so an exit
+    behind a child's NORMAL mail waits for the gate to open.
+  - **Alternatives weighed:**
+    - *Raising the child's queued mail to URGENT ahead of the exit.* This
+      keeps the exit prompt, but the child's NORMAL messages could then
+      run inside a gated wait.
+    - *Per-sender order across priorities.* This changes what priority
+      means: a sender could no longer overtake its own earlier message,
+      which the Coordinator's URGENT `Finish` does on purpose.
+    - *An exit that carries the last answer.* This covers only "answer,
+      then stop", and gives parents two forms of one answer.
+    - *A child that waits for its mail to be handled before exiting.* A
+      crashed child cannot wait.
+    - *Case by case.* This holds until someone forgets, and then it fails
+      intermittently.
+  - **Limits:**
+    - The rule covers only what the child sent before its exit was
+      noticed. A child declared dead by a missed heartbeat may still be
+      running. What it sends later arrives after the exit, and since refs
+      are equal by address, it is indistinguishable from a relaunched
+      successor's.
+    - `_Launched` is the Coordinator's own message, not the child's, so
+      it stays URGENT.
+    - Across processes, the guarantee rests on `ProcessHost._watch`, which
+      waits up to 1 s for the link to close after the process exits. The
+      link's `closed` is set only once its last frame is delivered. A link
+      that takes longer than that to drain still loses the order; a local
+      socket whose writer has gone drains in milliseconds.
+  - **Proposed acceptance tests, for the user's approval:**
+    - CM52: a child's NORMAL message, queued when it stops, is handled
+      before its `ChildExited`.
+    - CM53: placement is by the order the parent will take them. A child
+      that sends NORMAL A, then URGENT B, then dies is handled B, A, exit.
+    - CM54: with nothing of the child's queued, the exit still overtakes
+      other senders' NORMAL and LOW messages (R4's existing test, kept
+      unchanged, plus a case with another actor's NORMAL queued).
+    - CM55: the exit sits immediately behind the child's last message, not
+      at the end of its priority. Another sender's NORMAL message, queued
+      after the child's last message but before the exit, is handled after
+      the exit.
+    - CM56: in a gated wait under a NORMAL handler, a dying child with
+      NORMAL mail queued has neither its mail nor its exit handled inside
+      the wait; both are handled after it, in order. A child with nothing
+      queued still has its exit handled inside the wait.
+    - CM57: the same holds when a missed heartbeat notices the death.
+    - CM58 (integration, real clock): a process child that reports at
+      NORMAL and then stops has its report handled before its
+      `ChildExited`.
+    - CM59: the recorder's `RecordingFinished` goes back to NORMAL. The
+      rule covers it, and one mechanism is better than two. Its existing
+      end-to-end test then guards the rule: with the rule removed, it must
+      fail.
+  - **Documentation:**
+    - The mechanism goes in the `Mailbox` docstring and its `put`
+      parameter, kept generic: "placed behind the last queued entry that
+      matches".
+    - The rule and its reason go in a comment at `Actor._receive`, where
+      the exit is recognised.
+    - The caller's view goes in the docstrings of `spawn_child`, `spawn`
+      and `ChildExited`: URGENT, but never ahead of the child's own earlier
+      mail. `gated` gains the consequence: such an exit waits for the gate
+      to open. `ChildWatch` notes that every exit, however it was noticed,
+      goes through the rule.
+    - `ProcessHost._watch` gets a comment that the cross-process guarantee
+      rests on its wait for the link to close.
+    - CLAUDE.md and "Actor core" above get the rule.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

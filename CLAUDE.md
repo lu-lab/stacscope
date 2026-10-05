@@ -29,8 +29,9 @@ next: M6, the ZeroMQ gateway, then M7, integration on the instrument. Its
   interface;
 - logging and error reporting;
 - checking a waveform against the cameras' timing floors;
-- the communication model;
-- ETL waveforms.
+- ETL waveforms;
+- the emergency halt, whose shape is parked as Claude's undecided proposal
+  (the plan's core review, "Principles").
 
 The user has not ordered these. Ask before starting one.
 
@@ -54,9 +55,14 @@ Coordinator's handshakes and relaunch are states, with no Faulted, and it
 answers `GetStatus`; a role can hold a device's answer (ARMING /
 DISARMING), and the recorder is reached only by message; every
 `SourcePhase` means "now playing"; frames are stamped on
-`time.monotonic_ns`. **The user has yet to review the judgment calls listed
-under "Built"**. The `Dev1-sim` and instrument runs listed there were done
-on 2026-10-03 and all passed. The results are recorded there, with the
+`time.monotonic_ns`. **The judgment calls listed under "Built" were all
+confirmed by the user on 2026-10-05.** From that work, the user decided
+(2026-10-05) that **the exit waits for the child's mail**: a `ChildExited`
+is never handled ahead of anything the child sent before it. Its tests,
+CM52–CM59, are proposed in the plan (after "Built") and await the user's
+approval. The
+`Dev1-sim` and instrument runs listed there were done on 2026-10-03 and all
+passed. The results are recorded there, with the
 finding that an asyncio timer on Windows wakes only on the ~15.6 ms tick.
 **Next: the user chooses** between the gateway, the session
 model or another open item. Ask; any build starts with an acceptance-test

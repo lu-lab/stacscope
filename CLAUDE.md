@@ -23,8 +23,25 @@ have you guess.
 rig config. Hardware testing is paused**, and development has moved off the
 instrument dev box to free the instrument. Expect no hardware on the
 machine you are on. The plan's "Subsequent milestones" lists what comes
-next: M6, the ZeroMQ gateway, then M7, integration on the instrument. Its
+next: M6, the gateway, then M7, integration on the instrument. **M6 is a
+WebSocket endpoint, not ZeroMQ** (user, 2026-10-05; the plan's "Milestone 6"
+has the evaluation, the decisions and the approved list WS1–WS28). **M6 is
+built, green and committed (WS1–WS28, 2026-10-05)**:
+`core/gateway/` (the `Gateway` actor), `stacscope/client.py` (the Python
+client), `app/serve.py` and `app/cli.py` (the `stacscope` command:
+`serve`, `status`, `start`, `stop`, `relaunch`, `watch`), and `[gateway]`
+in the rig config. Clients may send only types registered
+`@message(client=True)`. Its judgment calls 1–10 are in the plan's
+"Milestone 6 → Built", all confirmed by the user (2026-10-05). Going through call 9 found that a real Ctrl-C reached device
+processes and that a second Ctrl-C cut the close short. Both are fixed
+(WS26–WS28, 866 green): device processes start in a process group of their
+own, and `serve` handles Ctrl-C itself. `tests/integration/test_ctrl_c.py`
+presses a real Ctrl-C, in a hidden console of the engine's own on Windows. Its
 "Open items" holds the work that has no milestone yet:
+- **device properties, next after M6** (user, 2026-10-05): a generic,
+  queryable property interface in core plus namespaced adapter messages
+  and a message description for clients; still to be discussed before an
+  acceptance list (the plan's "Open items → Device properties");
 - the session model, which the user expects as a recording session config
   interface;
 - logging and error reporting;

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from stacscope.core.protocol import message
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetPixelFormat:
     """Set the pixel format, "RAW8" or "RAW10". Replied ``PixelFormat``, or
@@ -30,7 +30,7 @@ class PixelFormat:
     name: str
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetAOI:
     """Set the area of interest, in pixels from the sensor's top left. On
@@ -53,7 +53,7 @@ class AOI:
     height: int
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetPixelClock:
     """Set the pixel clock, in MHz, to one the camera offers (see
@@ -69,7 +69,7 @@ class PixelClock:
     mhz: int
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetFrameRate:
     """Set the frame rate, in frames a second. Under a trigger it is not the
@@ -85,7 +85,7 @@ class FrameRate:
     fps: float
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetExposure:
     """Set the exposure time, in milliseconds. It changes at once, even during
@@ -100,7 +100,7 @@ class Exposure:
     ms: float
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetTrigger:
     """Take a frame on the ``edge`` ("rising" or "falling") of the trigger
@@ -118,7 +118,7 @@ class Trigger:
     delay_us: int
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class GetCameraSettings:
     """Read every setting. Replied ``CameraSettings``."""

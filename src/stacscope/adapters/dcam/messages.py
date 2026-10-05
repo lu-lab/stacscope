@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from stacscope.core.protocol import message
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetProperty:
     """Set the camera's setting ``name`` to the number ``value``. Replied
@@ -26,7 +26,7 @@ class SetProperty:
     value: float
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetPropertyLabel:
     """Set the camera's setting ``name`` to the value it labels ``label``,
@@ -37,7 +37,7 @@ class SetPropertyLabel:
     label: str
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class GetProperty:
     """Read the camera's setting ``name``. Replied ``PropertyValue`` or

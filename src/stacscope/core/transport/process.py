@@ -13,6 +13,7 @@ machine-local, so the data flow never touches this link.
 import asyncio
 import pickle
 import secrets
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -139,7 +140,7 @@ class ProcessHost:
         arrived: asyncio.Future = asyncio.get_running_loop().create_future()
         self._expected[token] = arrived
         process = await asyncio.create_subprocess_exec(
-            self._python, "-m", CHILD_MODULE, self.endpoint, token, address
+            self._python, "-m", CHILD_MODULE, self.endpoint, token, address, **_own_group()
         )
         try:
             child = await self._bootstrap(process, name, address, arrived, payload)
@@ -311,6 +312,19 @@ class _LastWord:
         if isinstance(envelope.msg, ActorDied):
             self._child.last_word = envelope.msg.reason
             self._child.heard_last_word = True
+
+
+def _own_group() -> dict:
+    """How to start a child outside the engine's process group."""
+    # A console's Ctrl-C reaches every process attached to it, and a
+    # terminal's reaches its whole foreground group. A device must stop when
+    # the engine stops it, in order -- after the acquisition, disarmed first
+    # -- never when the operator presses a key. A child in a group of its own
+    # still ends with the engine: its link closes when the engine's process
+    # does, however that ends.
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
 
 
 def _terminate(process: asyncio.subprocess.Process) -> None:

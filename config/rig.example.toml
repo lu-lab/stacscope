@@ -55,3 +55,11 @@ pixel_clock = 40                  # MHz: 20 frames a second at full frame
 exposure_ms = 10.0
 trigger_edge = "rising"
 save_directory = "E:/data"
+
+# Where clients connect: stacscope serve prints the address. These are the
+# defaults, so the table may be left out.
+[gateway]
+interface = "127.0.0.1"           # this computer only, until the gateway has TLS
+port = 8765
+origins = []                      # web pages that may connect from a browser,
+                                  # such as "https://lab.example"

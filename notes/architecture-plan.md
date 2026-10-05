@@ -196,8 +196,9 @@ stacscope/
     timing/      Coordinator, TimingSource base, WaveformSource. No hardware.
     model/       Session state machine + semantics. Pure data, no I/O, no asyncio.
     protocol/    all message types. Plain data, serializable by construction.
-    transport/   msgpack Codec; Process / Zmq transports (depend on actors/,
+    transport/   msgpack Codec; the process transport (depends on actors/,
                  never the reverse)
+    gateway/     the WebSocket endpoint for outside clients (M6)
     ports/       SignalOutput, FrameCapture, Clock  (revised 2026-09-24:
                  ImageBuffer lives in buffer/, ImageStreaming is a device
                  role, FrameSink and Recorder are retired; see 5b)
@@ -530,7 +531,12 @@ composition root:
 |---|---|
 | `LocalTransport` (asyncio.Queue) | same process; keeps the test suite fast and deterministic in virtual time |
 | `ProcessTransport` | fault isolation for vendor-C++ boundaries (DCAM above all) |
-| `ZmqTransport` | cross-machine, and language-neutral clients |
+| the gateway's WebSocket endpoint | outside clients: CLI, scripts, hooks, browsers; any language (M6, decided 2026-10-05) |
+
+*Revised 2026-10-05 (user):* the third row was a `ZmqTransport`, for
+cross-machine and language-neutral clients. ZeroMQ was evaluated and dropped
+(Milestone 6, "Why not ZeroMQ"); cross-machine is the same stream link over
+TLS when it is needed.
 
 Multiprocessing is **not an alternative actor model — it is a placement
 decision**. Its usual cost, serializing bulk data, does not apply here: the data
@@ -546,7 +552,7 @@ reliable death signal than an in-process callback.
 
 **Priority survives any transport** because it is enforced at the actor, not on
 the wire: messages are received from whatever transport and pushed into the local
-`PriorityQueue`. ZeroMQ has no priority queues, and does not need them.
+`PriorityQueue`. A transport needs no priorities of its own.
 
 **Liveness is heartbeat-based**, not callback-based. In-process task callbacks
 cannot detect a dead remote actor, so `ChildExited` is driven by a heartbeat
@@ -586,10 +592,13 @@ pulses, frames and discards for this mode is open.
 
 Protocol first, transport later. `core/protocol/` defines the message types as
 plain data — START (cycle count, root filename), STOP, config updates, state
-publications — and milestone 1 drives them in-process. **ZeroMQ** is the wire
-format when the gateway lands: it is what Pycro-Manager already uses, so hook
-code lives in a familiar world, and it handles state publication as naturally as
-commands.
+publications — and milestone 1 drives them in-process. **The gateway is one
+WebSocket endpoint** (decided 2026-10-05; Milestone 6) carrying the same msgpack
+frames as the process link, so the CLI, scripts, Pycro-Manager hooks and
+browser pages are all the same kind of client. *Superseded:* ZeroMQ was the
+wire format here, because Pycro-Manager uses it; there is no Pycro-Manager
+setup to fit into, hooks are Python functions that call our client whatever
+it runs on, and ZeroMQ cannot reach a browser.
 
 `StartAcquisition` carries a **cycle count (negative = infinite) and a root
 filename (empty = do not record)**, per §3.4.1. Client→Coordinator messages
@@ -702,7 +711,8 @@ as optional extras behind lazy imports. `uv sync && uv run pytest` must pass
 green with zero hardware and zero vendor SDKs installed.
 
 Free-threading is viable because dropping pymmcore removed the only hard
-blocker. Verified: `pyzmq` ships `cp314t`/`cp315t` Windows wheels, `nidaqmx` is
+blocker. Verified: `pyzmq` ships `cp314t`/`cp315t` Windows wheels (no longer
+used: see Milestone 6), `nidaqmx` is
 pure Python (`py3-none-any`) and so ABI-agnostic, our DCAM layer is ctypes, and
 numpy ships FT wheels. **Verify at first install:** `pydantic-core` (Rust/PyO3)
 FT wheel availability, and ctypes behaviour under FT. If either fails, fall back
@@ -4036,6 +4046,318 @@ cameras saving to `E:/stacscope_tests`:
   (INTERNAL, EDGE, NEGATIVE, no subarray): the device's closed DCAM session
   left nothing to restore.
 
+## Milestone 6 — the WebSocket gateway *(decided 2026-10-05)*
+
+**Decided (user, 2026-10-05): one WebSocket endpoint for every outside
+client**, using the `websockets` library and carrying the same msgpack frames
+(`{t, p, s, m}`) as the process link. The CLI, scripts, Pycro-Manager hooks
+and browser pages are all clients of it. The process link to device
+processes is unchanged: there a dropped link means the device exits, which
+is the safe behaviour. The user's context for the decision: there is no
+Pycro-Manager setup to fit into; browser tools in the style of
+reiserlab/webDisplayTools are likely; several machines are wanted but not
+required; and the project will have few resources for maintenance, so
+simplicity and resilience come first.
+
+### Why not ZeroMQ
+
+Evaluated on 2026-10-05 for actor messaging as a whole (threads, processes,
+machines, browsers), with probes on EBB-LU-D12 under 3.14t (GIL off):
+
+- **It would replace little.** Of the ~1,840 lines of runtime and transport,
+  framing on a stream (`stream.py`, ~120 lines) and part of the address book.
+  Priority, `ask`, supervision, the exit order, the heartbeat, process
+  launch, the codec and the thread-to-loop hop stay ours whatever carries
+  the bytes. Threads already share one loop per process and hop to it with
+  `call_soon_threadsafe`; in-process sockets would add nothing.
+- **Its liveness is the wrong kind.** ZMTP heartbeats are answered by
+  libzmq's I/O thread: the process is alive, not the actor answering, which
+  is why our heartbeat is mandatory.
+- **It does not reach a browser.** pyzmq 27.2 bundles libzmq 4.3.5 (2023)
+  without the DRAFT API, so no WebSocket transport; a bridge would be a
+  second protocol.
+- **Windows' event loop.** `zmq.asyncio` refuses the Proactor loop unless
+  tornado ≥ 6.1 is installed, then runs through a selector thread with a
+  RuntimeWarning; tornado had no free-threaded wheel and built from source.
+  The selector loop cannot start subprocesses, which `ProcessHost` needs.
+- **Its defaults hide failures.** A ROUTER send to a vanished peer is
+  dropped silently (probed); a DEALER queues while disconnected and delivers
+  late, so a stale command could arrive after a reconnect. Options fix both,
+  but a maintainer has to know them.
+- **Cross-machine** needs remote launch and authentication, which ZeroMQ
+  does not give; CURVE encryption is the one part it adds, and stdlib TLS
+  covers that.
+- **Speed decides nothing.** Round trips on this PC: the process link 0.15 ms,
+  websockets 0.21–0.23 ms (async or sync client), pyzmq through tornado
+  0.48 ms (106 ms for the first).
+
+Considered and not taken: **NATS** (one Go server, pure-Python client;
+request/reply, pub/sub, WebSocket, auth, clustering) — the fallback if
+several machines become real, at the cost of a server the engine depends on;
+**MQTT** (no request/reply); actor frameworks such as Ray or Pykka (they
+would replace the runtime and its decided semantics).
+
+### Shape
+
+1. **Hardened decoding.** A malformed message raises `CodecError`, never
+   `KeyError` or `TypeError`, and field types are checked. A link skips one
+   bad frame instead of closing (the core review's "smaller" item). The
+   process link gets this too.
+2. **The `Gateway` actor** (`core/gateway/`, no rig config). A client
+   outside the tree: it sends requests, and no actor waits on it.
+   - Each client's senders are rewritten to `gateway/<client>/…`; a ref in a
+     client's message must be the client's own.
+   - A client may address only the actors in the latest `Status` (the
+     Coordinator, the source, devices present), kept current from `Status`
+     and `DeviceLaunched`.
+   - Only client-sendable message types pass; anything else is answered
+     `Rejected` and never reaches an actor.
+   - The gateway subscribes itself once to each actor any client subscribed
+     to, and fans out. Engine actors never hold a client's ref; they only
+     reply to a sender. (A client that queues waveforms needs the source's
+     `MainApplied` this way.)
+3. **The server.** One WebSocket connection per client, each with its own
+   `Peer`, a bounded outgoing queue and a message size limit; an Origin
+   allowlist (Python clients send none, and are allowed); 127.0.0.1 by
+   default.
+4. **The Python client** (`stacscope.client`), synchronous, over websockets'
+   sync client: `Client(url)` with `ask`, `tell`, `status()`, `start(cycles,
+   root)`, `stop()`, `relaunch(name)` and `subscribe()`. Refs decoded from a
+   `Status` work through the client. A dropped connection raises; nothing is
+   queued for later.
+5. **The CLI and `stacscope serve`** (`app/`). `serve --config` starts the
+   rig and the endpoint; `[gateway]` in `rig.toml` (interface, port,
+   origins) is read in `app/` only. Also `status`, `start`, `stop`, `watch`,
+   `relaunch`, exiting nonzero on `Rejected` or a timeout.
+
+New dependency: `websockets` (pure Python, optional C speedup).
+
+### Decisions *(user, 2026-10-05: Claude's recommendations, all taken)*
+
+1. **Client-sendable types are marked where they are defined**,
+   `@message(client=True)`: `StartAcquisition`, `StopAcquisition`,
+   `GetStatus`, `Relaunch`, `SetWaveform`, `QueueMain`, `SetSaveDirectory`,
+   `GetShortestTriggerPeriod`, and the cameras' settings messages.
+2. **The gateway comes before the session model.**
+3. **Localhost only in M6.** Another interface is refused until TLS and a
+   token exist on the same endpoint.
+4. **A gateway that dies is restarted by `serve`**; the engine never stops
+   because of it.
+5. **A client disconnecting mid-acquisition changes nothing.** A refreshed
+   tab or a crashed hook must not stop an acquisition; any client can see it
+   and stop it, and a finite one ends by itself.
+6. **A client that cannot keep up is disconnected**, and gets a fresh
+   `Status` when it reconnects. Never dropped publications in silence.
+7. **The gateway runs in the engine's process.** Its traffic is small
+   control messages. Observation 6's fallback stands: the source in a
+   process of its own if loop delays ever matter.
+
+The Python client imports the package, so scripts and hooks need Python
+3.14; a client in another language speaks the msgpack frames directly.
+
+### Acceptance tests *(approved 2026-10-05)*
+
+Simulated parts on the real clock, each wait with its own deadline, like the
+process tests.
+
+Hardened decoding
+- WS1. A message with a missing or extra field raises `CodecError`, not `KeyError` or `TypeError`.
+- WS2. A wrong field type is refused: a string for an int, a bool for an int, an unknown enum value, a list where a message is expected.
+- WS3. A malformed array is refused: object dtype given as a string, a shape that does not match the data, a value that is not a map.
+- WS4. On a device process link, a bad frame is skipped and the good frame after it is delivered.
+
+The endpoint
+- WS5. A client asks the Coordinator `GetStatus` and gets `Status`, end to end, from an in-process simulated rig on port 0.
+- WS6. The actor sees the client's sender as `gateway/<client>/…`, whatever the client wrote. A client claiming to be `coordinator` gets the reply itself. Two clients using the same reply address each get their own answer.
+- WS7. A ref in a client's message that is not the client's own (a `Subscribe` naming a device) is answered `Rejected`. *Built instead as: every ref a client writes is read as its own, so it never reaches the device (judgment call 1, confirmed).*
+- WS8. A client-sendable message is delivered; `StartDevice`, `Go`, `FinishRecording` and `Heartbeat` are answered `Rejected` and never reach the actor.
+- WS9. A destination not in the latest `Status` is answered `Rejected`, naming the address. After a relaunch, the new device is reachable.
+- WS10. A frame that is not msgpack, one of unknown type, and a text WebSocket message are each answered `Rejected`, and the connection stays open. The reply goes to the frame's sender if it can be read, else to the client's own address.
+- WS11. *(Built as: a client subscribed to the Coordinator, through the gateway; judgment call 2, confirmed.)* A client subscribed to the gateway gets the current `Status` first, then every Coordinator publication in order; across an acquisition starting, no gap and no duplicate.
+- WS12. Two clients subscribed to the source: the gateway subscribes once, and both get `MainApplied`. After the source is relaunched, the gateway subscribes again.
+- WS13. After a client disconnects, no actor's subscriber list holds a client address; a reply to a client that has gone is dropped without an error in its sender.
+- WS14. A client that stops reading is disconnected once its queue is full; other clients and the Coordinator carry on, and the engine's loop is not held.
+- WS15. A connection with no Origin, or a listed one, is accepted; any other origin is refused at the handshake.
+- WS16. A message over the size limit closes that client only; a 200 KB `SetWaveform` gets through.
+- WS17. An interface other than loopback is refused, until TLS and a token exist.
+- WS18. A client disconnecting mid-acquisition changes nothing, and another client can stop the acquisition (decision 5).
+- WS19. A gateway that dies is restarted by `serve`; clients can reconnect, and a running acquisition continues (decision 4).
+
+The client and the CLI
+- WS20. `ask` returns the reply, `Rejected` included, and raises on a timeout; `tell`, `status`, `start`, `stop`, `relaunch` work against a simulated rig.
+- WS21. `subscribe()` yields the `Status` snapshot, then the publications, and raises when the connection drops.
+- WS22. A device's ref taken from `Status` can be told a setting, and asked for it back.
+- WS23. The client runs on standard 3.14 against a 3.14t engine (the monitor's cross-interpreter check).
+- WS24. `stacscope serve` starts the rig and the endpoint from `rig.toml`; Ctrl-C closes the rig, then the endpoint.
+- WS25. The CLI commands work, exiting nonzero on `Rejected` or a timeout.
+
+Ctrl-C *(approved 2026-10-05, from going through judgment call 9)*. A
+probe on simulated parts showed a real Ctrl-C reaching a device in a
+process of its own: it tore its device down under cancellation, 5 ms
+after the press, before the engine's orderly close began. And asyncio
+turns a second Ctrl-C into a `KeyboardInterrupt` wherever the engine is,
+cutting its close short. The fix: each device process in a process group
+of its own (a session, on POSIX), and `serve` handling Ctrl-C itself, the
+later presses only saying it is still closing. These press a real Ctrl-C:
+in a hidden console of the test's own on Windows, to the engine's process
+group on POSIX. Each uses a test device in a process of its own that logs
+its disarm and whether its `teardown` ran under cancellation.
+- WS26. Ctrl-C during an acquisition: it stops through the Coordinator, a subscribed client sees `IDLE` and no `Fault`, the device disarms and then tears down uncancelled, and `serve` exits 0.
+- WS27. A second Ctrl-C while the rig is closing (a disarm that takes a second) cuts nothing short: the close completes as in WS26, `serve` says it is still closing, and exits 0.
+- WS28. Ctrl-C while the rig is starting (a device slow to set up): the device process is closed by the engine, `teardown` uncancelled, and `serve` exits 0 without saying it listens.
+
+### Built *(2026-10-05; judgment calls confirmed)*
+
+WS1–WS25 are green, 863 in the default suite on 3.14t and on 3.14 (WS23
+runs from `tests/tools/`, outside it, as V13 does). Every test that passed
+on its first implementation was mutation-checked: 14 mutations of the
+gateway, 6 of the client and serve's cleanup, 10 of serve, the CLI and the
+config; all caught.
+
+**WS26–WS28 are green too** (2026-10-05), 866 in the default suite on
+3.14t and on 3.14:
+- **The fixes.**
+  - `ProcessHost` starts each device process in a process group of its
+    own: `CREATE_NEW_PROCESS_GROUP` on Windows, a new session on POSIX
+    (`_own_group`).
+  - `app/serve.py`'s `run` handles Ctrl-C itself: the first press cancels
+    the engine, and later ones only say "still closing the rig; wait for
+    it". `stacscope serve` uses it.
+- **The tests.**
+  - Tests in `tests/integration/test_ctrl_c.py`, with `ctrl_c_support.py`
+    (the engine in a hidden console of its own, or a session of its own)
+    and `ctrl_c_device.py` (the logging camera).
+  - The red run showed the device process dying with Windows' Ctrl-C exit
+    status (3221225786) and the Coordinator stopping the acquisition "by
+    the loss of cam".
+- **What the mutation checks found.**
+  - Without the device process's own group, all three fail.
+  - A first version of WS27 checked only the camera's log, and caught
+    neither a second cancel nor asyncio's `KeyboardInterrupt`. A device
+    process whose link drops stops its device in order anyway, so the log
+    cannot tell. WS27 now has a client watch the Coordinator reach IDLE,
+    and catches both.
+- **Handling for a launch cancelled mid-start was written, then taken
+  out.** Breaking it failed no test, and that was right: `Rig.close` stops
+  the Coordinator only after its current message, so a launch in progress
+  always finishes, and its device is then closed in order (WS28).
+- **Not yet run:** the POSIX variants run only in CI. They were not
+  mutation-checked here, and a hidden console on GitHub's Windows runners
+  is unproven.
+
+Where it is:
+- `core/transport/codec.py`: decoding hardened (WS1–WS3); `Connection.serve`
+  now skips a bad frame as it always meant to (WS4).
+- `core/protocol/registry.py`: `register(client=True)` and
+  `client_sendable`; the decided types are marked where they are defined,
+  in core and in both cameras' message modules
+  (`tests/unit/protocol/test_client_marks.py` pins the set).
+- `core/gateway/`: the `Gateway` actor and its server. Tests in
+  `tests/unit/gateway/`, against fake actors.
+- `stacscope/client.py`: the synchronous Python client.
+- `app/serve.py` (`Engine`), `app/cli.py` (`stacscope`, a
+  `[project.scripts]` entry), and `[gateway]` in the rig config
+  (`GatewayConfig`). Tests in `tests/integration/test_client.py`,
+  `test_serve.py`, and `tests/unit/app/test_gateway_config.py`.
+- `websockets>=17.2` is a core dependency.
+
+Judgment calls, all confirmed by the user (2026-10-05):
+1. **WS7: a ref in a client's message is rewritten, not refused.** Every
+   address a client writes is read as its own, the sender and any ref
+   alike, so a client cannot name a device by construction. Only
+   `Subscribe` and `Unsubscribe` carry refs, and the gateway handles both.
+   *Confirmed (user, 2026-10-05), with the rule it implies: a client
+   message names an actor by name, as `Relaunch(name)` does, never by
+   ref; a ref from a client always means the client.*
+2. **WS11: a client subscribes to the Coordinator itself**, with the
+   ordinary `Subscribe`, and the gateway intercepts it and sends the
+   snapshot. The list said "subscribes to the gateway"; this way a client
+   uses the same idiom as an actor. *Confirmed (user, 2026-10-05).* If the
+   gateway ever publishes news of its own (clients joining or leaving), a
+   client subscribes to the gateway for that, separately.
+3. **Only the Coordinator and the source can be subscribed to**; any other
+   target is answered `Rejected`. They are the only actors that publish,
+   and a device in a process of its own could not reach the gateway.
+   *Confirmed (user, 2026-10-05).* Nothing in the code marks an actor as
+   one that publishes: every actor takes `Subscribe`, and `publish` is on
+   the base class, so the gateway's two targets are its own fixed list.
+   When a device first needs to publish, give actors a declaration of
+   what they publish, carried in their `Status` entry for the gateway to
+   read in place of that list, and test publishing across the process
+   link with it.
+4. **A client that overflows its queue is aborted**, not closed: one that
+   is not reading would not read a close frame either. The queue is 256
+   frames. *Confirmed (user, 2026-10-05).* 256 is an estimate, not a
+   measurement.
+5. **Reply addresses are held strongly, the last 1,024 per client.** A
+   reply from a device process comes back through that link's address
+   book, which holds senders weakly; without this it would find nobody.
+   A reply to an older address is lost. *Confirmed (user, 2026-10-05).*
+   A window, not "until answered": a request may be answered once, more
+   than once or never, so the gateway cannot know when an address is done.
+6. **A message an engine actor sends a client that cannot be encoded is
+   dropped in silence**, so the actor never fails on a client's account.
+   Logging is still an open item; this is one of the things it should see.
+   *Confirmed (user, 2026-10-05):* silent until logging exists; noted under
+   "Open items → Logging".
+7. **The client:** `status`, `start`, `stop` and `relaunch` raise
+   `Refused` with the engine's reason; `ask` returns whatever is answered,
+   `Rejected` included. A dropped connection raises `Disconnected`
+   everywhere. The client imports both cameras' message modules so it can
+   read their answers: a new adapter's messages module must be added there.
+   *Confirmed as built for M6 (user, 2026-10-05), as a stopgap.* Going
+   through it found that adapter messages do not scale: a wire name is a
+   bare class name, so two adapters with a `SetExposure` cannot be imported
+   together, and the client imports them all. To be solved next, after M6:
+   "Open items → Device properties".
+8. **The CLI exits 0 when done, 1 refused, 2 for a mistake in the command
+   or the file, 3 unreachable or no answer.** The default port is 8765.
+   *Confirmed (user, 2026-10-05).*
+9. **Ctrl-C is tested as the cancellation of `serve`'s task**, which is what
+   `asyncio.run` makes of it; signalling a child process is not portable.
+   The installed command is tested once as a process, killed at the end.
+   *Kept (user, 2026-10-05), but its premise was wrong:* a real Ctrl-C can
+   be pressed in a console of the engine's own. Doing so found two
+   problems, fixed as WS26–WS28 (above).
+10. **Permessage-deflate is off**: compressing small frames would cost the
+    loop the timing source shares. *Confirmed (user, 2026-10-05), for now:
+    worth revisiting with remote clients, alongside TLS.*
+
+Found on the way: the Coordinator numbers a refused `StartAcquisition`
+too, so the first acquisition after a refusal is number 2. Existing
+behaviour, not changed.
+
+### Browser interfaces — the information flows *(design notes, not a plan)*
+
+Each flow keeps its own channel; the browser joins each at its own level.
+
+- **Hardware timing never reaches the browser.** A page may send a waveform
+  over the control channel; it times nothing. A `SourcePhase` means "now
+  playing", but it arrives a mailbox and a socket later, so a page may
+  show it and must never trigger from it.
+- **Control goes through the endpoint, state by snapshot.** The page is a
+  client outside the tree: every request may be refused, and the page draws
+  everything from the latest `Status` and the publications after it (buttons
+  enabled by the Coordinator's state; a `Rejected` shown as is). A closed tab
+  changes nothing in the engine; on reconnect it resubscribes and redraws.
+  Several browsers need no locking: the Coordinator refuses a second start.
+- **Images never go through control messages.** A live view is a preview
+  process reading the image buffer like the monitor: the latest frame at
+  display rate, binned, 8-bit, a histogram, sent on its own WebSocket,
+  latest-wins (a slow browser skips frames; the control channel instead
+  disconnects a slow client). It cannot slow the camera or the recording,
+  and its CPU work stays off the engine's loop.
+- **Configuration needs no connection.** A session or rig config editor can
+  be a static page in the webDisplayTools style that exports a file the
+  engine loads.
+- **Hosting:** served by `stacscope serve` (no prompt), or from GitHub Pages,
+  where Chrome (147+) asks once before an HTTPS page reaches localhost and
+  the gateway's origins must list the page.
+- **A browser needs:** a JavaScript msgpack library, and a description of the
+  client-sendable messages (a `Describe` request answered from the registry),
+  left out of M6 until a browser tool is planned. Later options: read-only
+  origins, and a log stream as a publication once logging is designed.
+
 ## Subsequent milestones
 
 **Status, 2026-10-01: Milestones 1–5 are done, and so are the buffer
@@ -4046,6 +4368,9 @@ machine and how to run each hardware suite when testing resumes.
 - Next on this list: 6, the gateway, then 7, integration, which the user
   runs.
 - Also open, with no milestone yet (see "Open items" and "Session model"):
+  - **device properties, next after M6** (user, 2026-10-05): how
+    adapter-specific settings reach clients, with discussion still to
+    come ("Open items → Device properties");
   - the session model, which the user expects as a recording session
     config interface; the rig config stays inside `app/` until then;
   - logging and error reporting;
@@ -4057,7 +4382,8 @@ machine and how to run each hardware suite when testing resumes.
   (CM1–CM51, 2026-10-02).
 - The user has not ordered these. The gateway carries the session's
   messages, so whether the session model comes first is worth deciding
-  before either starts.
+  before either starts. **Decided 2026-10-05 (user): the gateway first**;
+  it carries whatever messages exist, and the session model adds its own.
 
 **2026-10-02: a core review comes first** (user). Its findings are in
 "Open items → The core review". Bugs A–D are fixed (CR1–CR4, 2026-10-02);
@@ -4081,12 +4407,17 @@ judgment calls confirmed (2026-10-05). Next, the user chooses an item above.
    user will decide later whether to use it instead of µManager control. It is
    secondary: sCMOS cameras like the Flash are the primary target, and the
    uEye's specifics (model, USB generation, metadata mapping) are deferred.
-6. **ZeroMQ gateway** — the external surface, with the CLI as its first client, and Pycro-Manager hooks as the second.
+6. **The gateway** — the external surface, one WebSocket endpoint, with the CLI as its first client and the Python client for scripts and hooks beside it. *(Decided 2026-10-05, ZeroMQ dropped; started 2026-10-05: see "Milestone 6" above.)*
 7. **Integration on the instrument**, user-run.
 
 Cross-machine distribution (timing and imaging on one machine, independent
 tracking on another, coordinated by network control plus hardware sync signals)
-is an additive `ZmqTransport` deployment after this, requiring no core changes.
+is additive after this, requiring no core changes: the process link already
+runs over TCP to an endpoint given as a string. It needs a way to start a
+process on the other machine, and TLS with authentication on the link; a
+device process must accept its pickled factory only from an authenticated
+host. If many machines become real, NATS is the tool to evaluate first
+(Milestone 6, "Why not ZeroMQ").
 
 **Constraint (user, 2026-09-18): the Coordinator lives on the same machine as
 the timing source.** Other participants may be remote.
@@ -4094,12 +4425,12 @@ the timing source.** Other participants may be remote.
 **Idea, not a requirement — the proxy actor** *(logged 2026-09-18 in case
 remote devices run into complications)*: a remote device could be represented
 by a local proxy actor, a child of the Coordinator, that relays the device
-protocol over ZeroMQ, so the Coordinator treats it like any local participant.
+protocol over the network, so the Coordinator treats it like any local participant.
 Notes if it is ever taken up: the proxy must own liveness of the far side
 (heartbeat over the link, then exit so `ChildExited` fires locally); the remote
 side needs its own watchdog so it shuts down safely if the link drops; only
 control crosses (timing by cable, frames stay in the remote machine's shared
-memory). It coexists with `ZmqTransport`: a transport suits a remote end that
+memory). It coexists with a remote process link: a link suits a remote end that
 is itself STACScope, a proxy suits one needing translation, its own reconnect
 policy, or state the Coordinator shouldn't hold.
 
@@ -4185,7 +4516,7 @@ policy, or state the Coordinator shouldn't hold.
        cameras are process children, so only the Coordinator shares it.
     7. Already open (below): process-placed devices reach only the
        Coordinator, which is why phases are relayed.
-  - *Smaller:* the codec trusts a frame's fields on decode (a missing field
+  - *Smaller (fixed in M6, WS1–WS4, 2026-10-05):* the codec trusts a frame's fields on decode (a missing field
     raises `KeyError`, which closes the link, against `Connection.serve`'s
     intent of skipping one bad frame; field types are not checked), which
     matters once the gateway takes frames from outside. `tell` to a remote
@@ -4834,6 +5165,66 @@ policy, or state the Coordinator shouldn't hold.
   touching the timing flow, and whether the external control surface carries a
   log stream. Explicitly *not* a `Logger` actor of the kind the legacy
   abandoned.
+  *2026-10-05:* the gateway drops, in silence, a message for a client that
+  cannot be encoded (M6 judgment call 6). Only an engine bug causes one,
+  and the client sees only an ask that times out, so logging should report
+  each such drop.
+- **Device properties (opened 2026-10-05; next after M6, user).** Found
+  while confirming M6's judgment call 7. Needs more discussion before an
+  acceptance list.
+  - *The problem.*
+    - A message's wire name is its bare class name, unique in one
+      registry, and a duplicate raises at import. The uEye owns
+      `SetExposure`, `SetTrigger`, `SetAOI` and the rest, which any second
+      camera adapter would want too; an agent copying the uEye as a
+      template would collide at once.
+    - The Python client imports every adapter's messages to read their
+      answers, so one collision breaks every client. Every new adapter
+      also means an edit to `client.py`, which an out-of-tree adapter
+      cannot make.
+    - The client loads every adapter's code, so one that imports its SDK
+      at module level breaks the client everywhere.
+    - A reply the client cannot decode is dropped, so the ask times out
+      with a misleading "no answer".
+    - The two cameras reach settings in unrelated ways. DCAM uses
+      `SetProperty(name, value)` by the camera's own names, in seconds;
+      the uEye uses one typed message per setting, `SetExposure(ms)`. A
+      page, script or session config must branch per vendor, and neither
+      can be discovered at run time.
+  - *The current best idea* (user, 2026-10-05: Claude's proposal plus A):
+    - **A generic, queryable property interface in core, for anything a
+      person tunes.** `GetProperties` answers each property's name, kind
+      (number, label, on/off), unit, range and step, labels, whether it
+      may change while armed, and its value; `SetProperty` / `GetProperty`
+      work on every device. DCAM maps onto it almost directly; the uEye
+      declares a table. A new adapter writes a property table, not message
+      classes.
+    - **Typed core messages only where the engine itself must understand
+      a setting**, as `GetShortestTriggerPeriod` and `SetSaveDirectory`
+      already are; perhaps exposure, for the timing-floor check.
+    - **A: adapter messages get a namespace on the wire**
+      (`ueye.SetExposure`), for the few that remain; core messages keep
+      bare names.
+    - **C: the engine describes its client-sendable messages** (the
+      browser notes' `Describe`), which the user wants. Smaller once
+      settings are properties.
+    - The client then imports no adapter. Close to µManager's model
+      (generic properties, typed core API for common operations), but
+      with the codec's strict typing rather than strings.
+  - *To decide:*
+    - settings that bound each other (the uEye's pixel clock bounds the
+      frame rate, which bounds the exposure): does an answer report every
+      property that moved, or does the client read them again?
+    - compound settings such as the AOI: a property with a compound
+      value, or a typed core message, since every camera has a region of
+      interest;
+    - one unit per kind of setting in core, declared in the description,
+      with the adapter converting; the uEye's millisecond messages change;
+    - this replaces the uEye's message per setting, the user's 5f
+      decision.
+  - It is the session model's foundation: a recording session config is
+    largely a saved set of property values per device, and DCAM's launch
+    `settings=[...]` would work for every device.
 - **Device-declared timing floors (opened 2026-09-22).** The legacy camera
   classes implement `Get Minimum Trigger Interval.vi` —
   `max(readout + 1 ms, internal frame interval)` — but nothing in the exported

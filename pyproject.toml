@@ -9,7 +9,11 @@ dependencies = [
     "numpy>=2.5.3",
     "pydantic>=2.13.5",
     "tifffile>=2026.9.20",
+    "websockets>=17.2",
 ]
+
+[project.scripts]
+stacscope = "stacscope.app.cli:main"
 
 [project.optional-dependencies]
 nidaqmx = [

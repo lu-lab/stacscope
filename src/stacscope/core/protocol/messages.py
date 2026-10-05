@@ -16,7 +16,7 @@ from stacscope.core.protocol.registry import message
 # --- client → Coordinator ----------------------------------------------------
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class StartAcquisition:
     """Begin acquiring. ``cycles < 0`` runs until ``StopAcquisition``; an empty
@@ -26,7 +26,7 @@ class StartAcquisition:
     root_filename: str
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class StopAcquisition:
     pass
@@ -50,13 +50,13 @@ class AcquisitionStopped:
     acquisition: int
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class GetStatus:
     """Ask the Coordinator for its ``Status``."""
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class Relaunch:
     """Spawn a fresh instance of a lost device from its config. Replied
@@ -202,7 +202,7 @@ class Waveform(Enum):
     COOLDOWN = "cooldown"
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True, eq=False)
 class SetWaveform:
     """Replace a waveform. ``ao`` is AO channels × samples in volts; ``do`` is
@@ -215,7 +215,7 @@ class SetWaveform:
     do: np.ndarray
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True, eq=False)
 class QueueMain:
     """Queue a MAIN to play for exactly one cycle, after any already queued.
@@ -268,7 +268,7 @@ class MainDiscarded:
 # --- client → a triggered camera, directly ------------------------------------
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class GetShortestTriggerPeriod:
     """Ask a camera for the shortest time from one trigger to the next that it
@@ -289,7 +289,7 @@ class ShortestTriggerPeriod:
 # --- client → a recording device, directly --------------------------------------
 
 
-@message
+@message(client=True)
 @dataclass(frozen=True, slots=True)
 class SetSaveDirectory:
     """Record later acquisitions into the existing directory ``path``.

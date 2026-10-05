@@ -46,6 +46,16 @@ A simulated source states its own lines, in the order of a waveform's rows:
 
 and a simulated camera ("simulated_camera") is triggered by the pulses it
 plays on the line named by its trigger.
+
+Where clients connect to the engine (stacscope serve) is optional:
+
+    [gateway]
+    interface = "127.0.0.1"           # the default: this computer only
+    port = 8765                       # the default
+    origins = ["https://lab.example"] # web pages that may connect from a browser
+
+Only this computer's own interfaces are accepted for now (127.0.0.1, ::1,
+localhost). An origin is a page's scheme, host and port, with no path.
 """
 
 # Keep the rig config inside app/ (user, 2026-10-01). It may be refactored
@@ -61,9 +71,11 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from stacscope.core.actors import HeartbeatPolicy
 from stacscope.core.devices import TimedDevice
+from stacscope.core.gateway import loopback
 from stacscope.core.ports import Channel, OutputConfig
 from stacscope.core.timing import Placement
 
@@ -158,10 +170,21 @@ class DeviceConfig:
 
 
 @dataclass(frozen=True)
+class GatewayConfig:
+    """The ``[gateway]`` table: where clients connect."""
+
+    interface: str = "127.0.0.1"
+    port: int = 8765
+    origins: tuple[str, ...] = ()
+    """The web pages, by origin, that may connect from a browser."""
+
+
+@dataclass(frozen=True)
 class RigConfig:
     source: SourceConfig
     devices: tuple[DeviceConfig, ...]
     """In the order the file lists them."""
+    gateway: GatewayConfig = GatewayConfig()
 
 
 def load_config(path: str | os.PathLike) -> RigConfig:
@@ -199,12 +222,13 @@ def resolve(target: str) -> type:
 
 
 def _parse(raw: dict[str, Any]) -> RigConfig:
-    _keys("the rig config", raw, required={"source"}, allowed={"devices"})
+    _keys("the rig config", raw, required={"source"}, allowed={"devices", "gateway"})
     source = _source(_table("source", raw["source"]))
     devices = _table("devices", raw.get("devices", {}))
     config = RigConfig(
         source=source,
         devices=tuple(_device(name, _table(f"devices.{name}", table), source) for name, table in devices.items()),
+        gateway=_gateway(_table("gateway", raw.get("gateway", {}))),
     )
     if source.output is not None:
         check_triggers(config.devices, source.output)
@@ -326,6 +350,40 @@ def _check_simulated_trigger(where: str, device: DeviceConfig, source: SourceCon
     if device.trigger is None:
         lines = ", ".join(channel.label for channel in source.output.do)
         raise ConfigError(f"{where}.trigger: name the digital line that triggers it ({lines})")
+
+
+def _gateway(table: dict[str, Any]) -> GatewayConfig:
+    _keys("gateway", table, required=set(), allowed={"interface", "port", "origins"})
+    default = GatewayConfig()
+    interface = _text("gateway.interface", table.get("interface", default.interface))
+    if not loopback(interface):
+        # The same check the gateway makes, made here so a mistake is found
+        # when the file is read rather than when the engine starts.
+        raise ConfigError(
+            f"gateway.interface: only this computer's own interfaces (127.0.0.1, ::1, localhost) "
+            f"are accepted until the gateway has TLS, not {interface!r}"
+        )
+    port = table.get("port", default.port)
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+        raise ConfigError(f"gateway.port must be a port number from 0 to 65535, not {port!r}")
+    origins = table.get("origins", [])
+    if not isinstance(origins, list):
+        raise ConfigError(f"gateway.origins must be a list of origins, not {origins!r}")
+    for origin in origins:
+        parts = urlsplit(origin) if isinstance(origin, str) else None
+        if (
+            parts is None
+            or parts.scheme not in ("http", "https")
+            or not parts.netloc
+            or parts.path
+            or parts.query
+            or parts.fragment
+        ):
+            raise ConfigError(
+                f"gateway.origins: {origin!r} is not an origin, a page's scheme, host and port "
+                f"with no path, such as \"https://lab.example\""
+            )
+    return GatewayConfig(interface, port, tuple(origins))
 
 
 # --- checking values ---------------------------------------------------------

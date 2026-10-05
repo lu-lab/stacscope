@@ -4358,6 +4358,224 @@ Each flow keeps its own channel; the browser joins each at its own level.
   left out of M6 until a browser tool is planned. Later options: read-only
   origins, and a log stream as a publication once logging is designed.
 
+## Device properties *(decided 2026-10-05; decisions confirmed; bulk writes added to test)*
+
+**Decided (user, 2026-10-05):** every device has a table of properties,
+read and written through core messages that every `TimedDevice` answers. A
+new adapter writes a table, not message classes, and no client imports an
+adapter. The discussion and its reasons are in "Open items → Device
+properties"; in short:
+- the table, the getters and the setters live in `TimedDevice`;
+- a device's property names are fixed for its lifetime, hard-coded or
+  looked up at run time as DCAM's are; everything else about a property
+  (value, limits, labels) is live;
+- **one property write per message** is the basic form. **Bulk writes are
+  added too, to be measured rather than guessed at** (user, 2026-10-05),
+  with the provision that they may be removed if they add too much
+  complexity (see "Bulk writes" below);
+- the codec gains a `bool | float | str` union, chosen by the value's type
+  on the wire, and `dict[str, T]`, a msgpack map with string keys;
+  `GetProperties` answers a map;
+- properties are for state a person tunes; typed messages stay for actions
+  and for settings the engine itself interprets (`SetSaveDirectory`,
+  `GetShortestTriggerPeriod`);
+- no typed `SetRegion`: the device owns its buffer, and cameras set a
+  region in different ways.
+
+### Shape
+
+1. **Codec.** `bool | float | str` decodes by the wire type: a bool is a
+   bool, an int or float is a float, a string is a string, anything else is
+   refused. A union the wire cannot tell apart (`int | float`; JavaScript
+   sends 2.0 as 2) is refused when the codec is built. `dict[str, T]` is a
+   msgpack map; a message holds it read-only, because in one process every
+   subscriber shares the same message object.
+2. **Messages** (`core/protocol/`, client-sendable where marked):
+   - `GetProperties()` → `Properties(properties: dict[str, Property])`
+     *(client)*
+   - `GetProperty(name)` → `Property` or `Rejected` *(client)*
+   - `SetProperty(name, value: bool | float | str)` →
+     `PropertiesChanged(properties: dict[str, Property])` or `Rejected`
+     *(client)*
+   - `SetProperties(values: dict[str, bool | float | str])` →
+     `PropertiesChanged`, `Rejected` (nothing applied), or
+     `PropertiesRefused(name, reason, changed: dict[str, Property])`
+     (applied up to `name`) *(client)*; see "Bulk writes".
+   - `Property(name, kind, value, unit, minimum, maximum, step, choices,
+     labels, access)`: `kind` is NUMBER, LABEL or FLAG; `minimum`,
+     `maximum` and `step` are `float | None`; `choices` lists the only
+     numbers allowed, for a number that takes listed values (the uEye's
+     pixel clocks), and is empty otherwise; `labels` is a LABEL's values;
+     `access` is READ_ONLY, IDLE (changeable only while idle) or ALWAYS.
+3. **`TimedDevice`** gains two adapter hooks: read the current table, and
+   apply one value. Everything else is core's: refuse an unknown name, a
+   read-only property, a value of the wrong kind, a label not listed, a
+   number out of range or not among the choices, or an IDLE property while
+   the device is not IDLE, all before the adapter is called; apply; read the
+   table again; answer with every property whose value or limits moved, the
+   one set always included; publish the same. An exception from the
+   adapter's hook is answered `Rejected` with its reason, and the device
+   stays as it was. A device with no table answers an empty map.
+4. **Launch settings for every device.** `settings=[(name, value), ...]`,
+   applied in order through the same checks once the hardware is open and
+   before the buffer exists; a refusal fails the launch, naming the setting.
+   The order is kept: these come from TOML, whose arrays are ordered, never
+   from a client's map. DCAM's `settings` keeps its shape; the uEye's
+   launch arguments (`aoi`, `pixel_clock`, `frame_rate_fps`, `exposure_ms`,
+   `trigger_edge`, `trigger_delay_us`) become settings.
+5. **The cameras.**
+   - `OrcaFlash`: every property the camera supports, by its own names,
+     found through `dcamprop_getnextid`. Limits, step, unit and access come
+     from DCAM's attributes (`dcamprop_getattr`, a new binding, its struct
+     checked against the installed headers like the others). Its own
+     messages (`SetProperty`, `SetPropertyLabel`, `GetProperty`,
+     `PropertyValue` in `adapters/dcam/messages.py`) are removed. The armed
+     frame-format guard stays: a change that moves the frame format while
+     armed is put back and made a fatal `Fault`.
+   - `UEyeCamera`: a declared table, with names of our choosing:
+     `pixel_format`, `aoi_x`, `aoi_y`, `aoi_width`, `aoi_height`,
+     `pixel_clock`, `frame_rate`, `exposure`, `trigger_edge`,
+     `trigger_delay`. Limits come from the driver (exposure range, frame
+     time range, AOI increments and minimum, trigger delay range, the pixel
+     clock list), and are live: `aoi_width`'s maximum is the sensor width
+     less `aoi_x`. Its per-setting messages and `GetCameraSettings` are
+     removed. **This reverses the 5f decision of one message per setting.**
+   - `SimulatedCamera` gets a small table that exercises every rule: a
+     number bounded by another, a label changeable only while idle, a flag,
+     a read-only value.
+6. **Gateway and client.** A client may subscribe to any device present in
+   the latest `Status`, as it may to the Coordinator and the source, to hear
+   `PropertiesChanged`. The client no longer imports any adapter. It gains
+   `properties(device)` and `set(device, name, value)`; the CLI gains
+   `stacscope properties <device>` and `stacscope set <device> <name>
+   <value>`, which reads the table first to parse the value by its kind.
+   `set_many(device, values)` sends `SetProperties`.
+
+### Decisions *(Claude's recommendations; confirmed by the user, 2026-10-05)*
+
+1. **A set answers everything that moved**, found by reading the whole
+   table before and after. The adapter does nothing extra, and a client
+   never holds stale limits. Its cost is unmeasured on hardware (DPH3).
+2. **A change is also published**, and clients may subscribe to devices, so
+   a browser page sees a change a script made.
+3. **Units are SI symbols, declared per property** (`"s"`, `"Hz"`, `"px"`;
+   `""` for none). The uEye's milliseconds, microseconds and MHz become
+   seconds and hertz. DCAM's own units are mapped to symbols, including
+   ones that are not SI, such as °C for sensor temperature.
+4. **Read-only properties are listed**, as READ_ONLY: DCAM has many, and a
+   page or a session log wants them.
+5. **Any exception from the adapter's set is a refusal**, not a fault: the
+   device stays alive. An adapter that knows a failure is worse (DCAM's
+   frame-format guard) reports the fatal `Fault` itself.
+6. **No guarantee of independence for writes sent without waiting.** They
+   are applied in the order sent, and a refusal does not stop later ones;
+   a client that depends on an earlier write waits for its answer.
+
+**Not in this list:** the message description for clients (C, the
+browser notes' `Describe`), which the user wants, and which comes next and
+is smaller now; namespaces for adapter messages (A), which are moot once no
+adapter has client messages, and are reopened when one needs an action
+message; properties of the timing source, which is not a `TimedDevice`;
+standard property names the engine could act on (exposure, for the timing
+floors), until something needs one.
+
+### Bulk writes — built to be measured, and removable
+
+**Decided (user, 2026-10-05): add them, so they are tested rather than
+guessed at; they may be removed if they add too much complexity.** Judge
+that after the build, from DPH3's timings and from what the code and tests
+cost. Messaging itself is no reason for them: on EBB-LU-D12 a client's ask
+through the gateway took about 0.3–0.4 ms, so thirty settings cost about
+12 ms, and settings never sit on the per-cycle path. The conditions under
+which they earn their place:
+- **Re-reading the table is slow on hardware.** Each single write reads the
+  whole table (decision 1); a batch reads it once. The alternative, if
+  batches go: the adapter declares which properties a write can move, and
+  only those are re-read.
+- **A write is expensive in itself**: it reallocates, restarts the sensor,
+  or crosses a slow serial line, so N writes cost N reconfigurations where
+  one would do.
+- **A device has states one write at a time cannot reach**: two settings
+  that each forbid the other's new value until both change.
+- **Loading a saved session needs to succeed or fail as a whole**, or
+  is frequent enough that partial application is a nuisance.
+
+**The shape: a map in, the device chooses the order.**
+- The device knows its own dependencies; a client's map order is not kept by
+  every language. Its default order is its table's, so an adapter declares
+  its table in dependency order (the uEye's: pixel format, AOI, pixel
+  clock, frame rate, exposure, trigger). An adapter may also take the batch
+  whole, as the uEye can set its AOI in one driver call; by default it is
+  applied one write at a time.
+- Checked first, for the whole map: unknown names, read-only properties,
+  wrong kinds, labels not listed, and IDLE properties while not idle. Any
+  of these refuses the whole message with `Rejected`, and nothing is
+  applied. Limits cannot be checked up front, since earlier writes move
+  them; each is checked as its write comes.
+- Applied in order, stopping at the first refusal. **No rollback**: putting
+  earlier values back may not even be reachable from the new state. The
+  answer is `PropertiesRefused(name, reason, changed)`, naming what was
+  refused and holding everything that moved before it.
+- The table is read once before and once after, and what moved is answered
+  and published once, as for a single write.
+- Launch settings stay an ordered list from TOML, applied one at a time.
+
+### Acceptance tests *(drafted 2026-10-05; decisions confirmed; DP30–DP35 added for bulk writes at the user's request, not yet reviewed)*
+
+The codec
+- DP1. A `bool | float | str` field round-trips each kind. An int on the wire arrives as a float; `true` arrives as a bool, never as 1.0. Nil, bytes, a list and a map are refused with `CodecError`.
+- DP2. A union the wire cannot tell apart (`int | float`), or one with a non-scalar arm, is refused when the codec is built, naming the field.
+- DP3. A `dict[str, T]` field round-trips, keeping its order in Python. A non-string key, a list where a map is expected, and a bad value are each refused, the last naming its key.
+- DP4. A map in a message is read-only, so one subscriber cannot change it under another in the same process.
+
+The core interface (simulated, virtual time)
+- DP5. A device with no table answers `GetProperties` with an empty map; `GetProperty` and `SetProperty` of any name are answered `Rejected`, naming it.
+- DP6. `GetProperties` answers every property with its kind, value, unit, limits or choices or labels, and access; `GetProperty` answers one.
+- DP7. `SetProperty` answers `PropertiesChanged` holding the property as the device applied it (rounded to its step), and every other property whose value or limits moved; one that did not move is absent.
+- DP8. Each is refused before the adapter is called, and nothing changes: an unknown name; a read-only property; a value of the wrong kind (a string for a number, `true` for a number, 1.0 for a flag); a label not listed; a number outside its limits or not among its choices.
+- DP9. An IDLE property is refused while the device is ARMING, ARMED or DISARMING, saying why. An ALWAYS property set during a running acquisition is applied, and the acquisition carries on.
+- DP10. An adapter that raises is answered `Rejected` with its reason; the device stays alive, nothing is published, and the next set works.
+- DP11. A change is published to the device's subscribers as the same `PropertiesChanged` it answered. A refused set, a get, and a launch setting publish nothing.
+- DP12. Property names are the same before and after sets and an acquisition.
+- DP13. Launch settings are applied in order before the buffer exists; a refused one fails the launch, naming the setting and the reason, and no segment is created.
+- DP14. Sets told without waiting are applied in the order sent, and a refusal among them does not stop the ones after it.
+- DP15. A property contract suite (`tests/contract/property_contract.py`) runs DP6–DP9, DP12 and DP30–DP32 against every adapter with a table: the simulated camera, and the DCAM and uEye adapters over their fakes.
+
+The gateway, the client and the CLI (simulated, real clock)
+- DP16. `GetProperties`, `GetProperty` and `SetProperty` are client-sendable: a client lists, reads and sets a simulated camera's property end to end.
+- DP17. A client may subscribe to a device present in `Status`, and hears a change another client made. A client that disconnects leaves no subscriber behind; after a relaunch the gateway subscribes again.
+- DP18. `import stacscope.client` in a fresh interpreter loads no `stacscope.adapters` module.
+- DP19. `Client.properties(device)` returns the map, and `Client.set(device, name, value)` returns what moved, raising `Refused` on `Rejected`.
+- DP20. `stacscope properties <device>` prints the table; `stacscope set <device> <name> <value>` parses the value by the property's kind, prints what moved, and exits nonzero on `Rejected`.
+
+DCAM (over the fake, run by name)
+- DP21. The table lists every property the camera supports by its own names, with limits, step, unit and access from DCAM's attributes, and labels for the labelled ones; a property the fake numbers differently from the header is still found by name.
+- DP22. `DCAMPROP_ATTR` matches the installed headers (`STACSCOPE_DCAM_SDK`; skipped without it).
+- DP23. While armed, a change that moves the frame format is put back, answered `Rejected` and reported as a fatal `Fault`, as before.
+- DP24. `GetShortestTriggerPeriod` is still answered; the adapter's own messages are gone.
+
+uEye (over the fake pyueye, run by name)
+- DP25. The table lists the ten properties in SI units, with limits from the driver.
+- DP26. Setting `pixel_clock` answers the new limits of `frame_rate` and `exposure` (and their values, if they moved); setting `frame_rate` answers `exposure`'s new maximum.
+- DP27. Setting `aoi_width` keeps x, y and height; a width past the sensor's edge from the current `aoi_x` is refused before anything changes.
+- DP28. Launch `settings` replace the old launch arguments; `GetShortestTriggerPeriod` is still answered, and the per-setting messages and `GetCameraSettings` are gone.
+
+The rig config
+- DP29. A device's `settings = [["name", value], ...]` in `rig.toml` reaches the device, and `config/rig.example.toml` shows one for each camera.
+
+Bulk writes (simulated unless named)
+- DP30. `SetProperties` applies a map in the device's order whatever the map's order, answers one `PropertiesChanged` with everything that moved, publishes it once, and reads the table once before and once after.
+- DP31. An unknown name, a read-only property, a wrong kind, a label not listed, or an IDLE property while armed, anywhere in the map, refuses the whole message with `Rejected`; nothing is applied.
+- DP32. A refusal partway (a limit moved by an earlier write, or the adapter raising) stops there: `PropertiesRefused` names the property and the reason and holds what moved before it; that change is published; nothing after it is applied; nothing is put back.
+- DP33. An adapter that takes the batch whole receives it whole; one that does not receives one write at a time.
+- DP34. The uEye (over its fake): a batch moving the AOI right while narrowing it is applied, where the same two writes sent singly, x first, have the first refused.
+- DP35. `Client.set_many(device, values)` returns what moved, and raises `Refused` carrying what moved on `PropertiesRefused` or `Rejected`.
+
+On the hardware *(user-run, when testing resumes)*
+- DPH1. The Flash: the table matches what DCAM reports, and a set's answer matches reading the table before and after by hand.
+- DPH2. The uEye: setting the pixel clock moves the frame rate's and exposure's limits as the fake predicts.
+- DPH3. The time of `GetProperties`, of `SetProperty` with its re-read, and of a `SetProperties` of N settings against N single writes, on each camera: decision 1's cost, and the evidence for keeping or removing bulk writes.
+
 ## Subsequent milestones
 
 **Status, 2026-10-01: Milestones 1–5 are done, and so are the buffer
@@ -4368,9 +4586,9 @@ machine and how to run each hardware suite when testing resumes.
 - Next on this list: 6, the gateway, then 7, integration, which the user
   runs.
 - Also open, with no milestone yet (see "Open items" and "Session model"):
-  - **device properties, next after M6** (user, 2026-10-05): how
-    adapter-specific settings reach clients, with discussion still to
-    come ("Open items → Device properties");
+  - **device properties, next after M6** (user, 2026-10-05): decided,
+    and its acceptance tests drafted for approval ("Device properties",
+    after Milestone 6);
   - the session model, which the user expects as a recording session
     config interface; the rig config stays inside `app/` until then;
   - logging and error reporting;
@@ -5211,6 +5429,28 @@ policy, or state the Coordinator shouldn't hold.
     - The client then imports no adapter. Close to µManager's model
       (generic properties, typed core API for common operations), but
       with the codec's strict typing rather than strings.
+  - *Decided (user, 2026-10-05):* each device has a table of properties.
+    The user's reason: µManager handles complex device configs well, but
+    its language-bound device interface fixes much of a device's shape at
+    startup; actors passing generic messages need not.
+    Also decided (user, 2026-10-05): the property list, getters and
+    setters live in `TimedDevice`; a device's property names are fixed
+    for its lifetime (hard-coded, or looked up at run time as DCAM's are);
+    no typed `SetRegion`, since the device owns its buffer and cameras set
+    a region in different ways. Then (user, 2026-10-05): the codec gains
+    a `bool | float | str` union, chosen by the value's type on the wire
+    (no `int`: JavaScript sends 2.0 as 2), so one set message carries
+    every kind and the number/label split goes; and **one property write
+    per message**, not an ordered batch, so a refusal never leaves a
+    partly applied list to explain. Properties are for state a person
+    tunes; typed messages stay for actions and for settings the engine
+    itself interprets. The codec's subset (no maps, no unions beyond
+    `T | None`) was only what P1 needed, not a recorded constraint;
+    msgpack itself is schemaless. The shape, the decisions still to
+    confirm, when bulk writes would earn their place, and the draft
+    acceptance tests (DP1–DP29, DPH1–DPH3) are in "Device properties",
+    after Milestone 6. Bulk writes were then added after all, to be
+    measured, and may be removed (user, 2026-10-05).
   - *To decide:*
     - settings that bound each other (the uEye's pixel clock bounds the
       frame rate, which bounds the exposure): does an answer report every

@@ -38,10 +38,12 @@ processes and that a second Ctrl-C cut the close short. Both are fixed
 own, and `serve` handles Ctrl-C itself. `tests/integration/test_ctrl_c.py`
 presses a real Ctrl-C, in a hidden console of the engine's own on Windows. Its
 "Open items" holds the work that has no milestone yet:
-- **device properties, next after M6** (user, 2026-10-05): a generic,
-  queryable property interface in core plus namespaced adapter messages
-  and a message description for clients; still to be discussed before an
-  acceptance list (the plan's "Open items → Device properties");
+- **device properties, next after M6** (user, 2026-10-05): decided — a
+  table of properties on every `TimedDevice`, one write per message plus
+  bulk writes (added to be measured, and removable if too complex), the
+  codec gaining `bool | float | str` and `dict[str, T]`. Decisions
+  confirmed; the list (DP1–DP35, DPH1–DPH3) is in the plan's "Device
+  properties", after Milestone 6, with DP30–DP35 not yet reviewed;
 - the session model, which the user expects as a recording session config
   interface;
 - logging and error reporting;

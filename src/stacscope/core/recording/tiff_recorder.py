@@ -150,9 +150,9 @@ class TIFFRecorder(Actor):
                 if error is not None:
                     raise error  # the parent hears it as this actor's exit
                 if self._finisher is not None:
-                    # URGENT, as its exit will be: at NORMAL, the ChildExited
-                    # that follows the stop would overtake it at the parent.
-                    self._finisher.tell(RecordingFinished(self.frames_written), Priority.URGENT)
+                    # Its exit follows at once, and is handled after this
+                    # answer: an exit never overtakes the child's own mail.
+                    self._finisher.tell(RecordingFinished(self.frames_written))
                 self.stop()
             case _:
                 await super().handle(msg)

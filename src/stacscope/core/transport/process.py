@@ -262,6 +262,12 @@ class ProcessHost:
             await asyncio.wait({exited, closed}, return_when=asyncio.FIRST_COMPLETED)
             # Let the other catch up: the exit status and the child's own last
             # word both say more than "the link went". Briefly, then report.
+            # This wait is also what keeps the device's last answer ahead of
+            # its exit at the parent: the link's ``closed`` is set only once
+            # its last frame is delivered, and the parent's runtime puts an
+            # exit behind the child's queued mail. A link still draining after
+            # the second loses that order; a local socket whose writer has
+            # gone drains in milliseconds (CM58).
             await asyncio.wait({exited, closed}, timeout=1.0)
         finally:
             exited.cancel()

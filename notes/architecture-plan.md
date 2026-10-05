@@ -287,8 +287,10 @@ The runtime is ~400 lines in `core/actors/`. What it gives every actor:
 
 1. **A priority mailbox**, URGENT / NORMAL / LOW, FIFO within a priority,
    enforced at the receiving actor so it survives any transport. Entries are
-   `(priority, seq, msg)`, so payloads never compare. `take(above=p)` takes
-   only what is more urgent than `p`.
+   `(priority, seq, behind, msg)`, so payloads never compare. `take(above=p)`
+   takes only what is more urgent than `p`. `put(..., behind=test)` places a
+   message immediately after the last queued entry, in taking order, that
+   passes the test (CM52–CM59).
 2. **A sender on every envelope.** `Envelope(msg, sender)`; a tell from
    inside an actor -- its handler or a task it started -- carries that
    actor's ref, filled from a context variable the runtime sets in the
@@ -307,8 +309,12 @@ The runtime is ~400 lines in `core/actors/`. What it gives every actor:
 5. **Supervision.** `ChildExited(child, error)` reaches the parent at
    URGENT, exactly once, by exit or by heartbeat; `error` is a string.
    Heartbeats are answered on receipt, so a long handler is never declared
-   dead. A child's final answer that its exit follows goes URGENT too, or
-   the `ChildExited` overtakes it.
+   dead. **The exit waits for the child's mail** (user, 2026-10-05): with
+   anything from that child still queued, `_receive` places the exit
+   immediately behind the last of it to be taken, so nothing the child
+   sent before its exit was noticed is handled after it. With nothing
+   queued it is URGENT as before. No message's priority changes, so an
+   exit behind NORMAL mail waits for a gated wait to end.
 6. **Lifetime.** `setup()` → `run()` → `teardown()`, the last in a
    `finally`. **A parent's exit stops its children first**, last launched
    first, each waited for (a process child through its host), then runs its
@@ -4580,11 +4586,12 @@ policy, or state the Coordinator shouldn't hold.
       its device's frames until the handshake is done.
     - **A child's last answer overtaken by its exit.** The recorder answers
       `RecordingFinished` and stops; its `ChildExited` travels URGENT and
-      overtook the NORMAL answer. The recorder now sends that last answer
-      URGENT. The hazard is general: any child that reports and then stops.
-      It was fixed case by case (here, and the relaunch's `_Launched`); the
-      user then made it a runtime rule (2026-10-05, "The exit waits for
-      the child's mail" below).
+      overtook the NORMAL answer. The recorder sent that last answer URGENT
+      as a fix. The hazard is general: any child that reports and then
+      stops. It was fixed case by case (here, and the relaunch's
+      `_Launched`); the user then made it a runtime rule (2026-10-05, "The
+      exit waits for the child's mail" below), and the recorder's answer
+      went back to NORMAL (CM59).
     - **A parent waiting for ever on a child cancelled before it ran** (at
       loop shutdown every task is cancelled; one cancelled before its first
       step never sets `stopped`). The parent waits on the child's task.
@@ -4711,12 +4718,31 @@ policy, or state the Coordinator shouldn't hold.
       successor's.
     - `_Launched` is the Coordinator's own message, not the child's, so
       it stays URGENT.
-    - Across processes, the guarantee rests on `ProcessHost._watch`, which
+    - Across processes, the guarantee rests on `ProcessHost._reap`, which
       waits up to 1 s for the link to close after the process exits. The
       link's `closed` is set only once its last frame is delivered. A link
       that takes longer than that to drain still loses the order; a local
       socket whose writer has gone drains in milliseconds.
-  - **Proposed acceptance tests, for the user's approval:**
+  - **Built (2026-10-05).** The user approved the tests below, and
+    `RecordingFinished` going back to NORMAL. `Mailbox.put` takes
+    `behind=`, a test on queued messages, kept generic; `Actor._receive`
+    gives it "sent by this child" for a `ChildExited`. CM52–CM57 are in
+    `tests/unit/actors/test_exit_order.py`, CM58 in
+    `tests/integration/test_process_exit_order.py`. CM52, CM53, CM55, the
+    first case of CM56, CM57 and CM58 were red before the rule. CM54 and
+    the second case of CM56 pinned what stays, and passed at once, so they
+    were mutation-checked: an exit placed behind anyone's mail fails CM54
+    (and R4); an exit with nothing queued sent at NORMAL fails both. An exit
+    placed at the end of its anchor's priority fails CM55; an anchor chosen
+    by the order sent rather than taken fails CM53. With the recorder at
+    NORMAL and no rule, G8 and G16 fail ("the recorder … failed: it
+    stopped"), so they guard CM59. Green on 3.14t and 3.14 (724 tests);
+    CM58 passed ten runs in a row.
+    *Judgment call, confirmed by the user (2026-10-05):* an exit placed
+    behind a message is taken at that message's priority, so its handler
+    runs as NORMAL when it sat behind NORMAL mail, and a gated wait
+    inside it lets URGENT messages in.
+  - **The acceptance tests (approved by the user, 2026-10-05):**
     - CM52: a child's NORMAL message, queued when it stops, is handled
       before its `ChildExited`.
     - CM53: placement is by the order the parent will take them. A child
@@ -4751,9 +4777,10 @@ policy, or state the Coordinator shouldn't hold.
       mail. `gated` gains the consequence: such an exit waits for the gate
       to open. `ChildWatch` notes that every exit, however it was noticed,
       goes through the rule.
-    - `ProcessHost._watch` gets a comment that the cross-process guarantee
+    - `ProcessHost._reap` gets a comment that the cross-process guarantee
       rests on its wait for the link to close.
     - CLAUDE.md and "Actor core" above get the rule.
+    - All of it is done.
 
 - **The communication model (user, 2026-09-30): a deep dive, later.** For
   now the focus is a system that works.

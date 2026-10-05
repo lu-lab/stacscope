@@ -9,7 +9,8 @@ from stacscope.core.protocol.registry import message
 @message
 @dataclass(frozen=True, slots=True)
 class ChildExited:
-    """A child actor has ended. Sent to its parent at URGENT priority.
+    """A child actor has ended. Sent to its parent at URGENT priority, but
+    handled after anything the child sent before it that is still queued.
 
     ``error`` describes what ended it, or is ``None`` for a clean stop.
     A string, not the exception, because death may be detected across a

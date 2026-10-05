@@ -27,6 +27,10 @@ class ChildWatch:
     ``release`` runs just before ``ChildExited`` is sent: once the parent hears
     a child is gone, its name is free for a relaunch. After a heartbeat death
     the old incarnation may linger unreachable; it is simply never heard from.
+
+    Every exit, however it was noticed, is sent with the child as its sender
+    and goes through the parent runtime's rule: it is handled after the
+    child's own queued mail.
     """
 
     def __init__(

@@ -6,7 +6,14 @@ import re
 from collections.abc import Awaitable, Callable
 
 from stacscope.core.actors.mailbox import Mailbox, Priority
-from stacscope.core.actors.messages import Fault, Heartbeat, HeartbeatReply, Subscribe, Unsubscribe
+from stacscope.core.actors.messages import (
+    ChildExited,
+    Fault,
+    Heartbeat,
+    HeartbeatReply,
+    Subscribe,
+    Unsubscribe,
+)
 from stacscope.core.actors.ref import ActorRef, Envelope, LocalTransport, Transport, current_sender
 from stacscope.core.actors.supervision import ChildWatch, HeartbeatPolicy
 from stacscope.core.ports.clock import Clock, MonotonicClock, Scheduled
@@ -96,6 +103,10 @@ class Actor:
         rest stay queued, in order, until the handler returns. Returns what
         ``aw`` returns. An error from a message handled meanwhile abandons the
         wait and propagates, as it would from the handler itself.
+
+        A child's ``ChildExited`` gets in only if none of that child's earlier
+        mail is still queued: an exit waits behind the child's own messages,
+        so one behind a NORMAL message waits for the gate to open.
 
         A wait on another actor is never this: it is a state.
         """
@@ -203,7 +214,9 @@ class Actor:
         """Start ``child`` on this actor's clock, addressed ``<own address>/<name>``.
 
         Its exit — or, with a ``heartbeat``, its silence — arrives here as an
-        URGENT ``ChildExited``. Sibling names must be unique.
+        URGENT ``ChildExited``, but never ahead of anything the child sent
+        before it: what the child said last is handled first. Sibling names
+        must be unique.
         """
         return spawn(
             child, parent=self, clock=self.clock, heartbeat=heartbeat, link=link, name=name
@@ -216,6 +229,26 @@ class Actor:
         if isinstance(envelope.msg, Heartbeat):
             if envelope.sender is not None and not self.stopped.is_set():
                 envelope.sender.tell(HeartbeatReply(), sender=self.ref)
+            return
+        if isinstance(envelope.msg, ChildExited):
+            # The exit waits for the child's mail (user, 2026-10-05). An exit
+            # is sent URGENT so a lost child is heard ahead of routine
+            # traffic, but a child that answers and then stops would have its
+            # exit overtake the answer still queued here: the parent would act
+            # on "gone" without the child's last word. So an exit goes behind
+            # the child's own queued mail, if any; no message's priority
+            # changes. Raising that mail to URGENT instead was rejected: it
+            # would let NORMAL messages into a gated wait. The cost is that an
+            # exit behind NORMAL mail waits for a gate to open.
+            #
+            # It covers what the child sent before its exit was noticed. A
+            # child declared dead by heartbeat may still be running, and what
+            # it sends afterwards arrives after the exit, indistinguishable
+            # by address from a relaunched successor's mail. Across a process
+            # boundary it also relies on the host reporting the exit only once
+            # the link has delivered its last frame (ProcessHost._reap).
+            child = envelope.msg.child
+            self._mailbox.put(envelope, priority, behind=lambda queued: queued.sender == child)
             return
         self._mailbox.put(envelope, priority)
 
@@ -303,7 +336,8 @@ def spawn(
     ``name`` must match ``[A-Za-z0-9_.-]+``; by default it is derived from the
     class name. With a ``parent``, the address is the parent's path plus the
     name and the actor reports to it; a parent ``Actor`` also hears the
-    actor's exit, as ``ChildExited``.
+    actor's exit, as ``ChildExited``: URGENT, but never ahead of the
+    actor's own earlier mail.
 
     A parent given as an ``ActorRef`` is in another process: the actor hangs
     from its address and reports to it, and whoever holds the link watches

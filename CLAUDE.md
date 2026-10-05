@@ -58,9 +58,13 @@ DISARMING), and the recorder is reached only by message; every
 `time.monotonic_ns`. **The judgment calls listed under "Built" were all
 confirmed by the user on 2026-10-05.** From that work, the user decided
 (2026-10-05) that **the exit waits for the child's mail**: a `ChildExited`
-is never handled ahead of anything the child sent before it. Its tests,
-CM52–CM59, are proposed in the plan (after "Built") and await the user's
-approval. The
+is never handled ahead of anything the child sent before it. With the
+child's mail queued, the parent's runtime places the exit right behind the
+last of it (`Mailbox.put(behind=...)`, from `Actor._receive`); with none,
+it is URGENT as before. No priority changes, so such an exit waits for a
+gated wait to end. A child may answer and stop with no URGENT trick: the
+recorder's `RecordingFinished` is NORMAL again. Built and green as
+CM52–CM59 (2026-10-05; the plan, after "Built"). The
 `Dev1-sim` and instrument runs listed there were done on 2026-10-03 and all
 passed. The results are recorded there, with the
 finding that an asyncio timer on Windows wakes only on the ~15.6 ms tick.

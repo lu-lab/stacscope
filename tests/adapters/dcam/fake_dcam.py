@@ -264,7 +264,7 @@ class FakeDcam:
             _ID_BASE + 0x10 * len(self._properties),
             SENSOR_TEMPERATURE,
             kind=_api.PROPTYPE_REAL,
-            unit=_api.PROPUNIT_CENTIGRADE,
+            unit=_api.PROPUNIT_CELSIUS,
         )
         for name, value in [
             ("RECORD FIXED BYTES PER FILE", RECORD_PER_FILE),

@@ -134,7 +134,7 @@ async def test_v1_properties_by_message_on_a_camera_opened_from_a_thread(camera,
         assert isinstance(source, Property) and source.value == "SOFTWARE"
         assert isinstance(exposure, Property) and exposure.kind is PropertyKind.NUMBER
         assert exposure.unit == "s"
-        assert exposure.value == pytest.approx(0.001, abs=1e-4)
+        assert exposure.value == pytest.approx(0.002, abs=1e-4)
 
         applied = await _ask(ref, SetProperty("EXPOSURE TIME", 0.0123456))
         report(f"SetProperty EXPOSURE TIME 0.0123456: {applied!r}")
@@ -205,7 +205,7 @@ async def test_v6_the_shortest_trigger_period_is_the_flashs_own_floor(camera, re
     exposure."""
     async with flash(camera, SOFTWARE, report) as (_, ref, _):
         periods = {}
-        for exposure in (0.001, 0.010):
+        for exposure in (0.002, 0.010):
             assert isinstance(await _ask(ref, SetProperty("EXPOSURE TIME", exposure)), PropertiesChanged)
             answer = await _ask(ref, GetShortestTriggerPeriod())
             floor = await _ask(ref, GetProperty("TIMING MIN TRIGGER INTERVAL"))
@@ -213,7 +213,7 @@ async def test_v6_the_shortest_trigger_period_is_the_flashs_own_floor(camera, re
             assert answer.seconds == floor.value
             periods[exposure] = answer.seconds
     report(", ".join(f"{e * 1e3:.0f} ms exposure: {p * 1e3:.3f} ms" for e, p in periods.items()))
-    assert periods[0.010] > periods[0.001]
+    assert periods[0.010] > periods[0.002]
 
 
 async def test_dph1_the_table_is_what_dcam_reports(camera, report):
@@ -250,12 +250,12 @@ async def test_dph1_a_sets_answer_is_what_moved(camera, report):
     async with flash(camera, SOFTWARE, report) as (_, ref, _):
         before = (await _ask(ref, GetProperties())).properties
         began = time.perf_counter()
-        answer = await _ask(ref, SetProperty("EXPOSURE TIME", 0.002))
+        answer = await _ask(ref, SetProperty("EXPOSURE TIME", 0.005))
         took = time.perf_counter() - began
         after = (await _ask(ref, GetProperties())).properties
 
         moved = {n for n, p in after.items() if before[n] != p}
-        report(f"SetProperty EXPOSURE TIME 0.002: {took * 1e3:.1f} ms, answered {sorted(answer.properties)}")
+        report(f"SetProperty EXPOSURE TIME 0.005: {took * 1e3:.1f} ms, answered {sorted(answer.properties)}")
         report(f"moved between reads by hand: {sorted(moved)}")
         assert isinstance(answer, PropertiesChanged)
         assert answer.properties["EXPOSURE TIME"] == after["EXPOSURE TIME"]

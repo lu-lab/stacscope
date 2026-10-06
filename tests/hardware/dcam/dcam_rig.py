@@ -20,9 +20,11 @@ any exposure and readout the suite sets."""
 GRACE = 0.25
 """Seconds allowed for a DCAM wait's thread to return and its caller to run."""
 
-SOFTWARE = [("TRIGGER SOURCE", "SOFTWARE"), ("EXPOSURE TIME", 0.001)]
+SOFTWARE = [("TRIGGER SOURCE", "SOFTWARE"), ("EXPOSURE TIME", 0.002)]
 """The settings every triggered test starts from: frames come only from
-fire_trigger, and each is over quickly."""
+fire_trigger, and each is over quickly. Not 1 ms: the Flash's floor is 103
+line intervals, 1.00367 ms, which DCAM clamps up to but the device's
+property checks refuse (found 2026-10-06)."""
 
 ROWS_256 = [("SUBARRAY VSIZE", 256), ("SUBARRAY VPOS", 896), ("SUBARRAY MODE", "ON")]
 """The instrument's light-sheet ROI: 256 rows at the centre of the sensor.

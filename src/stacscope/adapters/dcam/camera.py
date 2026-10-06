@@ -87,7 +87,7 @@ _MOST_FRAMES = 2**31 - 1  # DCAMREC_OPEN's frame limit is an int32
 
 _UNITS = {
     _api.PROPUNIT_SECOND: "s",
-    _api.PROPUNIT_CENTIGRADE: "°C",
+    _api.PROPUNIT_CELSIUS: "°C",
     _api.PROPUNIT_KELVIN: "K",
     _api.PROPUNIT_METERPERSECOND: "m/s",
     _api.PROPUNIT_PERSECOND: "Hz",

@@ -1,4 +1,4 @@
-"""V1-V6 and DPH1 -- the OrcaFlash device on the camera: DCAM opened from a
+"""V1-V6 and DPH1 -- the DcamCamera device on the camera: DCAM opened from a
 worker thread, its properties by message, and an acquisition streamed into
 its buffer.
 
@@ -46,7 +46,7 @@ import pytest
 from dcam_rig import GRACE, ROWS_256, SOFTWARE, restore, software_trigger
 from image_streaming_contract import Listener
 
-from stacscope.adapters.dcam import DcamFrameCapture, OrcaFlash
+from stacscope.adapters.dcam import DcamCamera, DcamFrameCapture
 from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
 from stacscope.core.buffer import ImageBuffer
 from stacscope.core.protocol import (
@@ -74,7 +74,7 @@ CAPACITY = 16 * 2048 * 2048 * 2  # sixteen full frames, the largest format
 
 @contextlib.asynccontextmanager
 async def flash(camera: int, settings, report):
-    """An OrcaFlash launched on the camera with ``settings`` in its config,
+    """A DcamCamera launched on the camera with ``settings`` in its config,
     and a listener subscribed. The settings are read first and put back
     after the device has gone, since the camera keeps them between sessions;
     the device holds DCAM's one session per process while it runs."""
@@ -85,7 +85,7 @@ async def flash(camera: int, settings, report):
         await capture.close()
     parent = Actor()
     spawn(parent, name="coordinator")
-    device = OrcaFlash(
+    device = DcamCamera(
         "v" + uuid.uuid4().hex[:20],
         camera=camera,
         settings=settings,

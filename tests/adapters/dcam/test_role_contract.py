@@ -1,4 +1,4 @@
-"""The ImageStreaming role contract (F1-F6), run against the OrcaFlash device
+"""The ImageStreaming role contract (F1-F6), run against the DcamCamera device
 over the fake DCAM library (fake_dcam.py).
 
 The contract's tests are in tests/contract/image_streaming_contract.py; this
@@ -27,7 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 from image_streaming_contract import *  # noqa: E402, F403 - the contract's tests, Rig, consumer
 from image_streaming_contract import Listener, Rig  # noqa: E402
 
-from stacscope.adapters.dcam import OrcaFlash  # noqa: E402
+from stacscope.adapters.dcam import DcamCamera  # noqa: E402
 from stacscope.core.actors import Actor, Subscribe, ask, spawn  # noqa: E402
 
 GRACE = 0.25
@@ -49,7 +49,7 @@ async def rig(request):
     parent = Actor()
     spawn(parent, name="coordinator")
     name = "f" + uuid.uuid4().hex[:20]
-    device = OrcaFlash(name, library=fake, n_slots=6, capacity_bytes=1 << 20, max_slots=16)
+    device = DcamCamera(name, library=fake, n_slots=6, capacity_bytes=1 << 20, max_slots=16)
     ref = parent.spawn_child(device, name="camera")
     listener = Listener()
     # A child reports to its parent, and the root publishes: listen there.

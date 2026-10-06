@@ -3,11 +3,14 @@ and constants, in Python, with one simulated camera behind them.
 
 What this can and cannot prove, stated plainly because it is easy to forget:
 it pins *our* call sequence against the uEye API as its manual documents it
-and as the 5f survey found the camera (a UI-3240CP-NIR, a USB 3 uEye CP Rev.
-1) behaving. It cannot prove pyueye's argument handling or struct layouts,
-and it cannot prove what the camera does: only the camera suite can. Where
-the manual and the survey are silent, the fake takes the reading that is
-harder on the adapter, and says so beside the code.
+and as the 5f survey found the camera behaving: the instrument's own
+Thorlabs-branded camera, an IDS UI-3240CP-NIR (a USB 3 uEye CP Rev. 1, 1280 x
+1024 mono, global shutter), run on IDS's driver. The simulated camera is
+built to match it; the adapter itself assumes no model. It cannot prove
+pyueye's argument handling or struct layouts, and it cannot prove what the
+camera does: only the camera suite can. Where the manual and the survey are
+silent, the fake takes the reading that is harder on the adapter, and says
+so beside the code.
 
 What the survey found, and the fake copies:
 

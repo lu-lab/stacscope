@@ -6,7 +6,7 @@ where a device lists ``Recording`` decides where in its arm the file opens,
 and that is the device's choice, not the mixin's (user, 2026-09-24).
 
 These tests pin the composition the Flash needs,
-``OrcaFlash(ImageStreaming, Recording, TimedDevice)``. DCAM binds its DCIMG
+``DcamCamera(ImageStreaming, Recording, TimedDevice)``. DCAM binds its DCIMG
 recorder after the frame memory is attached and before capture starts
 (API reference, "Recording control"), and Hamamatsu's recording sample
 closes the file after capture stops and before the buffer is released:

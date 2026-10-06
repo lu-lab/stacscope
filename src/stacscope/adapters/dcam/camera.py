@@ -1,4 +1,4 @@
-"""A Hamamatsu ORCA-Flash4.0 as a STACScope device.
+"""A Hamamatsu camera on DCAM-API as a STACScope device.
 
 The camera streams its frames into a shared-memory image buffer, which any
 viewer or processor finds by the buffer's name, and takes its triggers from
@@ -67,9 +67,11 @@ from stacscope.core.protocol import (
 )
 
 IN_FLIGHT = 2
-"""Frames the Flash's grabber may be writing past the newest it reported:
-measured 1 on the dev box Flash in every readout tried, declared with a
-margin of 1."""
+"""Frames the grabber may be writing past the newest it reported, unless the
+device is configured with another ``in_flight``."""
+# Measured 1 on the dev box's ORCA-Flash4.0 V3 in every readout tried, and
+# declared with a margin of 1 (user, 2026-09-25). Another camera or grabber
+# may differ: measure it with measure_in_flight and configure in_flight.
 
 RECORDER_FINISH = 5.0
 """Seconds a stop waits for the driver's recorder to finish writing before
@@ -98,7 +100,7 @@ _UNITS = {
 reader expects."""
 
 
-class OrcaFlash(ImageStreaming, Recording, TimedDevice):
+class DcamCamera(ImageStreaming, Recording, TimedDevice):
     """DCAM camera number ``camera``, streaming into the image buffer
     ``buffer_name``.
 
@@ -106,8 +108,9 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     acquisition; each acquisition lays out ``n_slots`` frames of whatever
     format the camera's settings give at the time. ``settings`` is a list
     of ``(name, value)`` pairs applied in order when the device launches, a
-    value being a number, or a mode's label; one refused fails the launch. ``in_flight`` overrides the Flash's declared
-    in-flight depth, for another camera or readout. ``save_directory`` is
+    value being a number, or a mode's label; one refused fails the launch. ``in_flight`` is how many frames the
+    grabber may be writing past the newest it reported (``IN_FLIGHT`` if not
+    given). ``save_directory`` is
     where recordings go, an existing directory, checked at launch; without
     one, only acquisitions that are not recorded can start.
     ``max_record_frames`` caps how many frames a file may hold. ``library``

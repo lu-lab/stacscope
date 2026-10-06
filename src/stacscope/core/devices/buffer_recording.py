@@ -1,6 +1,6 @@
 """BufferRecording: a streaming device records through a recorder of its own.
 
-A camera whose driver writes files, like the ORCA-Flash, records with
+A camera whose driver writes files, like a DCAM camera, records with
 Recording alone. A camera whose driver cannot lists BufferRecording in its
 place:
 
@@ -111,7 +111,7 @@ class BufferRecording(Recording):
                 problem = None
                 if frames != self._told:
                     # Checked here rather than trusting the recorder's word, as
-                    # the Flash checks its DCIMG file: a recorder may be any class.
+                    # DcamCamera checks its DCIMG file: a recorder may be any class.
                     problem = (
                         f"recording may be truncated: {self._recorder_path} holds {frames} "
                         f"of the {self._told} frames published"

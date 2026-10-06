@@ -101,7 +101,7 @@ AO_CHANNELS = 5
 lines, as on the instrument. Fewer would also raise the board's floor on the
 buffer depth above the instrument's 5000 samples."""
 
-LINES = {"orca_flash": "STACSCOPE_CAMERA_TRIGGER", "ueye": "STACSCOPE_UEYE_TRIGGER"}
+LINES = {"dcam": "STACSCOPE_CAMERA_TRIGGER", "ueye": "STACSCOPE_UEYE_TRIGGER"}
 """Where each camera's trigger line comes from, by device kind."""
 
 
@@ -133,7 +133,7 @@ def line_for(kind: str) -> str:
 def task_pair(config, flash, ueye) -> OutputConfig:
     """The task pair this run saves: the config's trigger names on the lines
     the environment names, and the board's analog outputs."""
-    flash_line, ueye_line = line_for("orca_flash"), line_for("ueye")
+    flash_line, ueye_line = line_for("dcam"), line_for("ueye")
     board = flash_line.split("/")[0]
     assert ueye_line.split("/")[0] == board, "both trigger lines must be on one board"
     return OutputConfig(
@@ -189,7 +189,7 @@ async def test_g13_both_cameras_record_a_cycle_the_coordinator_runs(config_path,
     from saved_tasks import PREFIX, saved
 
     config = load_config(config_path)
-    flash, ueye = device_of_kind(config, "orca_flash"), device_of_kind(config, "ueye")
+    flash, ueye = device_of_kind(config, "dcam"), device_of_kind(config, "ueye")
     # Whole volumes in the ring, as a volume readout will want (user).
     slots = flash.options.get("n_slots")
     assert slots and slots % FLASH_FRAMES == 0, (

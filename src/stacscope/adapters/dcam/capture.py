@@ -198,8 +198,8 @@ class DcamFrameCapture:
             fields |= MetaField.HW_FRAME
         if not self._has_timestamps:
             return Metadata(fields=fields)
-        # The Flash's stamps come from the DCAM module, a host clock (dev box
-        # survey), and are accepted as such (user, 2026-09-24).
+        # On the ORCA-Flash4.0 V3 the stamps come from the DCAM module, a host
+        # clock (dev box survey), and are accepted as such (user, 2026-09-24).
         return Metadata(
             fields=fields | MetaField.DEVICE_TIME,
             device_time_source=TimeSource.DRIVER,
@@ -379,8 +379,11 @@ class DcamFrameCapture:
                 code = self._lib.dcamprop_queryvalue(
                     self._hdcam, self._id(name), ctypes.pointer(value), option
                 )
-                # The Flash ends a walk with OUTOFRANGE; the reference says
-                # DCAMERR_OUTOFVALUE, which no header defines.
+                # The ORCA-Flash4.0 V3 ends a walk with OUTOFRANGE; the
+                # reference says DCAMERR_OUTOFVALUE, which no header defines.
+                # A possible future bug: a camera that ends the walk with any
+                # other code raises here instead of returning its labels.
+                # Not solved ahead of a camera that does it (user, 2026-10-06).
                 if code == _api.ERR_OUTOFRANGE:
                     break
                 self._check("dcamprop_queryvalue", code)

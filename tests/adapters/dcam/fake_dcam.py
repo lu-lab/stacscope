@@ -1,5 +1,7 @@
 """A stand-in for dcamapi.dll: the raw DCAM-API function table, in Python, with
-one simulated camera behind it.
+one simulated camera behind it. Where a camera's behaviour shows through the
+API, the simulated one is built to match the ORCA-Flash4.0 V3 on the dev box
+(C13440-20C); the adapter itself assumes no model.
 
 What this can and cannot prove, stated plainly because it is easy to forget:
 it pins *our* call sequence, and our use of the structs, against DCAM-API as

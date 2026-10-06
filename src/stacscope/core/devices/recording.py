@@ -12,7 +12,7 @@ Where the file opens and closes, relative to the rest of the device, is set by
 where Recording is listed among the device's base classes. A camera that
 streams images lists it after ImageStreaming:
 
-    class OrcaFlash(ImageStreaming, Recording, TimedDevice)
+    class DcamCamera(ImageStreaming, Recording, TimedDevice)
 
 so the file opens after the frame memory is attached and before capture
 starts, and closes after capture stops and before the memory is given back.
@@ -40,7 +40,7 @@ class Recording:
     - ``disarm``: the file closes, *then* everything after it disarms.
 
     So the file is open for as long as everything listed after it is armed.
-    With ``class OrcaFlash(ImageStreaming, Recording, TimedDevice)`` a
+    With ``class DcamCamera(ImageStreaming, Recording, TimedDevice)`` a
     camera arms and disarms in this order::
 
         arm:     attach frame memory, arm camera, OPEN FILE, start capture

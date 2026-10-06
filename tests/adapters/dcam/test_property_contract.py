@@ -1,4 +1,4 @@
-"""The property contract (DP15), run against the OrcaFlash device over the
+"""The property contract (DP15), run against the DcamCamera device over the
 fake DCAM library (fake_dcam.py).
 
 The contract's tests are in tests/contract/property_contract.py; this module
@@ -25,7 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 from property_contract import *  # noqa: E402, F403 - the contract's tests and Rig
 from property_contract import Rig  # noqa: E402
 
-from stacscope.adapters.dcam import OrcaFlash  # noqa: E402
+from stacscope.adapters.dcam import DcamCamera  # noqa: E402
 from stacscope.core.actors import Actor, ask, spawn  # noqa: E402
 
 
@@ -34,7 +34,7 @@ async def rig():
     fake = FakeDcam()
     parent = Actor()
     spawn(parent, name="coordinator")
-    device = OrcaFlash(
+    device = DcamCamera(
         "p" + uuid.uuid4().hex[:20], library=fake, n_slots=6, capacity_bytes=1 << 20, max_slots=16
     )
     ref = parent.spawn_child(device, name="camera")

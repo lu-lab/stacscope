@@ -14,7 +14,7 @@ table and key it is in.
     ready_timeout = 5.0               # seconds; stop_timeout is optional
 
     [devices.flash]                   # the device's name
-    kind = "orca_flash"               # or "ueye", or "package.module:Class"
+    kind = "dcam"                     # or "ueye", or "package.module:Class"
     placement = "process"             # or "in_process" (the default)
     trigger = "HamamatsuCamTrigger"   # the digital line that triggers it
     ready_timeout = 30.0
@@ -80,7 +80,7 @@ from stacscope.core.ports import Channel, OutputConfig
 from stacscope.core.timing import Placement
 
 KINDS = {
-    "orca_flash": "stacscope.adapters.dcam:OrcaFlash",
+    "dcam": "stacscope.adapters.dcam:DcamCamera",
     "ueye": "stacscope.adapters.ueye:UEyeCamera",
     "simulated_camera": "stacscope.adapters.simulated:SimulatedCamera",
     "simulated_free_running_camera": "stacscope.adapters.simulated:SimulatedFreeRunningCamera",

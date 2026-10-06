@@ -37,9 +37,9 @@ List them in this order, then the adapter's own class last:
     class Device(SoftwareTimed, ImageStreaming, Recording, Adapter)
 
 leaving out any role the device does not have. For a camera whose driver
-writes the file, such as the ORCA-Flash and its DCIMG recorder, that gives:
+writes the file, such as a DCAM camera and its DCIMG recorder, that gives:
 
-    class OrcaFlash(ImageStreaming, Recording, Adapter)
+    class DcamCamera(ImageStreaming, Recording, Adapter)
 
     arm:     lay out buffer, attach frame memory, arm camera,
              open file, start capture

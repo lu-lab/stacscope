@@ -16,7 +16,7 @@ ready_timeout = 5.0
 stop_timeout = 10.0               # a stop plays out what is queued, then COOLDOWN
 
 [devices.flash]
-kind = "orca_flash"
+kind = "dcam"
 placement = "process"             # DCAM allows one camera session per process
 trigger = "HamamatsuCamTrigger"   # a line of do_task, by its name in NI MAX
 ready_timeout = 30.0              # an arm opens the DCIMG file, which reserves its size

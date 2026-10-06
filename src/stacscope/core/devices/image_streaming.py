@@ -33,7 +33,7 @@ slots itself instead.
 class listed after it: it lays out the buffer and hands the slots to the
 grabber before they arm, and starts capture after; it stops capture before
 they disarm, and takes the slots back after. A camera that records lists it
-before Recording, as in class OrcaFlash(ImageStreaming, Recording,
+before Recording, as in class DcamCamera(ImageStreaming, Recording,
 TimedDevice). The package's own description (stacscope.core.devices)
 explains the rule.
 """
@@ -93,7 +93,7 @@ class ImageStreaming:
     ``Recording``, so a file opens between attach and start and closes
     between stop and detach::
 
-        class OrcaFlash(ImageStreaming, Recording, TimedDevice)
+        class DcamCamera(ImageStreaming, Recording, TimedDevice)
 
         arm:     attach frame memory, arm camera, open file, start capture
         disarm:  stop capture, publish last frames, close file,
@@ -180,7 +180,7 @@ class ImageStreaming:
         try:
             await self.capture.start()
         except BaseException as exc:
-            # Everything after this class is armed by now: on the Flash, the
+            # Everything after this class is armed by now: on DcamCamera, the
             # camera and an open DCIMG file. Undone in disarm's order, file
             # before slots. The start's error is the one raised, as in disarm
             # (user, 2026-09-24); if the disarm fails too, it is a note on it

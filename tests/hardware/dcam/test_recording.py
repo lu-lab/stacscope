@@ -1,4 +1,4 @@
-"""V4-V5 -- the OrcaFlash device recording to DCIMG through the camera's
+"""V4-V5 -- the DcamCamera device recording to DCIMG through the camera's
 driver, read back through dcimgapi.dll.
 
 RUN ON THE CAMERA'S MACHINE. This triggers the camera by software, changes
@@ -42,7 +42,7 @@ from dcam_rig import GRACE, ROWS_256, SOFTWARE, restore, software_trigger
 from dcimg_reader import DcimgFile
 from image_streaming_contract import Listener
 
-from stacscope.adapters.dcam import DcamFrameCapture, OrcaFlash
+from stacscope.adapters.dcam import DcamCamera, DcamFrameCapture
 from stacscope.core.actors import Actor, Fault, Subscribe, ask, spawn
 from stacscope.core.buffer import ImageBuffer
 from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
@@ -72,7 +72,7 @@ def folder():
 
 @contextlib.asynccontextmanager
 async def flash(camera: int, folder: pathlib.Path, settings=SETTINGS, **options):
-    """An OrcaFlash on the camera, recording into ``folder``, with a
+    """A DcamCamera on the camera, recording into ``folder``, with a
     listener subscribed; the settings it changes are put back after."""
     capture = DcamFrameCapture(camera, in_flight=2)
     try:
@@ -81,7 +81,7 @@ async def flash(camera: int, folder: pathlib.Path, settings=SETTINGS, **options)
         await capture.close()
     parent = Actor()
     spawn(parent, name="coordinator")
-    device = OrcaFlash(
+    device = DcamCamera(
         "r" + uuid.uuid4().hex[:20],
         camera=camera,
         settings=settings,

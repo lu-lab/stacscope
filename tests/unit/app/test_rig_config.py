@@ -35,7 +35,7 @@ ready_timeout = 5.0
 stop_timeout = 10.0
 
 [devices.flash]
-kind = "orca_flash"
+kind = "dcam"
 placement = "process"
 trigger = "HamamatsuCamTrigger"
 ready_timeout = 30.0
@@ -158,13 +158,13 @@ REFUSED = {
         _with(INSTRUMENT, "buffer_samples = 5000", "buffer_samples = 5000\nrate = 100000.0"),
         "rate",
     ),
-    "an unknown device kind": (_with(INSTRUMENT, 'kind = "orca_flash"', 'kind = "orca"'), "orca"),
+    "an unknown device kind": (_with(INSTRUMENT, 'kind = "dcam"', 'kind = "orca"'), "orca"),
     "a kind that names no class": (
-        _with(INSTRUMENT, 'kind = "orca_flash"', 'kind = "stacscope.nowhere:Camera"'),
+        _with(INSTRUMENT, 'kind = "dcam"', 'kind = "stacscope.nowhere:Camera"'),
         "stacscope.nowhere",
     ),
     "a kind that is not a device": (
-        _with(INSTRUMENT, 'kind = "orca_flash"', 'kind = "builtins:dict"'),
+        _with(INSTRUMENT, 'kind = "dcam"', 'kind = "builtins:dict"'),
         "not a device",
     ),
     "a misspelt device setting": (_with(INSTRUMENT, "n_slots = 200", "n_slot = 200"), "n_slot"),
@@ -186,7 +186,7 @@ REFUSED = {
         "process",
     ),
     "a simulated camera with nothing simulated to trigger it": (
-        _with(INSTRUMENT, 'kind = "orca_flash"', 'kind = "simulated_camera"'),
+        _with(INSTRUMENT, 'kind = "dcam"', 'kind = "simulated_camera"'),
         "simulated source",
     ),
     "a device named as the source is": (_with(SIMULATED, "[devices.flash]", "[devices.source]"), "timing source"),

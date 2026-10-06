@@ -1,4 +1,4 @@
-"""O1-O12 and DP21-DP24: the OrcaFlash device over the fake DCAM library,
+"""O1-O12 and DP21-DP24: the DcamCamera device over the fake DCAM library,
 beyond the ImageStreaming role contract (test_role_contract.py) and the
 property contract (test_property_contract.py): its table of the camera's own
 properties, the settings its config applies at launch, recording, and
@@ -38,7 +38,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 
 from image_streaming_contract import Listener  # noqa: E402
 
-from stacscope.adapters.dcam import OrcaFlash  # noqa: E402
+from stacscope.adapters.dcam import DcamCamera  # noqa: E402
 from stacscope.adapters.dcam import camera as camera_module  # noqa: E402
 from stacscope.core.actors import (  # noqa: E402
     Actor,
@@ -96,7 +96,7 @@ def roomy_disk(monkeypatch):
 
 @pytest.fixture
 async def launch():
-    """``launch(fake, **options)`` spawns an OrcaFlash over ``fake`` with a
+    """``launch(fake, **options)`` spawns a DcamCamera over ``fake`` with a
     listener subscribed, and returns the device, its ref and the listener
     once its setup has ended, however it ended. Each is stopped after the
     test, and its fake checked for misuse."""
@@ -106,7 +106,7 @@ async def launch():
 
     async def launch_(fake, *, wait=True, **options):
         options.setdefault("n_slots", 6)
-        device = OrcaFlash(
+        device = DcamCamera(
             "o" + uuid.uuid4().hex[:20],
             library=fake,
             capacity_bytes=1 << 20,

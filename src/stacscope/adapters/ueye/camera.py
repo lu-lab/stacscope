@@ -46,7 +46,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from stacscope.adapters.ueye.capture import PIXEL_FORMATS, TRIGGER_EDGES, UEyeFrameCapture
-from stacscope.core.devices import BufferRecording, ImageStreaming, TimedDevice
+from stacscope.core.devices import BufferRecording, ImageStreaming, PropertyRefused, TimedDevice
 from stacscope.core.protocol import (
     GetShortestTriggerPeriod,
     Property,
@@ -194,6 +194,26 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
                 capture.set_trigger(value, capture.trigger()[1])
             case "trigger_delay":
                 capture.set_trigger(capture.trigger()[0], round(value * 1e6))
+
+    async def write_properties(self, values: list[tuple[str, float | str]]) -> None:
+        # Taken whole for the AOI: its four sides are one rectangle to the
+        # driver, so a batch that moves x right while narrowing the width is
+        # one call, where single writes would pass through a rectangle off
+        # the sensor. The rest are written as single writes are, in order.
+        aoi = {name: value for name, value in values if name.startswith("aoi_")}
+        for name, value in values:
+            if name.startswith("aoi_") and not aoi:
+                continue  # sent with the first side
+            try:
+                if name.startswith("aoi_"):
+                    sides = dict(zip(("aoi_x", "aoi_y", "aoi_width", "aoi_height"), self.capture.aoi(), strict=True))
+                    sides |= {side: round(v) for side, v in aoi.items()}
+                    aoi = {}
+                    self.capture.set_aoi(*sides.values())
+                else:
+                    await self.write_property(name, value)
+            except Exception as exc:
+                raise PropertyRefused(f"{name}: {exc}", name=name) from exc
 
     async def handle(self, msg: object) -> None:
         match msg:

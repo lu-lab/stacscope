@@ -414,6 +414,41 @@ class PropertiesChanged:
         _read_only(self, "properties")
 
 
+@message(client=True)
+@dataclass(frozen=True, slots=True)
+class SetProperties:
+    """Set several properties in one message. The device applies them in its
+    own order, whatever the map's, and checks each as it comes.
+
+    Replied ``PropertiesChanged``; or ``Rejected``, with nothing applied,
+    for an unknown name, a read-only property, a value of the wrong kind, a
+    label not listed, or a property changeable only while idle; or
+    ``PropertiesRefused``, if one was refused partway. Nothing applied
+    before a refusal is put back.
+    """
+
+    values: dict[str, bool | float | str]
+
+    def __post_init__(self) -> None:
+        _read_only(self, "values")
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class PropertiesRefused:
+    """A ``SetProperties`` stopped at the property ``name``, for ``reason``:
+    ``changed`` holds every property that moved before it, as it now stands,
+    and is published. Those after it were not tried. ``name`` is empty if
+    the device could not say which property it refused."""
+
+    name: str
+    reason: str
+    changed: dict[str, Property]
+
+    def __post_init__(self) -> None:
+        _read_only(self, "changed")
+
+
 # --- a streaming device → the recorder it started -------------------------------
 
 

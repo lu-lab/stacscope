@@ -161,6 +161,43 @@ def test_dp19_an_unknown_device_is_a_lookup_error(connect):
         connect().properties("ghost")
 
 
+# --- DP35: several at once -------------------------------------------------------------------
+
+
+def test_dp35_set_many_returns_what_moved(connect):
+    client = connect()
+    client.set_many("cam", {"aoi_width": 4.0, "aoi_x": 0.0})
+
+    moved = client.set_many("cam", {"exposure": 0.02, "aoi_x": 4.0})
+
+    assert {"aoi_x", "aoi_width", "exposure"} <= set(moved)  # the width's maximum moved
+    assert (moved["aoi_x"].value, moved["exposure"].value) == (4.0, 0.02)
+    client.set_many("cam", {"aoi_x": 0.0, "aoi_width": 8.0, "exposure": 0.01})
+
+
+def test_dp35_a_refusal_partway_raises_refused_carrying_what_moved(connect):
+    """What moved before the refusal stays moved; a script that only saw the
+    error would not know the device had changed."""
+    client = connect()
+    client.set_many("cam", {"aoi_x": 0.0, "aoi_width": 8.0})
+
+    with pytest.raises(Refused) as refused:
+        client.set_many("cam", {"exposure": 99.0, "aoi_width": 4.0})
+
+    assert "exposure" in refused.value.reason
+    assert refused.value.changed["aoi_width"].value == 4.0
+    client.set("cam", "aoi_width", 8.0)
+
+
+def test_dp35_a_rejected_batch_raises_refused_with_nothing_moved(connect):
+    client = connect()
+
+    with pytest.raises(Refused) as refused:
+        client.set_many("cam", {"exposure": 0.02, "no such property": 1.0})
+
+    assert refused.value.changed == {}
+
+
 # --- DP20: the command line -------------------------------------------------------------------
 
 

@@ -55,9 +55,11 @@ from stacscope.core.protocol import (  # noqa: E402
     GetProperties,
     GetShortestTriggerPeriod,
     PropertiesChanged,
+    PropertiesRefused,
     Property,
     PropertyAccess,
     PropertyKind,
+    SetProperties,
     SetProperty,
     ShortestTriggerPeriod,
     StartDevice,
@@ -255,6 +257,55 @@ async def test_dp27_a_width_past_the_sensors_edge_is_refused_before_anything_cha
     assert isinstance(answer, Rejected) and "at most 80" in answer.reason
     assert fake.aoi_rect == (1200, 0, *SMALL[2:])
     assert fake.calls.count("is_AOI") - sets < 6  # read, never set: no rectangle was sent
+
+
+# --- DP34: moving the AOI right while narrowing it ---------------------------------------------
+
+
+async def test_dp34_a_batch_moves_the_aoi_right_while_narrowing_it(launch, fake):
+    """The case bulk writes exist for: from the full width, moving x right
+    needs the width narrowed first, and narrowing then moving is two writes
+    that leave an AOI between. As one batch the camera takes both in one
+    call, and neither is refused."""
+    _, ref, _ = await launch(fake, settings=[("aoi_height", 32.0)])
+    sets = []
+    original = fake.is_AOI
+
+    def recording(hCam, nCommand, pParam, cbSizeOfParam):
+        if getattr(nCommand, "value", nCommand) == fake.IS_AOI_IMAGE_SET_AOI:
+            sets.append(tuple(getattr(pParam, f).value for f in ("s32X", "s32Y", "s32Width", "s32Height")))
+        return original(hCam, nCommand, pParam, cbSizeOfParam)
+
+    fake.is_AOI = recording
+
+    reply = await _ask(ref, SetProperties({"aoi_x": 640.0, "aoi_width": 640.0}))
+
+    assert isinstance(reply, PropertiesChanged), reply
+    assert fake.aoi_rect == (640, 0, 640, 32)
+    assert sets == [(640, 0, 640, 32)]
+
+
+async def test_dp34_the_same_two_writes_sent_singly_x_first_have_the_first_refused(launch, fake):
+    _, ref, _ = await launch(fake, settings=[("aoi_height", 32.0)])
+
+    first = await _ask(ref, SetProperty("aoi_x", 640.0))
+    second = await _ask(ref, SetProperty("aoi_width", 640.0))
+
+    assert isinstance(first, Rejected) and "at most 0" in first.reason
+    assert isinstance(second, PropertiesChanged)
+    assert fake.aoi_rect == (0, 0, 640, 32)
+
+
+async def test_dp34_a_batch_the_camera_refuses_names_the_property(launch, fake):
+    """Taken whole, the batch's limits are the driver's to judge: off the
+    camera's grid, the AOI is refused, and named."""
+    _, ref, _ = await launch(fake)
+
+    reply = await _ask(ref, SetProperties({"aoi_x": 1.0, "exposure": 0.002}))
+
+    assert isinstance(reply, PropertiesRefused)
+    assert reply.name == "aoi_x" and "IS_INVALID_PARAMETER" in reply.reason
+    assert "exposure" not in reply.changed
 
 
 # --- E2: refusals ----------------------------------------------------------------------------

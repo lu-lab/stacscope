@@ -26,8 +26,9 @@ the camera's defaults (Y8).
       after the test.
   DPH2  The table's limits are the driver's: a slower pixel clock lowers
       the fastest frame rate and the longest exposure, as the fake
-      predicts. Reports the table, and how long a read and a set take
-      (DPH3).
+      predicts. Reports the table, and how long a read and a set take.
+  DPH3  How long a batch of settings takes against the same settings sent
+      one at a time; and the AOI moved right while narrowed, in one batch.
 
 Each adds what it saw to the "uEye findings" section at the end of the run;
 paste that section back.
@@ -63,6 +64,7 @@ from stacscope.core.protocol import (
     GetProperties,
     GetShortestTriggerPeriod,
     PropertiesChanged,
+    SetProperties,
     SetProperty,
     ShortestTriggerPeriod,
     StartDevice,
@@ -352,3 +354,35 @@ async def test_dph2_a_slower_pixel_clock_moves_the_limits_as_the_fake_predicts(c
     assert answer.properties["frame_rate"].maximum < before["frame_rate"].maximum
     assert answer.properties["exposure"].maximum > 0
     assert {"frame_rate", "exposure"} <= set(answer.properties)
+
+
+async def test_dph3_a_batch_against_the_same_settings_one_at_a_time(camera, report):
+    """Bulk writes were added to be measured (user, 2026-10-05). The uEye
+    takes a batch whole, so the table is read twice whatever its size. Each
+    way is timed five times, alternating two sets of values; then the AOI
+    is moved right while narrowed, which only a batch can do in one step."""
+    import statistics
+
+    async with ueye_camera(camera, report, pixel_format="RAW10") as (_, ref, _):
+        sets = [
+            {"pixel_clock": 40e6, "frame_rate": 10.0, "exposure": 0.002},
+            {"pixel_clock": 31e6, "frame_rate": 5.0, "exposure": 0.003},
+        ]
+        batch, singles = [], []
+        for i in range(10):
+            values = sets[i % 2]
+            began = time.perf_counter()
+            if i < 5:
+                assert isinstance(await _ask(ref, SetProperties(values)), PropertiesChanged)
+                batch.append(time.perf_counter() - began)
+            else:
+                for name, value in values.items():
+                    assert isinstance(await _ask(ref, SetProperty(name, value)), PropertiesChanged)
+                singles.append(time.perf_counter() - began)
+        moved = await _ask(ref, SetProperties({"aoi_x": 640.0, "aoi_width": 640.0}))
+    report(
+        f"3 settings: batch {statistics.median(batch) * 1e3:.1f} ms, "
+        f"one at a time {statistics.median(singles) * 1e3:.1f} ms (medians of 5); "
+        f"AOI right and narrower in one batch: {type(moved).__name__}"
+    )
+    assert isinstance(moved, PropertiesChanged)

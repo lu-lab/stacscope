@@ -20,6 +20,7 @@ So are a device's properties, by the device's name:
 
     engine.properties("flash")                 every property, by name
     engine.set("flash", "EXPOSURE TIME", 0.01)  what the set changed
+    engine.set_many("ueye", {"aoi_x": 640, "aoi_width": 640})
 
 They raise Refused, with the engine's reason, if it refuses. Anything else
 is a message sent to an actor with ask (which waits for the answer and
@@ -59,8 +60,10 @@ from stacscope.core.protocol import (
     GetStatus,
     Properties,
     PropertiesChanged,
+    PropertiesRefused,
     Property,
     Relaunch,
+    SetProperties,
     SetProperty,
     StartAcquisition,
     Status,
@@ -88,11 +91,14 @@ class Disconnected(ConnectionError):
 
 
 class Refused(Exception):
-    """The engine refused a request. ``reason`` is why, in its words."""
+    """The engine refused a request. ``reason`` is why, in its words.
+    ``changed`` holds the properties a refused ``set_many`` had already
+    changed before the refusal, which stay changed; it is empty otherwise."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, changed: dict | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.changed = {} if changed is None else changed
 
 
 class Client:
@@ -193,6 +199,18 @@ class Client:
         among them. Raises ``Refused`` with the device's reason, in which
         case nothing changed, and ``LookupError``."""
         answer = self.ask(self._device(device), SetProperty(name, value))
+        return dict(self._expect(answer, PropertiesChanged).properties)
+
+    def set_many(self, device: str | ActorRef, values: dict[str, bool | float | str]) -> dict[str, Property]:
+        """Set several properties of ``device`` in one request. The device
+        applies them in its own order, whatever the dict's, and checks each
+        as it comes. Returns every property that changed. Raises ``Refused``
+        if one is refused: those the device had applied before it stay
+        applied, and are in the exception's ``changed``. Raises
+        ``LookupError``."""
+        answer = self.ask(self._device(device), SetProperties(values))
+        if isinstance(answer, PropertiesRefused):
+            raise Refused(answer.reason, dict(answer.changed))
         return dict(self._expect(answer, PropertiesChanged).properties)
 
     def _device(self, device: str | ActorRef) -> ActorRef:

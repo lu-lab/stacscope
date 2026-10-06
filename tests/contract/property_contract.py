@@ -7,7 +7,10 @@ each property is well formed and reads back as listed (DP6); a set answers
 everything it moved and nothing else (DP7); a value of the wrong kind, or
 outside what the table lists, is refused and changes nothing (DP8); an IDLE
 property is refused while armed, and an ALWAYS one is applied without
-stopping the acquisition (DP9); and the names never change (DP12).
+stopping the acquisition (DP9); and the names never change (DP12). A
+batch (``SetProperties``) is applied in the table's order and answered
+once (DP30); a bad entry refuses it whole (DP31); and a refusal partway
+keeps what was applied before it, and says so (DP32).
 
 The core's own tests (``tests/unit/devices/test_properties.py``) prove the
 checks are made before the adapter is called. These prove each adapter's
@@ -37,9 +40,11 @@ from stacscope.core.protocol import (
     GetProperties,
     GetProperty,
     PropertiesChanged,
+    PropertiesRefused,
     Property,
     PropertyAccess,
     PropertyKind,
+    SetProperties,
     SetProperty,
     StartDevice,
     StopDevice,
@@ -58,6 +63,9 @@ __all__ = [
     "test_dp9_an_always_property_is_applied_while_armed_and_the_acquisition_carries_on",
     "test_dp9_an_idle_property_is_refused_while_armed",
     "test_dp12_the_names_never_change",
+    "test_dp30_a_batch_answers_what_it_moved_whatever_the_maps_order",
+    "test_dp31_a_bad_entry_refuses_the_whole_batch",
+    "test_dp32_a_refusal_partway_keeps_what_came_before_it",
 ]
 
 type Value = bool | float | str
@@ -261,3 +269,51 @@ async def test_dp12_the_names_never_change(rig):
 
     assert armed == names
     assert list(await _table(rig)) == names
+
+
+# --- DP30-DP32: batches ---------------------------------------------------------
+
+
+async def test_dp30_a_batch_answers_what_it_moved_whatever_the_maps_order(rig):
+    """The rig's two changes, sent as one map in the order the table would
+    not put them."""
+    (moves, value, _), (always, later) = rig.moves, rig.always
+    order = list(await _table(rig))
+    values = dict(sorted({moves: value, always: later}.items(), key=lambda kv: -order.index(kv[0])))
+
+    reply = await rig.ask(SetProperties(values))
+
+    assert isinstance(reply, PropertiesChanged), reply
+    after = await _table(rig)
+    assert {moves, always} <= set(reply.properties)
+    assert all(reply.properties[n] == after[n] for n in reply.properties)
+
+
+async def test_dp31_a_bad_entry_refuses_the_whole_batch(rig):
+    name, value = rig.always
+    before = await _table(rig)
+
+    reply = await rig.ask(SetProperties({name: value, "no such property": 1.0}))
+
+    assert isinstance(reply, Rejected) and "no such property" in reply.reason
+    assert await _table(rig) == before
+
+
+async def test_dp32_a_refusal_partway_keeps_what_came_before_it(rig):
+    """Of the rig's two properties, the earlier in the table is given a good
+    value and the later one too large a value: the batch stops at the later,
+    and the earlier stays as it was set."""
+    table = await _table(rig)
+    order = list(table)
+    (first, good), (last, _) = sorted([rig.moves[:2], rig.always], key=lambda kv: order.index(kv[0]))
+    if table[last].maximum is None:
+        pytest.skip(f"{last} has no maximum to exceed")
+    too_large = table[last].maximum * 10 + 1
+
+    reply = await rig.ask(SetProperties({last: too_large, first: good}))
+
+    assert isinstance(reply, PropertiesRefused), reply
+    assert reply.name == last
+    after = await _table(rig)
+    assert first in reply.changed and reply.changed[first] == after[first]
+    assert after[last].value == table[last].value

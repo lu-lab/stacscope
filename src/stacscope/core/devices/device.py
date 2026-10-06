@@ -22,9 +22,11 @@ from stacscope.core.protocol import (
     GetProperty,
     Properties,
     PropertiesChanged,
+    PropertiesRefused,
     Property,
     PropertyAccess,
     PropertyKind,
+    SetProperties,
     SetProperty,
     StartDevice,
     StopDevice,
@@ -54,7 +56,13 @@ class NotReady(Exception):
 
 
 class PropertyRefused(Exception):
-    """A value a device's checks or its adapter would not take."""
+    """A value a device's checks or its adapter would not take. ``name`` is
+    the property, where the one raising it knows: an adapter taking a batch
+    whole raises it to say which property it refused."""
+
+    def __init__(self, reason: str, *, name: str = "") -> None:
+        super().__init__(reason)
+        self.name = name
 
 
 class TimedDevice(Actor):
@@ -93,6 +101,15 @@ class TimedDevice(Actor):
     order through the same checks during ``setup``, before an image buffer is
     created; a refused one fails the launch.
 
+    ``SetProperties`` sets several, in the table's order whatever the map's.
+    Everything but the limits is checked for the whole map first, and a
+    failure refuses it all. Then each is written and the table read again,
+    and the next checked against it; the first refused ends the batch, with
+    nothing put back, answered ``PropertiesRefused``. An adapter whose
+    hardware takes several settings in one call defines
+    ``write_properties`` and is handed the batch whole instead; its driver
+    then judges the limits.
+
     A role whose arm fails partway disarms what had armed below it. If that
     disarm fails too, the arm is still answered ``Rejected`` with a fatal
     ``Fault``, and then the device dies of the arm's error, as for any failed
@@ -100,6 +117,15 @@ class TimedDevice(Actor):
     """
 
     launch_settings: tuple[tuple[str, Value], ...] = ()
+
+    write_properties: Callable[[list[tuple[str, Value]]], Awaitable[None]] | None = None
+    """Defined by an adapter that takes a batch of values whole, as
+    ``async def write_properties(self, values)``: ``values`` is a list of
+    ``(name, value)`` in the table's order, each already checked as
+    ``write_property``'s are, but for the limits. Raise ``PropertyRefused``
+    with the ``name`` of the property refused; any other exception refuses
+    the batch without naming one. Left ``None``, a batch is written one
+    property at a time."""
 
     _arm_undo_failed: bool = False
     _holding: bool = False
@@ -264,6 +290,8 @@ class TimedDevice(Actor):
                 await self._get_property(name)
             case SetProperty(name, value):
                 await self._set_property(name, value)
+            case SetProperties(values):
+                await self._set_properties(values)
             case _:
                 # Ignored, told or asked (user, 2026-09-30), except a Fault,
                 # which the base passes up. An asker that sent the wrong thing
@@ -370,6 +398,58 @@ class TimedDevice(Actor):
         self.reply(changed)
         self.publish(changed)
 
+    async def _set_properties(self, values: dict[str, Value]) -> None:
+        try:
+            before = await self._table()
+        except Exception as exc:
+            self._reject(f"could not read the properties: {describe(exc)}")
+            return
+        try:
+            for name in values:
+                self._admitted(before, name, values[name])
+        except PropertyRefused as exc:
+            self._reject(str(exc))
+            return
+        # The table's order is the adapter's statement of which writes depend
+        # on which; a client's map order is not even kept by every language.
+        order = list(before)
+        batch = sorted(values.items(), key=lambda item: order.index(item[0]))
+        refused: PropertyRefused | None = None
+        try:
+            if self.write_properties is not None:
+                try:
+                    await self.write_properties([(n, self._admitted(before, n, v)) for n, v in batch])
+                except PropertyRefused as exc:
+                    refused = exc
+                except Exception as exc:
+                    refused = PropertyRefused(describe(exc))
+                table = await self._table()
+            else:
+                # Read again after every write: each is checked against limits
+                # as the writes before it left them (user, 2026-10-06).
+                table = before
+                for name, value in batch:
+                    try:
+                        await self._apply(table, name, value)
+                    except PropertyRefused as exc:
+                        refused = PropertyRefused(str(exc), name=name)
+                        break
+                    table = await self._table()
+        except Exception as exc:
+            self._reject(f"could not read the properties: {describe(exc)}")
+            return
+        moved = {n: p for n, p in table.items() if before.get(n) != p}
+        if refused is None:
+            changed = PropertiesChanged({n: p for n, p in table.items() if n in values or n in moved})
+            self.reply(changed)
+        else:
+            changed = PropertiesChanged(moved)
+            if self.sender is None:
+                self.report(Fault(self.ref, str(refused), fatal=False))
+            self.reply(PropertiesRefused(refused.name, str(refused), moved))
+        if changed.properties:
+            self.publish(changed)
+
     async def _apply(self, table: dict[str, Property], name: str, value: Value) -> None:
         """Check ``value`` against ``table``, then write it. Raises
         ``PropertyRefused`` for either refusal."""
@@ -385,6 +465,24 @@ class TimedDevice(Actor):
 
     def _checked(self, table: dict[str, Property], name: str, value: Value) -> Value:
         """``value`` as the adapter is handed it, or ``PropertyRefused``."""
+        value = self._admitted(table, name, value)
+        prop = table[name]
+        if prop.kind is PropertyKind.NUMBER:
+            unit = f" {prop.unit}" if prop.unit else ""
+            if prop.choices and value not in prop.choices:
+                choices = ", ".join(f"{c:g}" for c in prop.choices)
+                raise PropertyRefused(f"{name} must be one of {choices}{unit}, not {value:g}")
+            # Written so that NaN, which compares false, is refused.
+            if prop.minimum is not None and not value >= prop.minimum:
+                raise PropertyRefused(f"{name} must be at least {prop.minimum:g}{unit}, not {value:g}")
+            if prop.maximum is not None and not value <= prop.maximum:
+                raise PropertyRefused(f"{name} must be at most {prop.maximum:g}{unit}, not {value:g}")
+        return value
+
+    def _admitted(self, table: dict[str, Property], name: str, value: Value) -> Value:
+        """``value`` as the adapter is handed it, checked for everything but
+        the limits, which a batch's earlier writes may move; or
+        ``PropertyRefused``."""
         prop = table.get(name)
         if prop is None:
             raise PropertyRefused(f"{type(self).__name__} has no property {name!r}")
@@ -409,16 +507,6 @@ class TimedDevice(Actor):
             raise PropertyRefused(
                 f"{name} can be changed only while idle, not while {self.state.name}"
             )
-        if prop.kind is PropertyKind.NUMBER:
-            unit = f" {prop.unit}" if prop.unit else ""
-            if prop.choices and value not in prop.choices:
-                choices = ", ".join(f"{c:g}" for c in prop.choices)
-                raise PropertyRefused(f"{name} must be one of {choices}{unit}, not {value:g}")
-            # Written so that NaN, which compares false, is refused.
-            if prop.minimum is not None and not value >= prop.minimum:
-                raise PropertyRefused(f"{name} must be at least {prop.minimum:g}{unit}, not {value:g}")
-            if prop.maximum is not None and not value <= prop.maximum:
-                raise PropertyRefused(f"{name} must be at most {prop.maximum:g}{unit}, not {value:g}")
         return value
 
     async def teardown(self) -> None:

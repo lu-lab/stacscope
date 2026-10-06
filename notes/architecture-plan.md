@@ -4358,7 +4358,7 @@ Each flow keeps its own channel; the browser joins each at its own level.
   left out of M6 until a browser tool is planned. Later options: read-only
   origins, and a log stream as a publication once logging is designed.
 
-## Device properties *(decided 2026-10-05; DP1–DP29 built 2026-10-06; bulk writes next)*
+## Device properties *(decided 2026-10-05; DP1–DP35 built 2026-10-06; DPH1–DPH3 await the hardware)*
 
 **Decided (user, 2026-10-05):** every device has a table of properties,
 read and written through core messages that every `TimedDevice` answers. A
@@ -4682,6 +4682,47 @@ Where the pieces are:
       read-only `sensor_temperature`.
     - `SimulatedFreeRunningCamera` gained one property, `frame_interval`,
       so that DP17 runs against a device in a process of its own.
+
+### Built: bulk writes (DP30–DP35, 2026-10-06)
+
+`SetProperties(values)` is answered `PropertiesChanged`, `Rejected` (the
+up-front checks failed, so nothing was applied) or `PropertiesRefused(name,
+reason, changed)`. The table is re-read between writes (the user's
+decision). The uEye takes a batch whole, so that its AOI is one call. The
+client has `set_many`. DPH3, the measurement these were added for, is in
+both cameras' hardware tests. **Whether to keep bulk writes is decided
+after DPH3 runs** (user, 2026-10-05), weighing its timings against what
+they added:
+- `TimedDevice._set_properties`, about 50 lines;
+- the uEye's `write_properties`, 20;
+- `PropertiesRefused` and `set_many`;
+- 22 test functions, 28 runs with the contract's three adapters.
+
+**Claude's judgment calls, for the user to confirm:**
+11. **Every property named in a batch is answered**, moved or not, as a
+    single set always answers the one set.
+12. **The whole-batch hook is `write_properties`**, a method an adapter
+    defines; left `None` on `TimedDevice`, the core writes one at a time.
+    - It is handed `(name, value)` pairs in the table's order, checked for
+      everything but limits.
+    - It names the property it refuses by raising
+      `PropertyRefused(reason, name=...)`; any other exception refuses the
+      batch with an empty `name`.
+13. **A first write refused on its limits** is answered `PropertiesRefused`
+    with nothing changed, not `Rejected`: `Rejected` means only that the
+    map failed its up-front checks. Nothing is published.
+14. **A batch told without waiting and refused partway** reports a
+    non-fatal `Fault` to the parent, as a refused single set told without
+    waiting does.
+15. **In a uEye batch the driver judges every limit**, not only the AOI's:
+    following the user's decision, the core does not check limits in a
+    batch it does not write itself. Only the AOI is grouped; the rest are
+    written one at a time, in the table's order.
+16. **`SimulatedCamera` writes a batch one property at a time.** Its table
+    lists `aoi_x` before `aoi_width`, so moving the AOI right while
+    narrowing it fails there, as on any device without a whole-batch hook:
+    no single order serves both directions. DP34 is the uEye's.
+17. **No command-line form for batches**; the plan named none.
 
 ## Subsequent milestones
 

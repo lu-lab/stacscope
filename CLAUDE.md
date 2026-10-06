@@ -46,11 +46,14 @@ presses a real Ctrl-C, in a hidden console of the engine's own on Windows. Its
   and `dict[str, T]`. **DP1–DP29 are built and green (2026-10-06)**: the
   Flash and the uEye have tables, their own message modules are gone, the
   client imports no adapter, clients may subscribe to devices, and the
-  link now routes refs that cross inside a message. Its judgment calls
-  1–10 ("Built") await the user. **Next: bulk writes, DP30–DP35**
-  (`SetProperties`; the table is re-read between writes, user,
-  2026-10-06), then DPH1–DPH3 on the hardware. Each machine's
-  `config/rig.toml` must move the uEye's launch arguments into `settings`;
+  link now routes refs that cross inside a message. **Bulk writes,
+  DP30–DP35, are built too** (`SetProperties`, `PropertiesRefused`,
+  `Client.set_many`; the table is re-read between writes, user,
+  2026-10-06; the uEye takes a batch whole for its AOI). Judgment calls
+  1–17 (the plan's two "Built" sections) await the user. **Next: DPH1–DPH3
+  on the hardware**, after which the user decides whether bulk writes
+  stay. Each machine's `config/rig.toml` must move the uEye's launch
+  arguments into `settings`;
 - the session model, which the user expects as a recording session config
   interface;
 - logging and error reporting;

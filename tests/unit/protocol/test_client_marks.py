@@ -31,6 +31,7 @@ CLIENT_SENDABLE = {
     "GetProperties",
     "GetProperty",
     "SetProperty",
+    "SetProperties",
 }
 
 

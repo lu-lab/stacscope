@@ -259,6 +259,52 @@ async def test_dp27_a_width_past_the_sensors_edge_is_refused_before_anything_cha
     assert fake.calls.count("is_AOI") - sets < 6  # read, never set: no rectangle was sent
 
 
+# --- DP36: a trigger delay of 0 is off -------------------------------------------------------------
+#
+# The driver takes 0 as "no delay" (IDS: "0 = deactivate trigger delay"), and
+# its IS_GET_MIN_TRIGGER_DELAY is the shortest delay it can turn on: 15 us on
+# the instrument's camera, which refuses 1 to 14 us (probed, 2026-10-06). The
+# table's limits cannot say {0} and [15 us, 4 s], so its minimum is 0 and the
+# driver refuses the gap. Before this, the table declared 15 us and its own
+# value, 0, was out of range: a delay once set could never be turned off.
+
+
+async def test_dp36_the_tables_trigger_delay_starts_at_0_below_the_drivers_shortest_delay(launch, fake):
+    """The minimum 0 is the API's, not this camera's: the shortest delay
+    still comes from the driver, and nothing in the table names 15 us."""
+    _, ref, _ = await launch(fake)
+
+    delay = (await _ask(ref, GetProperties())).properties["trigger_delay"]
+
+    assert (delay.value, delay.minimum, delay.maximum) == (0.0, 0.0, 4.0)
+
+
+async def test_dp36_a_delay_once_set_can_be_turned_off(launch, fake):
+    _, ref, _ = await launch(fake)
+    await _ask(ref, SetProperty("trigger_delay", 100e-6))
+
+    answer = await _ask(ref, SetProperty("trigger_delay", 0.0))
+
+    assert isinstance(answer, PropertiesChanged)
+    assert answer.properties["trigger_delay"].value == 0.0
+    assert fake.trigger_delay_us == 0
+
+
+async def test_dp36_a_delay_shorter_than_the_drivers_shortest_is_the_drivers_to_refuse(launch, fake):
+    """The adapter does not know the camera's 15 us; the driver's refusal is
+    the reason the client sees, and the delay is as it was."""
+    _, ref, listener = await launch(fake)
+    await _ask(ref, SetProperty("trigger_delay", 100e-6))
+
+    answer = await _ask(ref, SetProperty("trigger_delay", 5e-6))
+
+    assert isinstance(answer, Rejected)
+    assert "is_SetTriggerDelay" in answer.reason and "IS_INVALID_PARAMETER" in answer.reason
+    assert fake.trigger_delay_us == 100
+    assert _faults(listener) == []
+    assert isinstance(await _ask(ref, SetProperty("trigger_delay", 15e-6)), PropertiesChanged)
+
+
 # --- DP34: moving the AOI right while narrowing it ---------------------------------------------
 
 

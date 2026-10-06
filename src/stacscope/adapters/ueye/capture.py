@@ -501,8 +501,10 @@ class UEyeFrameCapture:
 
     def set_trigger(self, edge: str, delay_us: int = 0) -> tuple[str, int]:
         """Trigger on the ``edge`` ("rising" or "falling") of the trigger
-        input, and begin exposing ``delay_us`` microseconds after it. Returns
-        the trigger as the camera took it."""
+        input, and begin exposing ``delay_us`` microseconds after it; 0 is
+        no delay. Returns the trigger as the camera took it. Raises
+        ``UEyeError`` for a delay the driver refuses, among them one between
+        0 and the shortest in ``trigger_delay_range``."""
         self._require_open()
         if edge not in TRIGGER_EDGES:
             raise ValueError(f"a trigger edge is rising or falling, not {edge!r}")
@@ -512,7 +514,8 @@ class UEyeFrameCapture:
 
     def trigger_delay_range(self) -> tuple[int, int, int]:
         """The shortest and longest trigger delay, and its step, in
-        microseconds."""
+        microseconds. The shortest is the shortest delay the camera can
+        turn on; 0, no delay, is allowed too."""
         self._require_open()
         return tuple(
             int(self._u.is_SetTriggerDelay(self._h, getattr(self._u, query)))

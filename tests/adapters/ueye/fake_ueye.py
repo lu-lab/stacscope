@@ -169,6 +169,9 @@ IS_GET_TRIGGER_DELAY = 0x8000
 IS_GET_MIN_TRIGGER_DELAY = 0x8001
 IS_GET_MAX_TRIGGER_DELAY = 0x8002
 IS_GET_TRIGGER_DELAY_GRANULARITY = 0x8003
+MIN_TRIGGER_DELAY_US = 15
+"""The shortest delay the camera can turn on, as the UI-3240CP-NIR reports
+it (2026-10-06). 0 turns the delay off; 1 to 14 us are refused."""
 MAX_TRIGGER_DELAY_US = 4_000_000
 
 IS_IMAGE_QUEUE_CMD_INIT = 0
@@ -635,12 +638,12 @@ class FakeUEye:
             if delay == IS_GET_TRIGGER_DELAY:
                 return self.trigger_delay_us
             if delay == IS_GET_MIN_TRIGGER_DELAY:
-                return 0
+                return MIN_TRIGGER_DELAY_US
             if delay == IS_GET_MAX_TRIGGER_DELAY:
                 return MAX_TRIGGER_DELAY_US
             if delay == IS_GET_TRIGGER_DELAY_GRANULARITY:
                 return 1
-            if not 0 <= delay <= MAX_TRIGGER_DELAY_US:
+            if delay != 0 and not MIN_TRIGGER_DELAY_US <= delay <= MAX_TRIGGER_DELAY_US:
                 return IS_INVALID_PARAMETER
             self.trigger_delay_us = delay
             return IS_SUCCESS

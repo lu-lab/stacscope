@@ -12,7 +12,9 @@ and changed with SetProperty, in seconds, hertz and pixels:
     frame_rate       Hz; under a trigger it bounds the exposure
     exposure         seconds
     trigger_edge     rising or falling
-    trigger_delay    seconds from the trigger to the exposure
+    trigger_delay    seconds from the trigger to the exposure; 0 is none,
+                     and the camera refuses a delay shorter than the
+                     shortest it can turn on
 
 Each is listed with the limits the camera gives now, which move as the
 others are set: a slower pixel clock lowers the fastest frame rate, and a
@@ -149,7 +151,13 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
         (sensor_w, sensor_h), (min_w, min_h) = grid.sensor, grid.smallest
         shortest, longest, _ = capture.frame_time_range()
         exposure_min, exposure_max, exposure_step = capture.exposure_range()
-        delay_min, delay_max, delay_step = capture.trigger_delay_range()
+        # The driver's minimum is the shortest delay it can turn on; 0 turns
+        # the delay off (IDS: "0 = deactivate trigger delay"). Limits cannot
+        # say {0} and [minimum, maximum], so the table starts at 0 and the
+        # driver refuses the gap with IS_INVALID_PARAMETER (15 us on the
+        # instrument's camera, 2026-10-06). Declaring the driver's minimum
+        # put the table's own 0 out of range: a delay could never be undone.
+        _, delay_max, delay_step = capture.trigger_delay_range()
         edge, delay_us = capture.trigger()
         clocks = tuple(float(mhz * 1_000_000) for mhz in capture.pixel_clocks())
 
@@ -171,7 +179,7 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
             ),
             Property("trigger_edge", _LABEL, edge, labels=tuple(TRIGGER_EDGES)),
             Property(
-                "trigger_delay", _NUMBER, delay_us / 1e6, "s", delay_min / 1e6, delay_max / 1e6, delay_step / 1e6
+                "trigger_delay", _NUMBER, delay_us / 1e6, "s", 0.0, delay_max / 1e6, delay_step / 1e6
             ),
         ]  # fmt: skip
 

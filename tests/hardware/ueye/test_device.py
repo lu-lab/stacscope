@@ -386,3 +386,28 @@ async def test_dph3_a_batch_against_the_same_settings_one_at_a_time(camera, repo
         f"AOI right and narrower in one batch: {type(moved).__name__}"
     )
     assert isinstance(moved, PropertiesChanged)
+
+
+async def test_dph4_a_trigger_delay_can_be_turned_off_and_the_driver_refuses_the_gap(camera, report):
+    """DP36 on the camera. The driver's shortest delay (15 us here) is the
+    shortest it can turn on, and 0 turns the delay off; the table starts at
+    0, so a delay once set can be undone, and a delay in the gap reaches
+    the driver, whose refusal the client sees. No trigger is fired."""
+    async with ueye_camera(camera, report) as (_, ref, listener):
+        delay = (await _ask(ref, GetProperties())).properties["trigger_delay"]
+        set_on = await _ask(ref, SetProperty("trigger_delay", 100e-6))
+        set_off = await _ask(ref, SetProperty("trigger_delay", 0.0))
+        in_gap = await _ask(ref, SetProperty("trigger_delay", 5e-6))
+        after = (await _ask(ref, GetProperties())).properties["trigger_delay"].value
+        faults = [m for m in listener.heard if isinstance(m, Fault)]
+    report(
+        f"table {delay.minimum}..{delay.maximum} s step {delay.step}; 100 us -> "
+        f"{set_on.properties['trigger_delay'].value}; 0 -> {set_off.properties['trigger_delay'].value}; "
+        f"5 us -> {in_gap}; then {after}"
+    )
+    assert (delay.value, delay.minimum) == (0.0, 0.0)
+    assert set_on.properties["trigger_delay"].value == pytest.approx(100e-6)
+    assert set_off.properties["trigger_delay"].value == 0.0
+    assert isinstance(in_gap, Rejected) and "IS_INVALID_PARAMETER" in in_gap.reason
+    assert after == 0.0
+    assert faults == []

@@ -1133,7 +1133,7 @@ of how the milestone got here.
     after stop, which waits for the recorder to finish and returns a
     `RecordingStatus`. Detach and close close an open file first. 15
     mutants, all caught.
-  - **Device (O8–O12, 19 tests):** `OrcaFlash(ImageStreaming, Recording,
+  - **Device (O8–O12, 19 tests):** `DcamCamera(ImageStreaming, Recording,
     TimedDevice)`. The arm is refused, arming nothing, when no directory
     is set, the file exists (never overwritten), or the disk has no room
     for a frame. A missing directory is refused at launch and by message.
@@ -1157,7 +1157,7 @@ of how the milestone got here.
   - Suites: default 569 on 3.14t and 3.14; DCAM 382 passed, 2 skipped with
     both SDKs set (`STACSCOPE_DCIMG_SDK` for the reader's conformance);
     camera V1–V6 all passed.
-- **The `OrcaFlash` device, green over the fake and on the camera
+- **The `DcamCamera` device, green over the fake and on the camera
   (2026-09-25, third and fourth sessions).** Committed as `38be552`; the
   camera run and the fake's BUSY change after it.
   - **V1–V3 on the camera: 3 passed** (the user allowed Claude to run the
@@ -1188,7 +1188,7 @@ of how the milestone got here.
       `SetPropertyLabel(name, label: str)` and `GetProperty(name)`;
     - every answer: `PropertyValue(name, value, label | None)`, or
       `Rejected` with DCAM's text.
-  - **The device** (`adapters/dcam/camera.py`): `OrcaFlash(ImageStreaming,
+  - **The device** (`adapters/dcam/camera.py`): `DcamCamera(ImageStreaming,
     TimedDevice)`, over `DcamFrameCapture`, with `in_flight=2` by default
     (`IN_FLIGHT`).
     - `settings=[(name, value), ...]` is applied in `setup`, in order,
@@ -1221,7 +1221,7 @@ of how the milestone got here.
     describes it: "cannot access during this DCAM STATUS".
     `refused_while_attached` can be emptied.
   - **Tests:**
-    - `tests/adapters/dcam/test_orca_flash.py` (O1–O7) and
+    - `tests/adapters/dcam/test_dcam_camera.py` (O1–O7) and
       `test_role_contract.py` (F1–F6 on the device, two formats).
     - 12 mutants, all caught. The first O6 heartbeat test was vacuous: the
       runtime answers a heartbeat on receipt, before `setup` runs. It now
@@ -1236,7 +1236,7 @@ of how the milestone got here.
     - V2: 5 software-triggered frames at 256 rows, published and stamped.
     - V3: while armed, whether the Flash takes an exposure change and
       refuses a subarray.
-  - The earlier "`DcamCamera`" in "5b" below is this `OrcaFlash`.
+  - The earlier "`DcamCamera`" in "5b" below is this `DcamCamera`.
 - **5d: the adapter on the camera, done and green (2026-09-25, second
   session; the user allowed Claude to run the camera and the DAQ).
   Committed as `e489314`.** `tests/hardware/dcam/`, gated on `STACSCOPE_CAMERA` (the
@@ -1316,11 +1316,11 @@ of how the milestone got here.
     `STACSCOPE_DCAM_SDK`); camera: S 7, K 144 + 6 skipped, M1 9, M2–M5 4.
   - **Decided (user, 2026-09-25):**
     - **The Flash declares `in_flight=2`**: the observed 1 plus a margin
-      of 1. The adapter keeps no default; the `OrcaFlash` device passes 2.
+      of 1. The adapter keeps no default; the `DcamCamera` device passes 2.
     - **`fire_trigger` stays synchronous.** "A software trigger is
       unreliable for fast timing anyway": fast acquisitions are triggered
       by the DAQ.
-  - **Next:** the `OrcaFlash(ImageStreaming, Recording, TimedDevice)` device
+  - **Next:** the `DcamCamera(ImageStreaming, Recording, TimedDevice)` device
     actor over `DcamFrameCapture` (with `in_flight=2`), with its own
     settings messages, then 5e. (Built without `Recording`: see the entry
     above.) Committed as `e489314`; it, `07bc7fa`
@@ -1611,7 +1611,7 @@ of how the milestone got here.
   - `ImageStreaming.disarm` is now `arm` mirrored: stop, final pass, the
     rest of the chain, then detach (in a `finally`). It used to detach
     before the chain disarmed.
-  - So `OrcaFlash(ImageStreaming, Recording, TimedDevice)` arms as attach,
+  - So `DcamCamera(ImageStreaming, Recording, TimedDevice)` arms as attach,
     arm camera, open file, start; and disarms as stop, publish last frames,
     close file, disarm camera, detach. That is Hamamatsu's recording sample
     (`samples/cpp/recording/recording.cpp`: alloc, rec_open, cap_record,
@@ -1702,7 +1702,7 @@ of how the milestone got here.
     it anyway, because `attach` needs the new slots and `start` needs
     `attach`.
   - **Next: the `Recording` change (5b).** With
-    `class OrcaFlash(Recording, ImageStreaming, TimedDevice)`, `Recording`'s
+    `class DcamCamera(Recording, ImageStreaming, TimedDevice)`, `Recording`'s
     disarm closes the file *before* the capture stops. DCIMG needs the
     opposite order, and needs the file opened between attach and start.
 - **K1–K8 are written and green in simulation, committed as `eb1882a`** (CLAUDE.md
@@ -2748,7 +2748,7 @@ legacy camera actor's block diagrams, then settled with the user.
   such as ROI and exposure. A 1D PMT readout, or a computational producer such
   as an SLM or projector pattern, streams images without them. With mixins
   there is no camera base class: a camera is a composition, such as
-  `class OrcaFlash(Recording, ImageStreaming, TimedDevice)` holding a
+  `class DcamCamera(Recording, ImageStreaming, TimedDevice)` holding a
   `FrameCapture`, plus its own settings messages.
 - **Hardware sits under the role behind a port, `FrameCapture`** *(name
   confirmed 2026-09-24: "frame", not "image", because the port is the frame
@@ -3993,7 +3993,7 @@ in row order). Each `[devices.<name>]` holds the rig's keys (`kind`,
 arrays as tuples. Checked at load, naming table and key: unknown keys,
 kinds and placements; options bound against the device class's signature,
 so a misspelt setting fails there (the adapter modules import without their
-vendor packages, so this needs none). `kind` is a short name (`orca_flash`,
+vendor packages, so this needs none). `kind` is a short name (`dcam`,
 `ueye`, `simulated_camera`, `simulated_free_running_camera`) or
 `package.module:Class`, so a new adapter needs no registry change.
 - **`trigger`** names the digital line, by label, that triggers a device.
@@ -4358,7 +4358,7 @@ Each flow keeps its own channel; the browser joins each at its own level.
   left out of M6 until a browser tool is planned. Later options: read-only
   origins, and a log stream as a publication once logging is designed.
 
-## Device properties *(decided 2026-10-05; DP1–DP35 built 2026-10-06; DPH1–DPH3 await the hardware)*
+## Device properties *(decided 2026-10-05; DP1–DP36 built 2026-10-06; DPH1–DPH4 passed on the hardware 2026-10-06)*
 
 **Decided (user, 2026-10-05):** every device has a table of properties,
 read and written through core messages that every `TimedDevice` answers. A
@@ -4372,7 +4372,8 @@ properties"; in short:
 - **one property write per message** is the basic form. **Bulk writes are
   added too, to be measured rather than guessed at** (user, 2026-10-05),
   with the provision that they may be removed if they add too much
-  complexity (see "Bulk writes" below);
+  complexity (see "Bulk writes" below). **They stay** (user, 2026-10-06,
+  from DPH3: "they seem useful");
 - the codec gains a `bool | float | str` union, chosen by the value's type
   on the wire, and `dict[str, T]`, a msgpack map with string keys;
   `GetProperties` answers a map;
@@ -4424,7 +4425,7 @@ properties"; in short:
    launch arguments (`aoi`, `pixel_clock`, `frame_rate_fps`, `exposure_ms`,
    `trigger_edge`, `trigger_delay_us`) become settings.
 5. **The cameras.**
-   - `OrcaFlash`: every property the camera supports, by its own names,
+   - `DcamCamera`: every property the camera supports, by its own names,
      found through `dcamprop_getnextid`. Limits, step, unit and access come
      from DCAM's attributes (`dcamprop_getattr`, a new binding, its struct
      checked against the installed headers like the others). Its own
@@ -4480,6 +4481,11 @@ standard property names the engine could act on (exposure, for the timing
 floors), until something needs one.
 
 ### Bulk writes — built to be measured, and removable
+
+**Kept (user, 2026-10-06), from DPH3's timings: "Bulk writes seem useful so
+keep them."** On the Flash a batch of three took 371 ms against 554 ms one
+at a time; on the uEye it saved no time but moved the AOI in one step
+(DP34).
 
 **Decided (user, 2026-10-05): add them, so they are tested rather than
 guessed at; they may be removed if they add too much complexity.** Judge
@@ -4577,10 +4583,12 @@ Bulk writes (simulated unless named)
 - DP33. An adapter that takes the batch whole receives it whole, and the table is read twice; one that does not receives one write at a time.
 - DP34. The uEye (over its fake): a batch moving the AOI right while narrowing it is applied, where the same two writes sent singly, x first, have the first refused.
 - DP35. `Client.set_many(device, values)` returns what moved, and raises `Refused` carrying what moved on `PropertiesRefused` or `Rejected`.
+- DP36. The uEye (over its fake, which reports a 15 µs shortest delay and refuses 1–14 µs as the camera does): `trigger_delay`'s minimum is 0, a delay once set can be set back to 0, and a delay between 0 and the driver's shortest reaches the driver, whose refusal is the `Rejected` reason; the delay is unchanged and the device carries on (user, 2026-10-06: option (a), the driver does the refusing, and the adapter holds no camera's number).
 
 On the hardware *(user-run, when testing resumes)*
 - DPH1. The Flash: the table matches what DCAM reports, and a set's answer matches reading the table before and after by hand.
 - DPH2. The uEye: setting the pixel clock moves the frame rate's and exposure's limits as the fake predicts.
+- DPH4. The uEye: DP36 on the camera; no trigger is fired.
 - DPH3. The time of `GetProperties`, of `SetProperty` with its re-read, and of a `SetProperties` of N settings against N single writes, on each camera: decision 1's cost, and the evidence for keeping or removing bulk writes.
 
 ### Built (DP1–DP29, 2026-10-06)
@@ -4626,7 +4634,7 @@ Where the pieces are:
    reaches after its adapter has opened the hardware and before
    `ImageStreaming` creates the segment. A refusal raises `PropertyRefused`,
    naming the setting, and fails the launch.
-5. **DCAM** (`OrcaFlash`):
+5. **DCAM** (`DcamCamera`):
    - It lists every property DCAM says it can read, decided once at launch,
      since names may not change. A property it cannot read is not listed.
    - A mode is a LABEL of the camera's labels; every other property is a
@@ -4723,6 +4731,101 @@ they added:
     narrowing it fails there, as on any device without a whole-batch hook:
     no single order serves both directions. DP34 is the uEye's.
 17. **No command-line form for batches**; the plan named none.
+
+### On the hardware (DP22, DPH1–DPH4, 2026-10-06)
+
+Run on CHBE-EBB3233D1 with the user's permission for the session. All
+passed: DP22 against the installed SDK headers; V1–V3, V6, DPH1 and DPH3
+on the Flash; W1–W4, DPH2 and DPH3 on the uEye; G13 with the migrated
+`config/rig.toml` (100 cycles, 3100 Flash frames, 100 uEye pages, no
+faults). The whole Flash suite passed after the changes below (173 passed,
+9 skipped), and so did the whole uEye suite (124 passed, 4 skipped).
+
+What had to change:
+- **DP22**: the header names the unit `DCAMPROP_UNIT_CELSIUS`, not
+  `CENTIGRADE`. The constant is renamed (`PROPUNIT_CELSIUS`); its value, 2,
+  was right. `DCAMPROP_ATTR` and every other constant matched.
+- **The Flash's device tests launched at a 1 ms exposure**, below the
+  Flash's floor of 1.00367 ms (103 line intervals of 9.744 µs). DCAM clamps
+  1 ms up to it, so the capture-level tests never noticed; the device's
+  property checks refuse it (DP8), so every device test failed at launch.
+  `SOFTWARE` in `dcam_rig.py` is now 2 ms, and DPH1's set moved to 5 ms so
+  that it still changes something.
+
+DPH3, medians of five:
+
+| | Flash | uEye |
+|---|---|---|
+| `GetProperties` | 82.6 ms, 75 properties | 0.3 ms, 10 properties |
+| `SetProperty` with its two reads | about 180 ms | 35 ms (pixel clock; the driver's write) |
+| 3 settings in a batch | 371 ms | 39.0 ms |
+| the same 3 one at a time | 554 ms | 39.0 ms |
+
+The Flash's cost is the table read, about 1.1 ms a property (attributes,
+value and label for each), and a batch saves one read per setting after
+the first. The uEye's read is free, so a batch saves nothing in time; what
+it does do is DP34, moving the AOI right while narrowing it in one step,
+which passed on the camera.
+
+**Findings for the user:**
+1. **A driver that clamps meets a core that refuses.** DCAM takes 1 ms and
+   applies 1.00367 ms; the core refuses 1 ms as below the minimum. This is
+   DP8 as approved, but a value typed from a datasheet ("1 ms minimum
+   exposure") is refused. It is not a driver bug: DCAM's API reference
+   says a property with `DCAMPROP_ATTR_AUTOROUNDING` "will usually
+   round-up to the next valid value or round-down if the value is bigger
+   than maximum", and the Flash's property reference gives the range as
+   0.001003669 to 10.0 s. On the camera, seven properties carry the flag:
+   TRIGGER DELAY, EXPOSURE TIME, INTERNAL LINE SPEED, INTERNAL LINE
+   INTERVAL, OUTPUT TRIGGER DELAY[0], OUTPUT TRIGGER PERIOD[0] and MASTER
+   PULSE INTERVAL. The adapter does not read the flag.
+   **Decided (user, 2026-10-06): report the nominal limits the device
+   returns.** The table keeps `dcamprop_getattr`'s limits as they are, the
+   core goes on refusing outside them (DP8), and the adapter neither reads
+   `AUTOROUNDING` nor widens a limit. Nothing in the adapter may assume the
+   camera is a Flash: its limits are whatever the camera states. No code
+   changed; this was already so.
+
+**No adapter assumes a camera model (user, 2026-10-06).** From an audit of
+the DCAM adapter for the Flash:
+1. `OrcaFlash` is renamed `DcamCamera`, and the rig config's kind
+   `orca_flash` is `dcam`, everywhere, with no alias (no config outside
+   this repository used them). `tests/adapters/dcam/test_orca_flash.py` is
+   `test_dcam_camera.py`. Device names such as `flash` in a rig config are
+   the rig's own and stay.
+2. `IN_FLIGHT = 2`, measured on the Flash, stays the default: `in_flight`
+   is a configured parameter, and the rig config is for specific devices.
+   Whoever sets up another instrument measures their own.
+3. Listing a mode's labels ends at `DCAMERR_OUTOFRANGE`, as the Flash ends
+   it. A comment marks it as a possible future bug for a camera that ends
+   it otherwise; it is not solved ahead of one.
+4. Docstrings name no model; comments may name the camera a fact was
+   measured on. The fakes say which camera they are built to match: the
+   ORCA-Flash4.0 V3 (C13440-20C) for DCAM, and the instrument's
+   Thorlabs-branded IDS UI-3240CP-NIR for the uEye.
+2. **The uEye's `trigger_delay` cannot go back to 0.** The driver reads 0
+   as "no delay" (the manual: "0 = deactivate trigger delay"), and its
+   minimum, 15 µs, is the smallest nonzero delay. The table declares 15 µs
+   to 4 s, so its own current value, 0, is out of range, and a client that
+   sets a delay can never turn it off. The rig config sets no delay.
+   Not a driver bug: the driver is as documented. Probed on the camera
+   (2026-10-06, no triggers, no capture): the range reads 15 µs to 4 s,
+   step 1 µs; 0 is accepted from any delay and reads back 0; 1, 5 and
+   14 µs are refused with `IS_INVALID_PARAMETER` (125) and leave the delay
+   as it was; 15, 16 and 17 µs are taken exactly. The shortest trigger
+   period moves by the delay (124.461 ms at 0, 124.476 at 15, 124.561 at
+   100). So the domain is {0} ∪ [15 µs, 4 s], which a `Property`'s limits
+   cannot say. The fake answers `IS_GET_MIN_TRIGGER_DELAY` with 0, which
+   is why no simulated test met this.
+   **Resolved (user, 2026-10-06): option (a), with the driver refusing.**
+   The table's minimum is 0, the API's meaning, not this camera's; the
+   maximum and step still come from the driver, and a delay in the gap
+   reaches the driver, which refuses it with `IS_INVALID_PARAMETER`. The
+   adapter names no camera's shortest delay, so the table no longer shows
+   it. The fake now reports 15 µs and refuses 1–14 µs. DP36 went red
+   (with DP25 and the property contract's DP6, which caught the table's
+   value outside its own limits) before the fix; DPH4 passed on the
+   camera.
 
 ## Subsequent milestones
 
@@ -5598,7 +5701,8 @@ policy, or state the Coordinator shouldn't hold.
     confirm, when bulk writes would earn their place, and the draft
     acceptance tests (DP1–DP29, DPH1–DPH3) are in "Device properties",
     after Milestone 6. Bulk writes were then added after all, to be
-    measured, and may be removed (user, 2026-10-05).
+    measured, and may be removed (user, 2026-10-05); measured, they stay
+    (user, 2026-10-06).
   - *To decide:*
     - settings that bound each other (the uEye's pixel clock bounds the
       frame rate, which bounds the exposure): does an answer report every

@@ -50,10 +50,21 @@ presses a real Ctrl-C, in a hidden console of the engine's own on Windows. Its
   DP30–DP35, are built too** (`SetProperties`, `PropertiesRefused`,
   `Client.set_many`; the table is re-read between writes, user,
   2026-10-06; the uEye takes a batch whole for its AOI). Judgment calls
-  1–17 (the plan's two "Built" sections) await the user. **Next: DPH1–DPH3
-  on the hardware**, after which the user decides whether bulk writes
-  stay. Each machine's `config/rig.toml` must move the uEye's launch
-  arguments into `settings`;
+  1–17 (the plan's two "Built" sections) await the user. **DP22 and
+  DPH1–DPH4 passed on the hardware (2026-10-06)**, and so did G13 with the
+  dev box's `config/rig.toml` migrated (the uEye's launch arguments are
+  `settings` now; any other machine's must move them too). **Bulk writes
+  stay** (user, 2026-10-06, from DPH3). DCAM's table reports the nominal
+  limits the camera returns, and the core refuses outside them, though
+  DCAM would round (`DCAMPROP_ATTR_AUTOROUNDING`; user, 2026-10-06). The
+  uEye's `trigger_delay` starts at 0, which turns it off, and the driver
+  refuses delays shorter than its own shortest (DP36, DPH4). **Neither
+  adapter may assume one camera model** (user): a limit or quirk the
+  driver reports is read from it, never written into the adapter.
+  Docstrings name no model; comments may name the camera a fact was
+  measured on. So `OrcaFlash` is now `DcamCamera`, and the rig config's
+  kind `orca_flash` is `dcam`. The
+  plan's "On the hardware" under "Device properties" has the record;
 - the session model, which the user expects as a recording session config
   interface;
 - logging and error reporting;
@@ -217,7 +228,7 @@ section explains why.
   `tests/contract/image_streaming_contract.py`. A mixin shares the actor's
   attribute namespace: a role flag named `_stopping` once stopped the whole
   actor. **The `Recording` change is done**: the device picks where its
-  file opens by where it lists `Recording`. `OrcaFlash(ImageStreaming,
+  file opens by where it lists `Recording`. `DcamCamera(ImageStreaming,
   Recording, TimedDevice)` arms as attach, arm camera, open file, start, and
   disarms as stop, publish, close file, disarm camera, detach (DCAM's order).
   `ImageStreaming.disarm` is now `arm` mirrored, and a file that fails to
@@ -260,10 +271,10 @@ section explains why.
   - The Flash declares `in_flight=2`: measured 1, plus a margin (user,
     2026-09-25). `fire_trigger` stays synchronous; fast acquisitions are
     DAQ-triggered (user).
-  - **The `OrcaFlash` device is green over the fake and on the camera**
+  - **The `DcamCamera` device is green over the fake and on the camera**
     (O1–O12, the role contract F1–F6 in
     `tests/adapters/dcam/test_role_contract.py`, and V1–V6 in
-    `tests/hardware/dcam/`): `OrcaFlash(ImageStreaming, Recording,
+    `tests/hardware/dcam/`): `DcamCamera(ImageStreaming, Recording,
     TimedDevice)` in `adapters/dcam/camera.py`. Its messages are in
     `adapters/dcam/messages.py` (user, 2026-09-25):
     - `SetProperty(name, value)`, `SetPropertyLabel(name, label)` and
@@ -332,7 +343,7 @@ section explains why.
     `ShortestTriggerPeriod(seconds)` is in `core/protocol/messages.py`. On
     the camera, `tests/hardware/ueye/test_device.py` (W1–W3) shows 20 fps
     full-frame RAW10 through the device, and too-fast triggers ending an
-    acquisition with a fatal Fault. **`OrcaFlash` answers the same query**
+    acquisition with a fatal Fault. **`DcamCamera` answers the same query**
     from DCAM's `TIMING MIN TRIGGER INTERVAL` (O12 over the fake, V6 on
     the Flash). The whole Flash suite passed again on 2026-10-01.
 

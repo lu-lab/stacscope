@@ -1,7 +1,8 @@
-"""E1-E7: the UEyeCamera device over the fake pyueye, beyond the
-ImageStreaming role contract (test_role_contract.py): its settings messages,
-the shortest trigger period, the settings its config applies at launch,
-opening the camera without stalling the actor runtime, and recording.
+"""E1-E7 and DP25-DP28: the UEyeCamera device over the fake pyueye, beyond
+the ImageStreaming role contract (test_role_contract.py) and the property
+contract (test_property_contract.py): its table of properties, the shortest
+trigger period, the settings its config applies at launch, opening the
+camera without stalling the actor runtime, and recording.
 
 The capture takes frames in a thread, so this runs on a real clock, and
 every step allows ``GRACE`` for a thread to hand its result back.
@@ -12,6 +13,7 @@ Not part of the default run:
 """
 
 import asyncio
+import importlib
 import pathlib
 import sys
 import threading
@@ -19,10 +21,13 @@ import uuid
 
 import pytest
 from fake_ueye import (
+    EXPOSURE_STEP_MS,
     IS_CM_SENSOR_RAW8,
     IS_CM_SENSOR_RAW10,
     IS_SET_TRIGGER_HI_LO,
+    IS_SET_TRIGGER_LO_HI,
     PIXEL_CLOCKS,
+    SENSOR,
     FakeUEye,
 )
 
@@ -30,23 +35,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 
 from image_streaming_contract import Listener  # noqa: E402
 
-from stacscope.adapters.ueye import (  # noqa: E402
-    AOI,
-    CameraSettings,
-    Exposure,
-    FrameRate,
-    GetCameraSettings,
-    PixelClock,
-    PixelFormat,
-    SetAOI,
-    SetExposure,
-    SetFrameRate,
-    SetPixelClock,
-    SetPixelFormat,
-    SetTrigger,
-    Trigger,
-    UEyeCamera,
-)
+from stacscope.adapters.ueye import UEyeCamera  # noqa: E402
 from stacscope.core.actors import (  # noqa: E402
     Actor,
     Fault,
@@ -58,11 +47,18 @@ from stacscope.core.actors import (  # noqa: E402
     spawn,
 )
 from stacscope.core.buffer import ImageBuffer  # noqa: E402
+from stacscope.core.devices import PropertyRefused  # noqa: E402
 from stacscope.core.protocol import (  # noqa: E402
     MESSAGES,
     DeviceReady,
     DeviceStopped,
+    GetProperties,
     GetShortestTriggerPeriod,
+    PropertiesChanged,
+    Property,
+    PropertyAccess,
+    PropertyKind,
+    SetProperty,
     ShortestTriggerPeriod,
     StartDevice,
     StopDevice,
@@ -73,8 +69,12 @@ GRACE = 0.25
 """Seconds allowed for a thread to hand its result back."""
 
 SMALL = (0, 0, 64, 32)
+SMALL_SETTINGS = [("aoi_width", 64.0), ("aoi_height", 32.0)]
 """The AOI every launch starts at, unless a test says otherwise: frames of a
 few kilobytes."""
+
+NUMBER, LABEL = PropertyKind.NUMBER, PropertyKind.LABEL
+IDLE = PropertyAccess.IDLE
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ async def launch():
 
     async def launch_(fake, *, wait=True, **options):
         options.setdefault("n_slots", 6)
-        options.setdefault("aoi", SMALL)
+        options.setdefault("settings", SMALL_SETTINGS)
         device = UEyeCamera(
             "e" + uuid.uuid4().hex[:20],
             ueye=fake,
@@ -136,90 +136,170 @@ def _faults(listener) -> list[Fault]:
     return [m for m in listener.heard if isinstance(m, Fault)]
 
 
-# --- E1: each setting by its own message, answered with what the camera took --------------
+# --- E1, DP25: the camera's properties, in SI units, with the driver's limits -------------------
 
 
-async def test_e1_each_setting_is_answered_with_what_the_camera_applied(launch, fake):
-    """One message per setting (user, decision 3), each answered with the
-    value the camera took, which may differ from the one asked for: the
-    exposure is rounded to the camera's step, and the frame rate is bounded
-    by the pixel clock and AOI."""
+async def test_dp25_the_table_lists_the_ten_properties_in_si_units_with_the_drivers_limits(launch, fake):
+    """In the order each bounds the next (the pixel format and AOI bound
+    the pixel clock's frame time, which bounds the frame rate, which bounds
+    the exposure), so a client setting several in turn sets them in an
+    order that works. Seconds and hertz, not the driver's milliseconds,
+    microseconds and megahertz."""
     _, ref, _ = await launch(fake)
 
-    assert await _ask(ref, SetPixelClock(40)) == PixelClock(40)
+    table = (await _ask(ref, GetProperties())).properties
+
+    w, h = SMALL[2:]
+    clocks = tuple(float(c * 1_000_000) for c in sorted(PIXEL_CLOCKS))
+    assert table == {
+        "pixel_format": Property("pixel_format", LABEL, "RAW8", labels=("RAW8", "RAW10"), access=IDLE),
+        "aoi_x": Property("aoi_x", NUMBER, 0.0, "px", 0.0, SENSOR[0] - w, 2.0, access=IDLE),
+        "aoi_y": Property("aoi_y", NUMBER, 0.0, "px", 0.0, SENSOR[1] - h, 2.0, access=IDLE),
+        "aoi_width": Property("aoi_width", NUMBER, w, "px", 16.0, SENSOR[0], 4.0, access=IDLE),
+        "aoi_height": Property("aoi_height", NUMBER, h, "px", 4.0, SENSOR[1], 2.0, access=IDLE),
+        "pixel_clock": Property("pixel_clock", NUMBER, 24e6, "Hz", choices=clocks),
+        "frame_rate": Property(
+            "frame_rate", NUMBER, pytest.approx(fake.fps), "Hz", 0.5, pytest.approx(1 / fake.min_frame_time())
+        ),
+        "exposure": Property(
+            "exposure", NUMBER, pytest.approx(fake.exposure_ms / 1e3), "s",
+            pytest.approx(EXPOSURE_STEP_MS / 1e3), pytest.approx(1 / fake.fps),
+            pytest.approx(EXPOSURE_STEP_MS / 1e3),
+        ),
+        "trigger_edge": Property("trigger_edge", LABEL, "rising", labels=("rising", "falling")),
+        "trigger_delay": Property("trigger_delay", NUMBER, 0.0, "s", 0.0, 4.0, 1e-6),
+    }  # fmt: skip
+
+
+async def test_e1_a_set_is_answered_with_what_the_camera_applied(launch, fake):
+    """The value the camera took may differ from the one asked for: the
+    exposure is rounded to the camera's step."""
+    _, ref, _ = await launch(fake)
+
+    answer = await _ask(ref, SetProperty("exposure", 0.001234))
+
+    assert answer.properties["exposure"].value == pytest.approx(0.00123)
+    assert fake.exposure_ms == pytest.approx(1.23)
+
+
+async def test_e1_each_property_reaches_the_camera_in_the_drivers_units(launch, fake):
+    _, ref, _ = await launch(fake)
+
+    for name, value in [
+        ("pixel_clock", 40e6),
+        ("trigger_edge", "falling"),
+        ("trigger_delay", 250e-6),
+        ("aoi_x", 2.0),
+        ("aoi_y", 4.0),
+        ("pixel_format", "RAW10"),
+    ]:
+        assert isinstance(await _ask(ref, SetProperty(name, value)), PropertiesChanged), name
+
     assert fake.pixel_clock == 40
-    assert await _ask(ref, SetExposure(1.234)) == Exposure(pytest.approx(1.23))
-    reply = await _ask(ref, SetFrameRate(1e6))
-    assert reply == FrameRate(pytest.approx(1 / fake.min_frame_time()))
-    assert await _ask(ref, SetTrigger("falling", 250)) == Trigger("falling", 250)
     assert (fake.trigger_mode, fake.trigger_delay_us) == (IS_SET_TRIGGER_HI_LO, 250)
-    assert await _ask(ref, SetAOI(2, 4, 128, 64)) == AOI(2, 4, 128, 64)
-    assert await _ask(ref, SetPixelFormat("RAW10")) == PixelFormat("RAW10")
+    assert fake.aoi_rect == (2, 4, *SMALL[2:])
     assert fake.color_mode == IS_CM_SENSOR_RAW10
 
 
-async def test_e1_the_settings_are_read_back_together(launch, fake):
-    """A client that did not set them, or set one that moved another (a
-    new pixel clock can shorten the longest exposure), reads them all at
-    once. The pixel clocks the camera offers come with them, since only
-    those can be set."""
-    _, ref, _ = await launch(fake, pixel_clock=40, exposure_ms=5.0)
+# --- DP26: a set answers the limits it moved ---------------------------------------------------
 
-    settings = await _ask(ref, GetCameraSettings())
 
-    assert settings == CameraSettings(
-        pixel_format="RAW8",
-        aoi=SMALL,
-        pixel_clock_mhz=40,
-        pixel_clocks_mhz=tuple(sorted(PIXEL_CLOCKS)),
-        frame_rate_fps=pytest.approx(fake.fps),
-        exposure_ms=pytest.approx(5.0),
-        trigger_edge="rising",
-        trigger_delay_us=0,
-    )
+async def test_dp26_a_slower_pixel_clock_answers_the_frame_rates_and_exposures_new_limits(launch, fake):
+    """A slower clock reads out slower: the fastest frame rate falls, the
+    frame rate with it if it was faster, and so the longest exposure. A
+    client holding the old limits would offer a frame rate the camera can
+    no longer give."""
+    _, ref, _ = await launch(fake, settings=[*SMALL_SETTINGS, ("frame_rate", 500.0)])
+    before = (await _ask(ref, GetProperties())).properties
+
+    answer = await _ask(ref, SetProperty("pixel_clock", 7e6))
+
+    assert set(answer.properties) == {"pixel_clock", "frame_rate", "exposure"}
+    rate = answer.properties["frame_rate"]
+    assert rate.maximum < before["frame_rate"].maximum and rate.value == pytest.approx(rate.maximum)
+    assert answer.properties["exposure"].maximum > before["exposure"].maximum
+
+
+async def test_dp26_a_frame_rate_answers_the_exposures_new_maximum(launch, fake):
+    _, ref, _ = await launch(fake)
+
+    answer = await _ask(ref, SetProperty("frame_rate", 10.0))
+
+    assert set(answer.properties) == {"frame_rate", "exposure"}
+    assert answer.properties["exposure"].maximum == pytest.approx(0.1)
+
+
+# --- DP27: the AOI, one side at a time ------------------------------------------------------------
+
+
+async def test_dp27_setting_the_width_keeps_the_position_and_height(launch, fake):
+    _, ref, _ = await launch(fake)
+    await _ask(ref, SetProperty("aoi_x", 100.0))
+
+    answer = await _ask(ref, SetProperty("aoi_width", 200.0))
+
+    assert fake.aoi_rect == (100, 0, 200, SMALL[3])
+    assert answer.properties["aoi_x"].maximum == SENSOR[0] - 200
+
+
+async def test_dp27_a_width_past_the_sensors_edge_is_refused_before_anything_changes(launch, fake):
+    """From x = 1200, 80 pixels reach the edge. The driver would refuse the
+    rectangle too, but the table says so first, with the limit, which a
+    client can show before it asks."""
+    _, ref, _ = await launch(fake)
+    await _ask(ref, SetProperty("aoi_x", 1200.0))
+    sets = fake.calls.count("is_AOI")
+
+    answer = await _ask(ref, SetProperty("aoi_width", 128.0))
+
+    assert isinstance(answer, Rejected) and "at most 80" in answer.reason
+    assert fake.aoi_rect == (1200, 0, *SMALL[2:])
+    assert fake.calls.count("is_AOI") - sets < 6  # read, never set: no rectangle was sent
 
 
 # --- E2: refusals ----------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("msg", "reason"),
+    ("name", "value", "reason"),
     [
-        (SetPixelFormat("RAW12"), "RAW8 or RAW10"),
-        (SetTrigger("software", 0), "rising or falling"),
-        (SetAOI(1, 0, 64, 32), "IS_INVALID_PARAMETER"),
-        (SetPixelClock(41), "IS_INVALID_PARAMETER"),
-        (SetExposure(5000.0), "IS_INVALID_PARAMETER"),
+        ("pixel_format", "RAW12", "RAW8, RAW10"),
+        ("trigger_edge", "software", "rising, falling"),
+        ("aoi_x", 1.0, "IS_INVALID_PARAMETER"),  # off the camera's grid: the driver says so
+        ("pixel_clock", 41e6, "must be one of"),
+        ("exposure", 5.0, "at most"),
     ],
     ids=["pixel format", "trigger", "aoi", "pixel clock", "exposure"],
 )
 async def test_e2_a_setting_refused_is_rejected_with_the_reason_and_the_device_carries_on(
-    launch, fake, msg, reason
+    launch, fake, name, value, reason
 ):
     """A refusal is the requester's to handle, not a fault: the camera is as
     it was, and the device goes on answering."""
     _, ref, listener = await launch(fake)
 
-    reply = await _ask(ref, msg)
+    reply = await _ask(ref, SetProperty(name, value))
 
     assert isinstance(reply, Rejected)
     assert reason in reply.reason
     assert _faults(listener) == []
-    assert await _ask(ref, SetExposure(2.0)) == Exposure(pytest.approx(2.0))
+    assert isinstance(await _ask(ref, SetProperty("exposure", 0.002)), PropertiesChanged)
 
 
-@pytest.mark.parametrize("msg", [SetAOI(0, 0, 32, 16), SetPixelFormat("RAW10")], ids=["aoi", "pixel format"])
-async def test_e2_while_armed_a_change_to_the_frame_is_refused(launch, fake, msg):
+@pytest.mark.parametrize(
+    ("name", "value"), [("aoi_width", 32.0), ("pixel_format", "RAW10")], ids=["aoi", "pixel format"]
+)
+async def test_e2_while_armed_a_change_to_the_frame_is_refused(launch, fake, name, value):
     """The slots are laid out for the frame the camera had at the arm, and the
     driver was told each memory's size then; a new frame would overrun them.
     Refused, not faulted: nothing has changed."""
     _, ref, listener = await launch(fake)
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
 
-    reply = await _ask(ref, msg)
+    reply = await _ask(ref, SetProperty(name, value))
 
     assert isinstance(reply, Rejected)
-    assert "attached" in reply.reason
+    assert "idle" in reply.reason
     assert (fake.aoi_rect, fake.color_mode) == (SMALL, IS_CM_SENSOR_RAW8)
     assert _faults(listener) == []
     assert await _ask(ref, StopDevice()) == DeviceStopped()
@@ -231,8 +311,9 @@ async def test_e2_while_armed_the_exposure_changes_at_once(launch, fake):
     _, ref, _ = await launch(fake)
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
 
-    assert await _ask(ref, SetExposure(3.0)) == Exposure(pytest.approx(3.0))
+    answer = await _ask(ref, SetProperty("exposure", 0.003))
 
+    assert answer.properties["exposure"].value == pytest.approx(0.003)
     assert fake.exposure_ms == pytest.approx(3.0)
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
@@ -245,10 +326,12 @@ async def test_e3_the_shortest_trigger_period_is_asked_for_on_its_own(launch, fa
     acquisition a frame. A client checks its waveform against this before
     it starts (user, 2026-09-30: a query of its own, not an answer to each
     setting). It moves with the settings."""
-    _, ref, _ = await launch(fake, pixel_clock=40, exposure_ms=10.0)
+    _, ref, _ = await launch(
+        fake, settings=[*SMALL_SETTINGS, ("pixel_clock", 40e6), ("exposure", 10e-3)]
+    )
 
     first = await _ask(ref, GetShortestTriggerPeriod())
-    await _ask(ref, SetTrigger("rising", 5000))
+    await _ask(ref, SetProperty("trigger_delay", 5e-3))
     second = await _ask(ref, GetShortestTriggerPeriod())
 
     assert first == ShortestTriggerPeriod(pytest.approx(fake.min_frame_time() + 10e-3))
@@ -264,29 +347,28 @@ async def test_e3_the_shortest_trigger_period_is_answered_while_armed(launch, fa
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
 
-# --- E4: settings from config, at launch ------------------------------------------------------
+# --- E4, DP28: settings from config, at launch -------------------------------------------------
 
 
-async def test_e4_settings_from_config_are_applied_in_the_cameras_order_at_launch(launch, fake):
+async def test_dp28_settings_from_config_are_applied_in_order_at_launch(launch, fake):
     """The exposure is bounded by the frame rate, which is bounded by the
-    pixel clock and AOI, so they go in that order: AOI, pixel clock, frame
-    rate, exposure, then the trigger. An exposure set before a slower frame
-    rate would be cut short by it."""
+    pixel clock and AOI, so config lists them in that order: an exposure
+    set before a slower frame rate would be cut short by it."""
     device, _, _ = await launch(
         fake,
         pixel_format="RAW10",
-        aoi=(0, 0, 128, 64),
-        pixel_clock=10,
-        frame_rate_fps=5.0,
-        exposure_ms=150.0,
-        trigger_edge="falling",
-        trigger_delay_us=100,
+        settings=[
+            ("aoi_width", 128.0),
+            ("aoi_height", 64.0),
+            ("pixel_clock", 10e6),
+            ("frame_rate", 5.0),
+            ("exposure", 0.15),
+            ("trigger_edge", "falling"),
+            ("trigger_delay", 100e-6),
+        ],
     )
 
     assert device.started.is_set()
-    order = [c for c in fake.calls if c in ("is_AOI", "is_PixelClock", "is_SetFrameRate", "is_Exposure")]
-    firsts = [order.index(c) for c in ("is_AOI", "is_PixelClock", "is_SetFrameRate", "is_Exposure")]
-    assert firsts == sorted(firsts)
     assert fake.color_mode == IS_CM_SENSOR_RAW10
     assert fake.aoi_rect == (0, 0, 128, 64)
     assert fake.pixel_clock == 10
@@ -294,14 +376,32 @@ async def test_e4_settings_from_config_are_applied_in_the_cameras_order_at_launc
     assert (fake.trigger_mode, fake.trigger_delay_us) == (IS_SET_TRIGGER_HI_LO, 100)
 
 
+async def test_dp28_without_trigger_settings_the_camera_waits_for_a_rising_edge(launch, fake):
+    """The camera's own default is to run free (Y8); STACScope's, as
+    before, is the trigger input's rising edge, with no delay."""
+    device, _, _ = await launch(fake)
+
+    assert device.started.is_set()
+    assert (fake.trigger_mode, fake.trigger_delay_us) == (IS_SET_TRIGGER_LO_HI, 0)
+
+
+async def test_dp28_the_old_launch_arguments_are_gone(fake):
+    """Each is a setting now; a config that still gives one fails loudly
+    rather than being ignored."""
+    for old in ("aoi", "pixel_clock", "frame_rate_fps", "exposure_ms", "trigger_edge", "trigger_delay_us"):
+        with pytest.raises(TypeError):
+            UEyeCamera("e", n_slots=4, capacity_bytes=1 << 20, max_slots=4, ueye=fake, **{old: 1})
+
+
 async def test_e4_a_setting_from_config_that_is_refused_fails_the_launch_and_exits_the_camera(launch, fake):
     """A camera that launched with settings other than its config says would
     take an acquisition the user did not configure. And one left initialised
     refuses every later open until this process exits."""
-    device, _, _ = await launch(fake, pixel_clock=41)
+    device, _, _ = await launch(fake, settings=[("pixel_clock", 41e6)])
 
     assert device.stopped.is_set()
     assert not device.started.is_set()
+    assert isinstance(device.exit_error, PropertyRefused) and "pixel_clock" in str(device.exit_error)
     assert not fake.is_open
 
 
@@ -375,26 +475,15 @@ async def test_e5_a_device_cancelled_while_the_camera_opens_still_exits_it(launc
     assert not fake.is_open
 
 
-# --- E6: the messages cross a process boundary ------------------------------------------------
+# --- E6, DP28: the core's messages, and none of the adapter's own --------------------------------
 
 
 @pytest.mark.parametrize(
     "msg",
     [
-        SetPixelFormat("RAW10"),
-        PixelFormat("RAW10"),
-        SetAOI(0, 384, 1280, 256),
-        AOI(0, 384, 1280, 256),
-        SetPixelClock(40),
-        PixelClock(40),
-        SetFrameRate(20.0),
-        FrameRate(20.0),
-        SetExposure(10.0),
-        Exposure(10.0),
-        SetTrigger("rising", 0),
-        Trigger("rising", 0),
-        GetCameraSettings(),
-        CameraSettings("RAW8", (0, 0, 1280, 1024), 40, (7, 40, 86), 15.0, 10.0, "rising", 0),
+        SetProperty("pixel_clock", 40e6),
+        SetProperty("trigger_edge", "rising"),
+        GetProperties(),
         GetShortestTriggerPeriod(),
         ShortestTriggerPeriod(0.0449),
     ],
@@ -406,6 +495,16 @@ def test_e6_the_messages_cross_a_process_boundary(msg):
     codec = Codec(MESSAGES)
 
     assert codec.decode(codec.encode(msg)) == msg
+
+
+def test_dp28_the_adapter_has_no_messages_of_its_own():
+    """A client configures the camera through the core's property messages,
+    and imports nothing of the adapter's."""
+    import stacscope.adapters.ueye as ueye
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("stacscope.adapters.ueye.messages")
+    assert not {"SetAOI", "SetExposure", "GetCameraSettings", "CameraSettings"} & set(dir(ueye))
 
 
 # --- E7: recording, through a TIFF recorder reading the buffer (user, 2026-10-01) -----------

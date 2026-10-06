@@ -38,12 +38,19 @@ processes and that a second Ctrl-C cut the close short. Both are fixed
 own, and `serve` handles Ctrl-C itself. `tests/integration/test_ctrl_c.py`
 presses a real Ctrl-C, in a hidden console of the engine's own on Windows. Its
 "Open items" holds the work that has no milestone yet:
-- **device properties, next after M6** (user, 2026-10-05): decided — a
-  table of properties on every `TimedDevice`, one write per message plus
-  bulk writes (added to be measured, and removable if too complex), the
-  codec gaining `bool | float | str` and `dict[str, T]`. Decisions
-  confirmed; the list (DP1–DP35, DPH1–DPH3) is in the plan's "Device
-  properties", after Milestone 6, with DP30–DP35 not yet reviewed;
+- **device properties** (user, 2026-10-05; the plan's "Device
+  properties", after Milestone 6): a table of properties on every
+  `TimedDevice` (`read_properties` / `write_property` hooks,
+  `launch_settings`), read and set by the core messages `GetProperties`,
+  `GetProperty` and `SetProperty`; the codec carries `bool | float | str`
+  and `dict[str, T]`. **DP1–DP29 are built and green (2026-10-06)**: the
+  Flash and the uEye have tables, their own message modules are gone, the
+  client imports no adapter, clients may subscribe to devices, and the
+  link now routes refs that cross inside a message. Its judgment calls
+  1–10 ("Built") await the user. **Next: bulk writes, DP30–DP35**
+  (`SetProperties`; the table is re-read between writes, user,
+  2026-10-06), then DPH1–DPH3 on the hardware. Each machine's
+  `config/rig.toml` must move the uEye's launch arguments into `settings`;
 - the session model, which the user expects as a recording session config
   interface;
 - logging and error reporting;

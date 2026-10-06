@@ -23,8 +23,9 @@ What a client may do:
   any device the Coordinator lists as present, if the request is one that
   clients may send. Anything else is answered Rejected.
 - Subscribe to the Coordinator, to hear its Status at once and then
-  everything it publishes; or to the timing source, to hear which waveforms
-  play. Unsubscribe the same way.
+  everything it publishes; to the timing source, to hear which waveforms
+  play; or to any device the Coordinator lists as present, to hear its
+  properties change. Unsubscribe the same way.
 A frame that cannot be read is answered Rejected, at your reply address if
 it can be found and at "" if not. The connection stays open.
 
@@ -234,7 +235,9 @@ class Gateway(Actor):
         msg, sender = envelope.msg, envelope.sender
         match msg:
             case Subscribe(subscriber) | Unsubscribe(subscriber):
-                if to not in (self.coordinator.address, self._source):
+                # An actor lost and watched stays subscribable, as the one it
+                # will be relaunched as: the subscriptions carry over to it.
+                if to not in self._directory and to != self._source and to not in self._watching:
                     self._refuse(client, sender, f"{to!r} publishes nothing to clients")
                 elif isinstance(msg, Subscribe):
                     self._subscribe(to, client, subscriber)

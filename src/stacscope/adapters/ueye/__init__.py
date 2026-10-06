@@ -1,9 +1,9 @@
 """IDS uEye cameras through the uEye API (IDS Software Suite, with pyueye).
 
 UEyeCamera is the camera as a device: it streams frames into an image
-buffer, takes each setting by a message of its own (SetPixelFormat, SetAOI,
-SetPixelClock, SetFrameRate, SetExposure, SetTrigger; GetCameraSettings
-reads them all), and says the shortest trigger period its settings allow
+buffer, lists its properties for GetProperties and SetProperty (pixel
+format, area of interest, pixel clock, frame rate, exposure, trigger), and
+says the shortest trigger period its settings allow
 (GetShortestTriggerPeriod). UEyeFrameCapture, beneath it, drives the
 camera's frame grabber: the driver writes each frame straight into the
 buffer. The IDS Software Suite and the "ueye" extra must be installed to
@@ -12,39 +12,10 @@ imports this package.
 """
 
 from stacscope.adapters.ueye.camera import UEyeCamera
-from stacscope.adapters.ueye.capture import UEyeError, UEyeFrameCapture, UEyeUnavailable
-from stacscope.adapters.ueye.messages import (
-    AOI,
-    CameraSettings,
-    Exposure,
-    FrameRate,
-    GetCameraSettings,
-    PixelClock,
-    PixelFormat,
-    SetAOI,
-    SetExposure,
-    SetFrameRate,
-    SetPixelClock,
-    SetPixelFormat,
-    SetTrigger,
-    Trigger,
-)
+from stacscope.adapters.ueye.capture import AOIGrid, UEyeError, UEyeFrameCapture, UEyeUnavailable
 
 __all__ = [
-    "AOI",
-    "CameraSettings",
-    "Exposure",
-    "FrameRate",
-    "GetCameraSettings",
-    "PixelClock",
-    "PixelFormat",
-    "SetAOI",
-    "SetExposure",
-    "SetFrameRate",
-    "SetPixelClock",
-    "SetPixelFormat",
-    "SetTrigger",
-    "Trigger",
+    "AOIGrid",
     "UEyeCamera",
     "UEyeError",
     "UEyeFrameCapture",

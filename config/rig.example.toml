@@ -51,10 +51,14 @@ n_slots = 40
 capacity_bytes = 104857600        # 40 full frames of RAW10 (16 bits a pixel)
 max_slots = 40
 pixel_format = "RAW10"
-pixel_clock = 40                  # MHz: 20 frames a second at full frame
-exposure_ms = 10.0
-trigger_edge = "rising"
 save_directory = "E:/data"
+# Applied in order at launch, in seconds and hertz: the pixel clock before
+# the exposure, which it bounds. 40 MHz gives 20 frames a second at full frame.
+settings = [
+    ["pixel_clock", 40e6],
+    ["exposure", 0.010],
+    ["trigger_edge", "rising"],
+]
 
 # Where clients connect: stacscope serve prints the address. These are the
 # defaults, so the table may be left out.

@@ -23,6 +23,7 @@ import ctypes
 import threading
 import time
 import warnings
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -67,6 +68,18 @@ _ERROR_NAMES = {
 
 _IN_USE = 213
 _OPEN_RETRY = 0.25  # seconds between opens while the camera is in use
+
+
+@dataclass(frozen=True)
+class AOIGrid:
+    """Where an area of interest may lie, in pixels, as (width, height) or
+    (x, y): the ``sensor``, the ``smallest`` AOI, and the steps its
+    ``position_step`` and ``size_step`` move in."""
+
+    sensor: tuple[int, int]
+    smallest: tuple[int, int]
+    position_step: tuple[int, int]
+    size_step: tuple[int, int]
 
 
 class UEyeUnavailable(RuntimeError):
@@ -386,6 +399,19 @@ class UEyeFrameCapture:
         self._call("is_AOI", self._h, self._u.IS_AOI_IMAGE_SET_AOI, rect, ctypes.sizeof(rect))
         return self.aoi()
 
+    def aoi_grid(self) -> AOIGrid:
+        """The sensor's size, and the grid an area of interest must lie on."""
+        self._require_open()
+        sizes = []
+        for command in ("IS_AOI_IMAGE_GET_SIZE_MAX", "IS_AOI_IMAGE_GET_SIZE_MIN", "IS_AOI_IMAGE_GET_SIZE_INC"):
+            size = self._u.IS_SIZE_2D()
+            self._call("is_AOI", self._h, getattr(self._u, command), size, ctypes.sizeof(size))
+            sizes.append((size.s32Width.value, size.s32Height.value))
+        step = self._u.IS_POINT_2D()
+        self._call("is_AOI", self._h, self._u.IS_AOI_IMAGE_GET_POS_INC, step, ctypes.sizeof(step))
+        sensor, smallest, size_step = sizes
+        return AOIGrid(sensor, smallest, (step.s32X.value, step.s32Y.value), size_step)
+
     def pixel_clock(self) -> int:
         """The pixel clock, in MHz."""
         self._require_open()
@@ -420,6 +446,14 @@ class UEyeFrameCapture:
         self._call("is_SetFrameRate", self._h, self._u.IS_GET_FRAMERATE, fps)
         return fps.value
 
+    def frame_time_range(self) -> tuple[float, float, float]:
+        """The shortest and longest frame time the pixel clock and AOI
+        allow, and its step, in seconds."""
+        self._require_open()
+        shortest, longest, step = self._u.c_double(), self._u.c_double(), self._u.c_double()
+        self._call("is_GetFrameTimeRange", self._h, shortest, longest, step)
+        return shortest.value, longest.value, step.value
+
     def set_frame_rate(self, fps: float) -> float:
         """Set the frame rate and return what the camera applied, which is
         bounded by the pixel clock and AOI."""
@@ -434,6 +468,16 @@ class UEyeFrameCapture:
         ms = self._u.c_double()
         self._call("is_Exposure", self._h, self._u.IS_EXPOSURE_CMD_GET_EXPOSURE, ms, ctypes.sizeof(ms))
         return ms.value
+
+    def exposure_range(self) -> tuple[float, float, float]:
+        """The shortest and longest exposure the current frame rate allows,
+        and its step, in milliseconds."""
+        self._require_open()
+        values = (self._u.c_double * 3)()
+        self._call(
+            "is_Exposure", self._h, self._u.IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE, values, ctypes.sizeof(values)
+        )
+        return tuple(v.value if hasattr(v, "value") else float(v) for v in values)
 
     def set_exposure(self, ms: float) -> float:
         """Set the exposure time, in milliseconds, and return what the camera
@@ -466,6 +510,15 @@ class UEyeFrameCapture:
         self._call("is_SetTriggerDelay", self._h, delay_us)
         return self.trigger()
 
+    def trigger_delay_range(self) -> tuple[int, int, int]:
+        """The shortest and longest trigger delay, and its step, in
+        microseconds."""
+        self._require_open()
+        return tuple(
+            int(self._u.is_SetTriggerDelay(self._h, getattr(self._u, query)))
+            for query in ("IS_GET_MIN_TRIGGER_DELAY", "IS_GET_MAX_TRIGGER_DELAY", "IS_GET_TRIGGER_DELAY_GRANULARITY")
+        )
+
     def shortest_trigger_period(self) -> float:
         """The shortest time, in seconds, from one trigger to the next that
         the camera will not ignore at its current settings: the trigger
@@ -478,9 +531,8 @@ class UEyeFrameCapture:
         # "Trigger mode"). The minimum frame time is the readout; the sum was
         # exact on the camera, with and without a delay: at 0.97 of it every
         # other trigger was missed, at 1.0 none (probe, 2026-09-30).
-        shortest, longest, step = self._u.c_double(), self._u.c_double(), self._u.c_double()
-        self._call("is_GetFrameTimeRange", self._h, shortest, longest, step)
-        return self._trigger_delay() * 1e-6 + self.exposure() * 1e-3 + shortest.value
+        shortest, _, _ = self.frame_time_range()
+        return self._trigger_delay() * 1e-6 + self.exposure() * 1e-3 + shortest
 
     def fire_trigger(self) -> None:
         """Expose one frame now, as a trigger on the input would. Raises

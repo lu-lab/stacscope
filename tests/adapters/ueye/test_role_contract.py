@@ -47,7 +47,8 @@ async def rig(request):
     spawn(parent, name="coordinator")
     name = "e" + uuid.uuid4().hex[:20]
     device = UEyeCamera(
-        name, ueye=fake, n_slots=6, capacity_bytes=1 << 20, max_slots=16, aoi=(0, 0, 64, 32), **request.param
+        name, ueye=fake, n_slots=6, capacity_bytes=1 << 20, max_slots=16,
+        settings=[("aoi_width", 64.0), ("aoi_height", 32.0)], **request.param
     )
     ref = parent.spawn_child(device, name="camera")
     listener = Listener()

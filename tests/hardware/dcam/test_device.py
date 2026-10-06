@@ -1,19 +1,23 @@
-"""V1-V3 -- the OrcaFlash device on the camera: DCAM opened from a worker
-thread, settings by message, and an acquisition streamed into its buffer.
+"""V1-V6 and DPH1 -- the OrcaFlash device on the camera: DCAM opened from a
+worker thread, its properties by message, and an acquisition streamed into
+its buffer.
 
 RUN ON THE CAMERA'S MACHINE. This triggers the camera by software, and
 changes its trigger source, exposure time and subarray; everything changed
 is put back afterwards. It reads what the fake DLL cannot vouch for:
 
   V1  DCAM opened in a worker thread (so the device answers heartbeats while
-      it starts) works from the event loop, and settings come back as the
-      Flash states them, including what it says of a plain number's label.
+      it starts) works from the event loop, and properties come back as the
+      Flash states them.
   V2  An acquisition of software-triggered frames is published, stamped,
       under a header declaring two frames in flight.
   V3  While armed, which settings the Flash takes: an exposure time, and a
       subarray, which must be refused without ending the acquisition.
   V6  The shortest trigger period, asked as a client asks every camera: the
       Flash's own TIMING MIN TRIGGER INTERVAL, moving with the exposure.
+  DPH1  The table of properties is what DCAM reports, and a set's answer is
+      what moved between reading the table before and after it. Reports
+      the whole table, and how long a read and a set take (DPH3).
 
 Every test adds what it read to a "camera findings" section at the end of
 the run; paste that section back.
@@ -40,20 +44,20 @@ import pytest
 from dcam_rig import GRACE, ROWS_256, SOFTWARE, restore, software_trigger
 from image_streaming_contract import Listener
 
-from stacscope.adapters.dcam import (
-    DcamFrameCapture,
-    GetProperty,
-    OrcaFlash,
-    PropertyValue,
-    SetProperty,
-    SetPropertyLabel,
-)
+from stacscope.adapters.dcam import DcamFrameCapture, OrcaFlash
 from stacscope.core.actors import Actor, Fault, Rejected, Subscribe, ask, spawn
 from stacscope.core.buffer import ImageBuffer
 from stacscope.core.protocol import (
     DeviceReady,
     DeviceStopped,
+    GetProperties,
+    GetProperty,
     GetShortestTriggerPeriod,
+    PropertiesChanged,
+    Property,
+    PropertyAccess,
+    PropertyKind,
+    SetProperty,
     ShortestTriggerPeriod,
     StartDevice,
     StopDevice,
@@ -116,27 +120,26 @@ async def _ask(ref, msg):
     return await ask(ref, msg, timeout=10.0)
 
 
-async def test_v1_settings_by_message_on_a_camera_opened_from_a_thread(camera, report):
+async def test_v1_properties_by_message_on_a_camera_opened_from_a_thread(camera, report):
     """The device opens DCAM in a worker thread, and everything after runs
     on the event loop's thread. Nothing in the reference says DCAM minds;
-    this is where it would show. The fake answers a plain number's label
-    with DCAMERR_NOVALUETEXT, as the reference says; if the Flash answers
-    otherwise, GetProperty of an exposure time is refused here."""
+    this is where it would show."""
     async with flash(camera, SOFTWARE, report) as (_, ref, _):
         source = await _ask(ref, GetProperty("TRIGGER SOURCE"))
         exposure = await _ask(ref, GetProperty("EXPOSURE TIME"))
         report(f"{source!r}; {exposure!r}")
-        assert isinstance(source, PropertyValue) and source.label == "SOFTWARE"
-        assert isinstance(exposure, PropertyValue) and exposure.label is None
+        assert isinstance(source, Property) and source.value == "SOFTWARE"
+        assert isinstance(exposure, Property) and exposure.kind is PropertyKind.NUMBER
+        assert exposure.unit == "s"
         assert exposure.value == pytest.approx(0.001, abs=1e-4)
 
         applied = await _ask(ref, SetProperty("EXPOSURE TIME", 0.0123456))
         report(f"SetProperty EXPOSURE TIME 0.0123456: {applied!r}")
-        assert isinstance(applied, PropertyValue)
-        assert applied.value == pytest.approx(0.0123456, abs=1e-4)
+        assert isinstance(applied, PropertiesChanged)
+        assert applied.properties["EXPOSURE TIME"].value == pytest.approx(0.0123456, abs=1e-4)
 
-        refused = await _ask(ref, SetPropertyLabel("TRIGGER SOURCE", "SOFT"))
-        report(f"SetPropertyLabel TRIGGER SOURCE SOFT: {refused!r}")
+        refused = await _ask(ref, SetProperty("TRIGGER SOURCE", "SOFT"))
+        report(f"SetProperty TRIGGER SOURCE SOFT: {refused!r}")
         assert isinstance(refused, Rejected)
 
 
@@ -200,7 +203,7 @@ async def test_v6_the_shortest_trigger_period_is_the_flashs_own_floor(camera, re
     async with flash(camera, SOFTWARE, report) as (_, ref, _):
         periods = {}
         for exposure in (0.001, 0.010):
-            assert isinstance(await _ask(ref, SetProperty("EXPOSURE TIME", exposure)), PropertyValue)
+            assert isinstance(await _ask(ref, SetProperty("EXPOSURE TIME", exposure)), PropertiesChanged)
             answer = await _ask(ref, GetShortestTriggerPeriod())
             floor = await _ask(ref, GetProperty("TIMING MIN TRIGGER INTERVAL"))
             assert isinstance(answer, ShortestTriggerPeriod)
@@ -208,3 +211,50 @@ async def test_v6_the_shortest_trigger_period_is_the_flashs_own_floor(camera, re
             periods[exposure] = answer.seconds
     report(", ".join(f"{e * 1e3:.0f} ms exposure: {p * 1e3:.3f} ms" for e, p in periods.items()))
     assert periods[0.010] > periods[0.001]
+
+
+async def test_dph1_the_table_is_what_dcam_reports(camera, report):
+    """The table is built from DCAM's attributes, which only the fake has
+    vouched for so far: every property the Flash can read, with its value
+    as DCAM gives it. Read-only values that move on their own (a
+    temperature) may differ between two reads, so only writable ones are
+    compared. The whole table is reported, for the record of what the
+    Flash offers, with the time a read takes (DPH3)."""
+    async with flash(camera, SOFTWARE, report) as (device, ref, _):
+        began = time.perf_counter()
+        table = (await _ask(ref, GetProperties())).properties
+        took = time.perf_counter() - began
+        capture = device.capture
+        report(f"GetProperties: {len(table)} properties in {took * 1e3:.1f} ms")
+        for p in table.values():
+            limits = p.labels if p.kind is PropertyKind.LABEL else (p.minimum, p.maximum, p.step)
+            report(f"  {p.name}: {p.value!r} {p.unit} {limits} {p.access.name}")
+        unlisted = [name for name in capture.names() if name not in table]
+        report(f"not listed (unreadable): {unlisted}")
+
+        for name, p in table.items():
+            if p.access is PropertyAccess.READ_ONLY:
+                continue
+            held = capture.label(name) if p.kind is PropertyKind.LABEL else capture.get(name)
+            assert p.value == held, name
+
+
+async def test_dph1_a_sets_answer_is_what_moved(camera, report):
+    """Decision 1: a set answers everything that moved, found by reading
+    the whole table before and after. Read again by hand here, the
+    difference must be the answer, give or take the values that move on
+    their own. Reports the time a set takes with its two reads (DPH3)."""
+    async with flash(camera, SOFTWARE, report) as (_, ref, _):
+        before = (await _ask(ref, GetProperties())).properties
+        began = time.perf_counter()
+        answer = await _ask(ref, SetProperty("EXPOSURE TIME", 0.002))
+        took = time.perf_counter() - began
+        after = (await _ask(ref, GetProperties())).properties
+
+        moved = {n for n, p in after.items() if before[n] != p}
+        report(f"SetProperty EXPOSURE TIME 0.002: {took * 1e3:.1f} ms, answered {sorted(answer.properties)}")
+        report(f"moved between reads by hand: {sorted(moved)}")
+        assert isinstance(answer, PropertiesChanged)
+        assert answer.properties["EXPOSURE TIME"] == after["EXPOSURE TIME"]
+        settled = {n for n in moved if after[n].access is not PropertyAccess.READ_ONLY}
+        assert settled <= set(answer.properties)

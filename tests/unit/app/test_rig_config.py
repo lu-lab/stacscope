@@ -59,7 +59,7 @@ n_slots = 20
 capacity_bytes = 52428800
 max_slots = 20
 pixel_format = "RAW10"
-aoi = [0, 0, 1280, 1024]
+settings = [["pixel_clock", 40e6], ["exposure", 0.01]]
 save_directory = "C:/data"
 """
 
@@ -116,7 +116,7 @@ def test_g1_a_rig_file_names_the_source_and_every_device_in_order():
         "save_directory": "E:/data",
         "settings": (("SENSOR MODE", "AREA"), ("TRIGGER ACTIVE", "SYNCREADOUT")),
     }
-    assert ueye.options["aoi"] == (0, 0, 1280, 1024)
+    assert ueye.options["settings"] == (("pixel_clock", 40e6), ("exposure", 0.01))
 
 
 def test_g2_each_device_has_its_own_save_directory_and_the_rig_has_none():
@@ -247,6 +247,31 @@ shape = [4, 8]
     device = factory()
     assert isinstance(device, SimulatedFreeRunningCamera)
     assert (device.buffer_name, device.interval, device.shape) == ("sim_camera", 0.01, (4, 8))
+
+
+def test_dp29_a_devices_settings_reach_the_device_in_order():
+    """Every device takes settings, applied in order at launch; the file's
+    array is the order, which a client's map would not keep."""
+    config = parse_config(SIMULATED + 'settings = [["exposure", 0.02], ["pixel_format", "MONO8"]]\n')
+
+    device = config.devices[0].factory(bus=None)()
+
+    assert device.launch_settings == (("exposure", 0.02), ("pixel_format", "MONO8"))
+
+
+def test_dp29_the_tracked_example_gives_each_camera_settings():
+    """The example is where a new machine's config starts: it shows the
+    form for each camera, by each camera's own property names."""
+    from pathlib import Path
+
+    from stacscope.app import load_config
+
+    example = Path(__file__).parents[3] / "config" / "rig.example.toml"
+    flash, ueye = load_config(example).devices
+
+    assert ("SENSOR MODE", "AREA") in flash.options["settings"]
+    assert dict(ueye.options["settings"]).keys() >= {"pixel_clock", "exposure", "trigger_edge"}
+    assert not {"exposure_ms", "pixel_clock", "trigger_edge", "aoi"} & ueye.options.keys()
 
 
 def test_g12_the_tracked_example_is_a_rig_config_that_loads():

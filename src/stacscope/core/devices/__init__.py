@@ -75,7 +75,7 @@ ends the device, which is how a stop that was not achieved is reported.
 """
 
 from stacscope.core.devices.buffer_recording import BufferRecording
-from stacscope.core.devices.device import DeviceState, NotReady, TimedDevice
+from stacscope.core.devices.device import DeviceState, NotReady, PropertyRefused, TimedDevice
 from stacscope.core.devices.image_streaming import ImageStreaming
 from stacscope.core.devices.recording import Recording
 from stacscope.core.devices.software_timed import SoftwareTimed
@@ -85,6 +85,7 @@ __all__ = [
     "DeviceState",
     "ImageStreaming",
     "NotReady",
+    "PropertyRefused",
     "Recording",
     "SoftwareTimed",
     "TimedDevice",

@@ -31,11 +31,14 @@ def sample(tp):
     """An instance of annotation ``tp`` with non-default, non-trivial content."""
     origin = get_origin(tp)
     if origin in (Union, types.UnionType):
-        [arm] = [a for a in get_args(tp) if a is not type(None)]
-        return sample(arm)
+        arms = [a for a in get_args(tp) if a is not type(None)]
+        return sample(arms[-1])  # a union of scalars: any arm will do
     if origin is tuple:
         item, _ = get_args(tp)
         return (sample(item), sample(item))
+    if origin is dict:
+        _, value = get_args(tp)
+        return {"second": sample(value), "first": sample(value)}
     if isinstance(tp, type) and issubclass(tp, Enum):
         return list(tp)[-1]
     if isinstance(tp, type) and dataclasses.is_dataclass(tp):
@@ -70,6 +73,8 @@ def same(a, b):
         )
     if isinstance(a, tuple):
         return isinstance(b, tuple) and len(a) == len(b) and all(map(same, a, b))
+    if isinstance(a, dict):
+        return isinstance(b, dict) and list(a) == list(b) and all(map(same, a.values(), b.values()))
     return type(a) is type(b) and a == b
 
 
@@ -109,6 +114,38 @@ def test_every_message_class_is_registered_and_frozen(module):
     for cls in classes:
         assert cls in MESSAGES.types(), f"{cls.__name__} is not registered"
         assert cls.__dataclass_params__.frozen, f"{cls.__name__} is not frozen"
+
+
+def maps_of(msg) -> list[str]:
+    hints = get_type_hints(type(msg))
+    return [f.name for f in dataclasses.fields(msg) if get_origin(hints[f.name]) is dict]
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [c for c in MESSAGES.types() if maps_of(sample(c))],
+    ids=lambda c: c.__name__,
+)
+def test_dp4_every_map_a_message_holds_is_read_only(cls):
+    """In one process every subscriber is handed the same message object:
+    a map one of them could change would change under all the others. Built
+    in process, not decoded, which is how a device's own messages reach its
+    local subscribers."""
+    source = sample(cls)
+    for name in maps_of(source):
+        held = getattr(source, name)
+        with pytest.raises(TypeError):
+            held["added"] = held[next(iter(held))]
+
+
+def test_dp4_a_message_keeps_its_own_copy_of_a_map():
+    from stacscope.core.protocol import Properties
+
+    table = {"exposure": sample(MESSAGES.lookup("Property"))}
+    msg = Properties(table)
+    table.clear()
+
+    assert list(msg.properties) == ["exposure"]
 
 
 def test_optional_fields_round_trip_none(codec):

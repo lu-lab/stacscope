@@ -11,11 +11,26 @@ subscribe to their parent, the Coordinator, which relays the source's
 the parent too, reported by address.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
 
 from stacscope.core.actors import Actor, Fault, Rejected, describe
-from stacscope.core.protocol import DeviceReady, DeviceStopped, StartDevice, StopDevice
+from stacscope.core.protocol import (
+    DeviceReady,
+    DeviceStopped,
+    GetProperties,
+    GetProperty,
+    Properties,
+    PropertiesChanged,
+    Property,
+    PropertyAccess,
+    PropertyKind,
+    SetProperty,
+    StartDevice,
+    StopDevice,
+)
+
+type Value = bool | float | str
 
 
 class DeviceState(Enum):
@@ -36,6 +51,10 @@ class DeviceState(Enum):
 class NotReady(Exception):
     """Raised by ``arm`` to refuse: the device cannot be armed right now, but
     nothing is wrong with it. Answered ``Rejected``, and it stays armable."""
+
+
+class PropertyRefused(Exception):
+    """A value a device's checks or its adapter would not take."""
 
 
 class TimedDevice(Actor):
@@ -62,11 +81,25 @@ class TimedDevice(Actor):
     state is now unknown, so the device dies rather than confirm a stop it did
     not achieve, and the Coordinator reports the stop unconfirmed.
 
+    Every device also answers ``GetProperties``, ``GetProperty`` and
+    ``SetProperty`` from the table its adapter declares (``read_properties``
+    and ``write_property``). A set is checked against the table before the
+    adapter sees it: the name, read-only, the kind, the label, the limits or
+    choices, and an IDLE property while not idle. It is answered, and
+    published, as ``PropertiesChanged``: every property whose value or limits
+    moved, found by reading the table before and after. A refusal, from the
+    checks or from the adapter, is answered ``Rejected``, and the device
+    carries on. ``launch_settings``, ``(name, value)`` pairs, are applied in
+    order through the same checks during ``setup``, before an image buffer is
+    created; a refused one fails the launch.
+
     A role whose arm fails partway disarms what had armed below it. If that
     disarm fails too, the arm is still answered ``Rejected`` with a fatal
     ``Fault``, and then the device dies of the arm's error, as for any failed
     disarm.
     """
+
+    launch_settings: tuple[tuple[str, Value], ...] = ()
 
     _arm_undo_failed: bool = False
     _holding: bool = False
@@ -128,6 +161,23 @@ class TimedDevice(Actor):
     async def close(self) -> None:
         """Release the hardware for good. Called once, however the actor ends,
         after ``disarm`` if it was armed."""
+
+    async def read_properties(self) -> Sequence[Property]:
+        """The device's properties as they stand, every one, in the order
+        their writes depend on each other (a format before the region it
+        bounds). The names must be the same at every call for the device's
+        lifetime; everything else may change. Default: none."""
+        return ()
+
+    async def write_property(self, name: str, value: Value) -> None:
+        """Apply ``value`` to the property ``name``. Called only once the
+        value has passed every check against the table as just read: a known
+        name, not read-only, of the property's kind (a NUMBER's value is
+        always a float), a listed label, within the limits or among the
+        choices, and an IDLE property only while idle. Raise to refuse, and
+        leave the device as it was; the exception's message is the reason
+        given. Applying a value the hardware rounds is not a refusal."""
+        raise PropertyRefused(f"{type(self).__name__} cannot set {name}")
 
     async def _undo_arm(self, cause: BaseException, disarm: Callable[[], Awaitable[None]]) -> None:
         """For a role whose arm failed with ``cause`` after what is listed
@@ -208,6 +258,12 @@ class TimedDevice(Actor):
                 await self._start(msg, root_filename, cycles)
             case StopDevice():
                 await self._stop()
+            case GetProperties():
+                await self._get_properties()
+            case GetProperty(name):
+                await self._get_property(name)
+            case SetProperty(name, value):
+                await self._set_property(name, value)
             case _:
                 # Ignored, told or asked (user, 2026-09-30), except a Fault,
                 # which the base passes up. An asker that sent the wrong thing
@@ -261,6 +317,109 @@ class TimedDevice(Actor):
     async def _disarm(self) -> None:
         self.state = DeviceState.IDLE  # never disarmed twice, even if it raises
         await self.disarm()
+
+    async def setup(self) -> None:
+        await super().setup()
+        # Here, after the adapter has opened its hardware and before a role
+        # creates its buffer: a device whose settings are refused never makes
+        # a segment for a consumer to find.
+        for name, value in self.launch_settings:
+            try:
+                await self._apply(await self._table(), name, value)
+            except PropertyRefused as exc:
+                raise PropertyRefused(f"launch setting {name} = {value!r} refused: {exc}") from None
+
+    # --- properties --------------------------------------------------------
+
+    async def _table(self) -> dict[str, Property]:
+        return {p.name: p for p in await self.read_properties()}
+
+    async def _get_properties(self) -> None:
+        try:
+            table = await self._table()
+        except Exception as exc:
+            self._reject(f"could not read the properties: {describe(exc)}")
+            return
+        self.reply(Properties(table))
+
+    async def _get_property(self, name: str) -> None:
+        try:
+            table = await self._table()
+        except Exception as exc:
+            self._reject(f"could not read {name}: {describe(exc)}")
+            return
+        if name not in table:
+            self._reject(f"{type(self).__name__} has no property {name!r}")
+            return
+        self.reply(table[name])
+
+    async def _set_property(self, name: str, value: Value) -> None:
+        try:
+            before = await self._table()
+            await self._apply(before, name, value)
+            after = await self._table()
+        except PropertyRefused as exc:
+            self._reject(str(exc))
+            return
+        except Exception as exc:
+            self._reject(f"could not read the properties: {describe(exc)}")
+            return
+        changed = PropertiesChanged(
+            {n: p for n, p in after.items() if n == name or before.get(n) != p}
+        )
+        self.reply(changed)
+        self.publish(changed)
+
+    async def _apply(self, table: dict[str, Property], name: str, value: Value) -> None:
+        """Check ``value`` against ``table``, then write it. Raises
+        ``PropertyRefused`` for either refusal."""
+        value = self._checked(table, name, value)
+        try:
+            await self.write_property(name, value)
+        except PropertyRefused:
+            raise
+        except Exception as exc:
+            # A refusal, not a fault (decision 5): the device lives on. An
+            # adapter that knows a failure is worse reports its own Fault.
+            raise PropertyRefused(f"{name}: {describe(exc)}") from None
+
+    def _checked(self, table: dict[str, Property], name: str, value: Value) -> Value:
+        """``value`` as the adapter is handed it, or ``PropertyRefused``."""
+        prop = table.get(name)
+        if prop is None:
+            raise PropertyRefused(f"{type(self).__name__} has no property {name!r}")
+        if prop.access is PropertyAccess.READ_ONLY:
+            raise PropertyRefused(f"{name} is read-only")
+        match prop.kind:
+            case PropertyKind.NUMBER:
+                # bool first: Python calls True an int.
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise PropertyRefused(f"{name} takes a number, not {value!r}")
+                value = float(value)
+            case PropertyKind.LABEL:
+                if not isinstance(value, str):
+                    raise PropertyRefused(f"{name} takes a label, not {value!r}")
+                if value not in prop.labels:
+                    labels = ", ".join(prop.labels)
+                    raise PropertyRefused(f"{name} has no label {value!r}; its labels are {labels}")
+            case PropertyKind.FLAG:
+                if not isinstance(value, bool):
+                    raise PropertyRefused(f"{name} takes a flag, true or false, not {value!r}")
+        if prop.access is PropertyAccess.IDLE and self.state is not DeviceState.IDLE:
+            raise PropertyRefused(
+                f"{name} can be changed only while idle, not while {self.state.name}"
+            )
+        if prop.kind is PropertyKind.NUMBER:
+            unit = f" {prop.unit}" if prop.unit else ""
+            if prop.choices and value not in prop.choices:
+                choices = ", ".join(f"{c:g}" for c in prop.choices)
+                raise PropertyRefused(f"{name} must be one of {choices}{unit}, not {value:g}")
+            # Written so that NaN, which compares false, is refused.
+            if prop.minimum is not None and not value >= prop.minimum:
+                raise PropertyRefused(f"{name} must be at least {prop.minimum:g}{unit}, not {value:g}")
+            if prop.maximum is not None and not value <= prop.maximum:
+                raise PropertyRefused(f"{name} must be at most {prop.maximum:g}{unit}, not {value:g}")
+        return value
 
     async def teardown(self) -> None:
         try:

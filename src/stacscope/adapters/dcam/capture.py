@@ -72,6 +72,27 @@ class RecordingStatus:
     recording: bool
 
 
+@dataclass(frozen=True)
+class PropertyAttributes:
+    """What DCAM says of one property at the moment of asking.
+
+    ``labelled`` for a mode, whose values the camera labels; otherwise a
+    number. ``readable`` and ``writable``, and ``while_capturing`` if it may
+    be written during a capture. ``minimum``, ``maximum`` and ``step`` where
+    DCAM gives them (a mode's range is of the numbers behind its labels).
+    ``unit`` is DCAM's unit code, 0 for none.
+    """
+
+    labelled: bool
+    readable: bool
+    writable: bool
+    while_capturing: bool
+    minimum: float | None
+    maximum: float | None
+    step: float | None
+    unit: int
+
+
 class DcamError(RuntimeError):
     """A DCAM-API call failed. ``call`` is the function, ``code`` the DCAMERR
     as a signed 32-bit int, ``name`` its name where this adapter knows it
@@ -367,6 +388,32 @@ class DcamFrameCapture:
                     break
                 found[self._label(name, value.value)] = value.value
         return dict(sorted(found.items(), key=lambda item: item[1]))
+
+    def names(self) -> list[str]:
+        """Every property the camera supports, by its own names, in DCAM's
+        order."""
+        self._require_open()
+        return list(self._ids)
+
+    def attributes(self, name: str) -> PropertyAttributes:
+        """What DCAM says of ``name`` now: its kind, access, limits and
+        unit. Raises ``ValueError`` if the camera has no such property."""
+        self._require_open()
+        attr = _api.DCAMPROP_ATTR.new(iProp=self._id(name))
+        self._call("dcamprop_getattr", self._hdcam, ctypes.pointer(attr))
+        flags = attr.attribute
+        ranged = bool(flags & _api.PROPATTR_HASRANGE)
+        stepped = bool(flags & _api.PROPATTR_HASSTEP) and attr.valuestep > 0
+        return PropertyAttributes(
+            labelled=flags & _api.PROPTYPE_MASK == _api.PROPTYPE_MODE,
+            readable=bool(flags & _api.PROPATTR_READABLE),
+            writable=bool(flags & _api.PROPATTR_WRITABLE),
+            while_capturing=bool(flags & _api.PROPATTR_ACCESSBUSY),
+            minimum=attr.valuemin if ranged else None,
+            maximum=attr.valuemax if ranged else None,
+            step=attr.valuestep if stepped else None,
+            unit=attr.iUnit,
+        )
 
     def set(self, name: str, value: float | str) -> float | str:
         """Set ``name`` to ``value``, a number or one of the camera's labels

@@ -4358,7 +4358,7 @@ Each flow keeps its own channel; the browser joins each at its own level.
   left out of M6 until a browser tool is planned. Later options: read-only
   origins, and a log stream as a publication once logging is designed.
 
-## Device properties *(decided 2026-10-05; decisions confirmed; bulk writes added to test)*
+## Device properties *(decided 2026-10-05; DP1–DP29 built 2026-10-06; bulk writes next)*
 
 **Decided (user, 2026-10-05):** every device has a table of properties,
 read and written through core messages that every `TimedDevice` answers. A
@@ -4511,16 +4511,23 @@ which they earn their place:
   wrong kinds, labels not listed, and IDLE properties while not idle. Any
   of these refuses the whole message with `Rejected`, and nothing is
   applied. Limits cannot be checked up front, since earlier writes move
-  them; each is checked as its write comes.
+  them; each is checked as its write comes. **Decided (user, 2026-10-06):
+  the table is read again after each write**, so each is checked against
+  limits as they stand, as a single write is: a batch of N reads the table
+  N + 1 times, against 2N for N single writes. An adapter that takes the
+  batch whole is checked up front only, and its driver judges the limits:
+  2 reads. Two reads with the driver judging every limit was the other
+  choice; it was turned down because a driver may clamp a value rather than
+  refuse it (the uEye's may).
 - Applied in order, stopping at the first refusal. **No rollback**: putting
   earlier values back may not even be reachable from the new state. The
   answer is `PropertiesRefused(name, reason, changed)`, naming what was
   refused and holding everything that moved before it.
-- The table is read once before and once after, and what moved is answered
-  and published once, as for a single write.
+- What moved, from the read before the batch to the read after its last
+  write, is answered and published once, as for a single write.
 - Launch settings stay an ordered list from TOML, applied one at a time.
 
-### Acceptance tests *(drafted 2026-10-05; decisions confirmed; DP30–DP35 added for bulk writes at the user's request, not yet reviewed)*
+### Acceptance tests *(approved by the user, 2026-10-05; DP30–DP35, the bulk writes, included)*
 
 The codec
 - DP1. A `bool | float | str` field round-trips each kind. An int on the wire arrives as a float; `true` arrives as a bool, never as 1.0. Nil, bytes, a list and a map are refused with `CodecError`.
@@ -4564,10 +4571,10 @@ The rig config
 - DP29. A device's `settings = [["name", value], ...]` in `rig.toml` reaches the device, and `config/rig.example.toml` shows one for each camera.
 
 Bulk writes (simulated unless named)
-- DP30. `SetProperties` applies a map in the device's order whatever the map's order, answers one `PropertiesChanged` with everything that moved, publishes it once, and reads the table once before and once after.
+- DP30. `SetProperties` applies a map in the device's order whatever the map's order, answers one `PropertiesChanged` with everything that moved, publishes it once, and reads the table once before and once after each write: N + 1 reads for N writes (amended, user, 2026-10-06; it said once before and once after).
 - DP31. An unknown name, a read-only property, a wrong kind, a label not listed, or an IDLE property while armed, anywhere in the map, refuses the whole message with `Rejected`; nothing is applied.
 - DP32. A refusal partway (a limit moved by an earlier write, or the adapter raising) stops there: `PropertiesRefused` names the property and the reason and holds what moved before it; that change is published; nothing after it is applied; nothing is put back.
-- DP33. An adapter that takes the batch whole receives it whole; one that does not receives one write at a time.
+- DP33. An adapter that takes the batch whole receives it whole, and the table is read twice; one that does not receives one write at a time.
 - DP34. The uEye (over its fake): a batch moving the AOI right while narrowing it is applied, where the same two writes sent singly, x first, have the first refused.
 - DP35. `Client.set_many(device, values)` returns what moved, and raises `Refused` carrying what moved on `PropertiesRefused` or `Rejected`.
 
@@ -4575,6 +4582,106 @@ On the hardware *(user-run, when testing resumes)*
 - DPH1. The Flash: the table matches what DCAM reports, and a set's answer matches reading the table before and after by hand.
 - DPH2. The uEye: setting the pixel clock moves the frame rate's and exposure's limits as the fake predicts.
 - DPH3. The time of `GetProperties`, of `SetProperty` with its re-read, and of a `SetProperties` of N settings against N single writes, on each camera: decision 1's cost, and the evidence for keeping or removing bulk writes.
+
+### Built (DP1–DP29, 2026-10-06)
+
+Every test went red before green, or got a mutation check where the code
+came first; the default suite, the DCAM and uEye suites, and CI's two
+Pythons were green. The hardware tests are updated for the user to run:
+V1, V6 and DPH1 on the Flash (`tests/hardware/dcam/test_device.py`), and
+W1–W4 and DPH2 on the uEye (`tests/hardware/ueye/test_device.py`). **Each
+machine's own `config/rig.toml` needs changing before the next run**: the
+uEye's `pixel_clock`, `exposure_ms`, `trigger_edge`, `trigger_delay_us`
+and `aoi` become `settings` (`config/rig.example.toml` shows them), and a
+DCAM mode in the Flash's `settings` must be given by its label, never its
+number.
+
+Where the pieces are:
+- the codec: `core/transport/codec.py`; the read-only map,
+  `core/protocol/maps.py` (`ReadOnlyMap`);
+- the messages: `core/protocol/messages.py` (`Property`, `PropertyKind`,
+  `PropertyAccess`, `GetProperties`, `Properties`, `GetProperty`,
+  `SetProperty`, `PropertiesChanged`);
+- the core: `TimedDevice` in `core/devices/device.py`: the hooks
+  `read_properties` and `write_property`, `launch_settings`, and
+  `PropertyRefused`;
+- the contract: `tests/contract/property_contract.py`, run against the
+  simulated camera, the Flash over its fake and the uEye over its fake;
+- the adapters' own message modules are gone (`adapters/dcam/messages.py`,
+  `adapters/ueye/messages.py`), and the client imports no adapter.
+
+**Claude's judgment calls, for the user to confirm:**
+1. **A read-only map is a dict subclass, `ReadOnlyMap`**, refusing every
+   change. Not `MappingProxyType`, which neither pickles nor packs. The
+   codec decodes every map into one, and each message with a map makes its
+   own copy one in `__post_init__`; `test_codec.py` checks every registered
+   message that holds a map.
+2. **The union rule is the wire's, not a list**: any union of scalars
+   whose wire types differ is carried (`bool | float | str`, `int | str`,
+   `str | bytes`); `int | float` and any union with a non-scalar arm are
+   refused when the codec is built.
+3. **The core does not check a number's step.** The device rounds, and the
+   answer shows what it applied (DP7).
+4. **Launch settings are applied in `TimedDevice.setup`**, which every role
+   reaches after its adapter has opened the hardware and before
+   `ImageStreaming` creates the segment. A refusal raises `PropertyRefused`,
+   naming the setting, and fails the launch.
+5. **DCAM** (`OrcaFlash`):
+   - It lists every property DCAM says it can read, decided once at launch,
+     since names may not change. A property it cannot read is not listed.
+   - A mode is a LABEL of the camera's labels; every other property is a
+     NUMBER.
+   - A writable property DCAM allows while capturing (`ACCESSBUSY`) is
+     ALWAYS; any other writable one is IDLE.
+   - A step of 0 is no step.
+   - DCAM's units become symbols: `s`, `°C`, `K`, `m/s`, `Hz` for
+     per-second, `°`, `µm`.
+   - The frame-format guard now covers every state but IDLE, ARMING and
+     DISARMING included, since memory is attached in all of them.
+   - `DCAMPROP_ATTR`, `dcamprop_getattr` and the attribute, type and unit
+     constants were written from the API as documented: this machine has
+     no SDK. **DP22 has to be run on the dev box** with
+     `STACSCOPE_DCAM_SDK`, where it checks them against the headers. It
+     reads structs from `dcamapi4.h` only, so if `DCAMPROP_ATTR` is
+     declared in `dcamprop.h` it will fail with a KeyError, and the test
+     must then read both headers.
+6. **uEye** (`UEyeCamera`):
+   - `pixel_format` stays a constructor argument as well: the format the
+     camera opens in. It is also a property.
+   - `pixel_clock`, `frame_rate`, `exposure`, `trigger_edge` and
+     `trigger_delay` are ALWAYS, as 5f's messages allowed; the pixel
+     format and AOI are IDLE.
+   - `frame_rate` has no step. `pixel_clock` lists its choices in Hz.
+   - The limits come from `is_AOI` (`IS_AOI_IMAGE_GET_SIZE_MIN`,
+     `_SIZE_MAX`, `_SIZE_INC`, `_POS_INC`), `is_Exposure`
+     (`IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE`), `is_GetFrameTimeRange` and
+     `is_SetTriggerDelay` (`IS_GET_MIN_TRIGGER_DELAY`, `_MAX_`,
+     `IS_GET_TRIGGER_DELAY_GRANULARITY`). These are pyueye's names, untried
+     on the camera; DPH2 tries them.
+7. **The link remembers refs that cross inside a message**, weakly, as it
+   already remembered senders (`core/transport/routing.py`). Found building
+   DP17: the gateway's subscriber reaches a device in another process only
+   as an address inside `Subscribe`, and the device's publications to it
+   were refused as undeliverable. `routing.py`'s docstring already said a
+   ref crossing inside a message works; for a ref from the engine's side it
+   did not.
+8. **What a client may subscribe to:** the Coordinator; the source; any
+   device present in the latest `Status`; and any actor the gateway already
+   watches, so that a client can unsubscribe from a device while it is
+   lost. Lost, the device is not told; it is gone.
+9. **Client and CLI:**
+   - `Client.properties` and `Client.set` take a device's name or its ref,
+     and raise `LookupError` for a device not running.
+   - `stacscope properties` and `stacscope set` exit 1 for a refusal or an
+     unknown device, and 2 for a value that does not parse as the
+     property's kind.
+   - A flag reads `true`, `false`, `on`, `off`, `yes`, `no`, `1` or `0`.
+10. **The simulated tables:**
+    - `SimulatedCamera`: `pixel_format`, `aoi_x` and `aoi_width` (bound by
+      each other, as the uEye's are), `exposure`, `test_pattern`, and a
+      read-only `sensor_temperature`.
+    - `SimulatedFreeRunningCamera` gained one property, `frame_interval`,
+      so that DP17 runs against a device in a process of its own.
 
 ## Subsequent milestones
 

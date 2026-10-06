@@ -467,16 +467,59 @@ async def test_ws12_clients_subscribed_to_the_source_share_one_subscription_and_
     assert await two.recv() == ("mains", "coordinator/source", MainApplied("b", 0, 0))
 
 
-async def test_ws12_only_the_coordinator_and_the_source_can_be_subscribed_to(engine, clients):
-    """No other actor publishes to clients, and a device in a process of its
-    own could not reach the gateway if it did."""
+async def test_dp17_a_device_present_in_status_can_be_subscribed_to(engine, clients):
+    """A device publishes its property changes, so a page showing it sees a
+    change a script made (decision 2)."""
+    one, two = await clients(), await clients()
+    await one.send("coordinator/cam", Subscribe(address("props")))
+    await two.send("coordinator/cam", Subscribe(address("props")))
+    await until(lambda: subscribers(engine.cam) == ["gateway/~coordinator/cam"], "one subscription")
+
+    engine.cam.publish(MainApplied("x", 0, 0))
+
+    assert await one.recv() == ("props", "coordinator/cam", MainApplied("x", 0, 0))
+    assert await two.recv() == ("props", "coordinator/cam", MainApplied("x", 0, 0))
+
+
+@pytest.mark.parametrize("target", ["coordinator/ghost", "coordinator/lost", "gateway"])
+async def test_dp17_an_actor_not_present_in_status_cannot_be_subscribed_to(engine, clients, target):
+    """Not a device the Coordinator lists, or one it lists as lost: there is
+    nothing to subscribe to, and the gateway is not a publisher at all."""
+    lost = DeviceStatus("lost", False, False, False, ActorRef(None, "coordinator/lost"))
+    engine.coordinator.change(engine.status(extra=(lost,)))
     client = await clients()
 
-    await client.send("coordinator/cam", Subscribe(address("events")), sender="ask-1")
+    await client.send(target, Subscribe(address("events")), sender="ask-1")
     to, _, reply = await client.recv()
 
     assert to == "ask-1" and isinstance(reply, Rejected)
-    assert subscribers(engine.cam) == []
+
+
+async def test_dp17_a_client_may_unsubscribe_from_a_device_while_it_is_lost(engine, gateway, clients):
+    """Lost, the device is no longer one a client may send to, but the
+    client's subscription is still the gateway's to end, so that a relaunch
+    does not subscribe the gateway again for nobody."""
+    client = await clients()
+    await client.send("coordinator/cam", Subscribe(address("props")))
+    await until(lambda: subscribers(engine.cam), "the gateway subscribes")
+    lost = DeviceStatus("cam", False, True, False, engine.cam_ref)
+    engine.coordinator.change(Status(CoordinatorState.IDLE, 0, (engine.status().devices[0], lost)))
+    await until(lambda: "coordinator/cam" not in gateway._directory, "the gateway learns it is lost")
+
+    await client.send("coordinator/cam", Unsubscribe(address("props")), sender="ask-1")
+
+    await client.nothing()  # no Rejected
+    await until(lambda: "coordinator/cam" not in gateway._watching, "the gateway stops watching it")
+
+
+async def test_dp17_a_client_that_leaves_leaves_no_subscription_to_a_device(engine, gateway, clients):
+    client = await clients()
+    await client.send("coordinator/cam", Subscribe(address("props")))
+    await until(lambda: subscribers(engine.cam), "the gateway subscribes")
+
+    await client.close()
+
+    await until(lambda: subscribers(engine.cam) == [], "the gateway unsubscribes")
 
 
 # --- WS13: a client leaves nothing behind -------------------------------------

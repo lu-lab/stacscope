@@ -35,6 +35,10 @@ the reading that is harder on the adapter, and says so beside the code:
   "cannot access during this DCAM STATUS" (untried on the Flash).
   ``refused_while_attached`` can be emptied to make a driver that lets one
   through.
+- ``dcamprop_getattr`` gives a mode its values' range and a number its
+  limits and step, as a camera does, and says which properties are
+  writable while capturing. Only EXPOSURE TIME is, until a test adds one to
+  ``writable_while_capturing``.
 - The DCIMG recorder (``dcamrec_*``) keeps what it records in
   ``recordings`` rather than writing DCIMG; it only creates the file.
   ``dcamcap_record`` binds a file to the next capture only (documented: "a
@@ -68,6 +72,7 @@ ERR_INVALIDHANDLE = _api._signed(0x80000807)
 ERR_INVALIDPARAM = _api._signed(0x80000808)
 ERR_OUTOFRANGE = _api._signed(0x80000822)
 ERR_NOTWRITABLE = _api._signed(0x80000823)
+ERR_NOTREADABLE = _api._signed(0x80000824)
 ERR_INVALIDPROPERTYID = _api._signed(0x80000825)
 ERR_ACCESSDENY = _api._signed(0x8000082C)
 ERR_NOVALUETEXT = _api._signed(0x8000082D)
@@ -114,6 +119,10 @@ MIN_TRIGGER_INTERVAL = 0.02
 
 WRITABLE = {"SENSOR MODE", "TRIGGER SOURCE", "EXPOSURE TIME", "SUBARRAY VSIZE"}
 
+EXPOSURE_RANGE = (1e-3, 10.0)
+SUBARRAY_STEP = 4
+SENSOR_TEMPERATURE = -10.0
+
 
 @dataclass
 class FakeRecording:
@@ -139,6 +148,11 @@ class _Property:
     texts: dict[float, str] = field(default_factory=dict)
     step: float = 0.0
     """If set, a value is rounded to a multiple of it when set."""
+    kind: int = _api.PROPTYPE_LONG
+    """MODE for one with texts, whatever is given here."""
+    range: tuple[float, float] | None = None
+    unit: int = 0
+    readable: bool = True
 
 
 class FakeDcam:
@@ -175,6 +189,10 @@ class FakeDcam:
         """Bytes the grabber adds after the last row, kept by ``reshape``."""
         self.refused_while_attached = {"SENSOR MODE", "SUBARRAY VSIZE"}
         """Settings ``dcamprop_setgetvalue`` refuses while frames are attached."""
+        self.writable_while_capturing = {"EXPOSURE TIME"}
+        """Settings ``dcamprop_getattr`` says may be written while capturing."""
+        self.zero_step: set[str] = set()
+        """Settings ``dcamprop_getattr`` says have a step, and gives it as 0."""
         self.cameras = cameras
         self.stamps = stamps
         self.in_flight = in_flight
@@ -220,14 +238,33 @@ class FakeDcam:
         ]:
             self._properties[name] = _Property(_ID_BASE + 0x10 * len(self._properties), value, texts)
         self._properties["EXPOSURE TIME"] = _Property(
-            _ID_BASE + 0x10 * len(self._properties), 0.01, step=EXPOSURE_STEP
+            _ID_BASE + 0x10 * len(self._properties),
+            0.01,
+            step=EXPOSURE_STEP,
+            kind=_api.PROPTYPE_REAL,
+            range=EXPOSURE_RANGE,
+            unit=_api.PROPUNIT_SECOND,
         )
-        self._properties["SUBARRAY VSIZE"] = _Property(_ID_BASE + 0x10 * len(self._properties), height)
+        self._properties["SUBARRAY VSIZE"] = _Property(
+            _ID_BASE + 0x10 * len(self._properties),
+            height,
+            step=SUBARRAY_STEP,
+            range=(SUBARRAY_STEP, height),
+        )
         # The Flash's own floor on the trigger period: 20.0 ms at full frame
         # and 10 ms exposure (dev box survey). Read-only; a test sets it
         # with set_property, as a change of exposure or readout would.
         self._properties["TIMING MIN TRIGGER INTERVAL"] = _Property(
-            _ID_BASE + 0x10 * len(self._properties), MIN_TRIGGER_INTERVAL
+            _ID_BASE + 0x10 * len(self._properties),
+            MIN_TRIGGER_INTERVAL,
+            kind=_api.PROPTYPE_REAL,
+            unit=_api.PROPUNIT_SECOND,
+        )
+        self._properties["SENSOR TEMPERATURE"] = _Property(
+            _ID_BASE + 0x10 * len(self._properties),
+            SENSOR_TEMPERATURE,
+            kind=_api.PROPTYPE_REAL,
+            unit=_api.PROPUNIT_CENTIGRADE,
         )
         for name, value in [
             ("RECORD FIXED BYTES PER FILE", RECORD_PER_FILE),
@@ -539,6 +576,37 @@ class FakeDcam:
             text.value = name.encode()[: textbytes - 1]
             return _api.SUCCESS
 
+    def dcamprop_getattr(self, hdcam, param):
+        with self._lock:
+            if (scripted := self._call("dcamprop_getattr")) and scripted[0] == "fail":
+                return scripted[1]
+            if error := self._device("dcamprop_getattr", hdcam):
+                return error
+            p = param.contents
+            if p.cbSize != ctypes.sizeof(_api.DCAMPROP_ATTR):
+                self.misuse.append("DCAMPROP_ATTR.cbSize not set")
+            name = self._name(p.iProp)
+            if name is None:
+                return ERR_INVALIDPROPERTYID
+            prop = self._properties[name]
+            attribute = _api.PROPTYPE_MODE if prop.texts else prop.kind
+            if prop.readable:
+                attribute |= _api.PROPATTR_READABLE
+            if name in WRITABLE:
+                attribute |= _api.PROPATTR_WRITABLE
+                if name in self.writable_while_capturing:
+                    attribute |= _api.PROPATTR_ACCESSBUSY
+            low_high = (min(prop.texts), max(prop.texts)) if prop.texts else prop.range
+            if low_high is not None:
+                attribute |= _api.PROPATTR_HASRANGE
+                p.valuemin, p.valuemax = low_high
+            if prop.step or name in self.zero_step:
+                attribute |= _api.PROPATTR_HASSTEP
+                p.valuestep = 0.0 if name in self.zero_step else prop.step
+            p.attribute = _as_int32(attribute)
+            p.iUnit = prop.unit
+            return _api.SUCCESS
+
     def dcamprop_getvalue(self, hdcam, iprop, pointer):
         with self._lock:
             if (scripted := self._call("dcamprop_getvalue")) and scripted[0] == "fail":
@@ -548,6 +616,8 @@ class FakeDcam:
             name = self._name(iprop)
             if name is None:
                 return ERR_INVALIDPROPERTYID
+            if not self._properties[name].readable:
+                return ERR_NOTREADABLE
             pointer.contents.value = self._properties[name].value
             return _api.SUCCESS
 

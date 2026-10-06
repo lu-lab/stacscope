@@ -11,6 +11,7 @@ from enum import Enum
 import numpy as np
 
 from stacscope.core.actors.ref import ActorRef
+from stacscope.core.protocol.maps import ReadOnlyMap
 from stacscope.core.protocol.registry import message
 
 # --- client → Coordinator ----------------------------------------------------
@@ -305,6 +306,112 @@ class SaveDirectory:
     """The directory a device records acquisitions into."""
 
     path: str
+
+
+# --- anyone → a device: its properties ----------------------------------------
+#
+# Every device answers these, from the table its adapter declares. A device
+# with no table answers an empty map, and refuses any name.
+
+
+class PropertyKind(Enum):
+    NUMBER = "number"
+    """A float, within ``minimum`` and ``maximum``, or one of ``choices``."""
+    LABEL = "label"
+    """One of ``labels``."""
+    FLAG = "flag"
+    """True or false."""
+
+
+class PropertyAccess(Enum):
+    READ_ONLY = "read_only"
+    IDLE = "idle"
+    """Changeable only while the device is not armed for an acquisition."""
+    ALWAYS = "always"
+    """Changeable at any time, during an acquisition too."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class Property:
+    """One of a device's properties, as it stands.
+
+    ``value`` is a float for a NUMBER, a string for a LABEL and a bool for a
+    FLAG. ``unit`` is an SI symbol, such as "s" or "Hz", or "" for none.
+    ``minimum``, ``maximum`` and ``step`` bound a NUMBER where they are not
+    ``None``; ``choices``, if not empty, are the only numbers it takes.
+    ``labels`` are a LABEL's values. Every field but ``name`` and ``kind``
+    may change as other properties are set.
+    """
+
+    name: str
+    kind: PropertyKind
+    value: bool | float | str
+    unit: str = ""
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    choices: tuple[float, ...] = ()
+    labels: tuple[str, ...] = ()
+    access: PropertyAccess = PropertyAccess.ALWAYS
+
+
+def _read_only(msg: object, field: str) -> None:
+    # A message is one object shared by every subscriber in a process.
+    object.__setattr__(msg, field, ReadOnlyMap(getattr(msg, field)))
+
+
+@message(client=True)
+@dataclass(frozen=True, slots=True)
+class GetProperties:
+    """Read every property of a device. Replied ``Properties``."""
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class Properties:
+    """A device's whole table, by name, in the device's own order."""
+
+    properties: dict[str, Property]
+
+    def __post_init__(self) -> None:
+        _read_only(self, "properties")
+
+
+@message(client=True)
+@dataclass(frozen=True, slots=True)
+class GetProperty:
+    """Read one property. Replied ``Property``, or ``Rejected`` for a name
+    the device does not have."""
+
+    name: str
+
+
+@message(client=True)
+@dataclass(frozen=True, slots=True)
+class SetProperty:
+    """Set one property. Replied ``PropertiesChanged``, or ``Rejected`` with
+    the reason, in which case nothing changed.
+
+    Sets sent without waiting for their answers are applied in the order
+    sent, and a refused one does not stop those after it.
+    """
+
+    name: str
+    value: bool | float | str
+
+
+@message
+@dataclass(frozen=True, slots=True)
+class PropertiesChanged:
+    """Every property whose value or limits a set moved, as it now stands,
+    the one set always among them. Answers the set, and is published to the
+    device's subscribers."""
+
+    properties: dict[str, Property]
+
+    def __post_init__(self) -> None:
+        _read_only(self, "properties")
 
 
 # --- a streaming device → the recorder it started -------------------------------

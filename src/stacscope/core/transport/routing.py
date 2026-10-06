@@ -11,8 +11,9 @@ child process, which has exactly one peer, and of an engine whose peers are its
 children -- and it is what lets a ref cross inside a message and still work.
 """
 
+import dataclasses
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 from stacscope.core.actors import REPLY_MARK, ActorRef, Envelope, Priority
 from stacscope.core.transport.wire import Wire
@@ -30,11 +31,12 @@ class Peer:
         self._send = send
         self._local: dict[str, ActorRef] = {}
         self._senders: weakref.WeakValueDictionary[str, ActorRef] = weakref.WeakValueDictionary()
-        """Senders from this side that have crossed, so the far side can answer
-        them: actors not registered here, and every ``ask``'s one-shot address.
-        Held weakly: reachable while the sender lives (an ask while its asker
-        is waiting), released after. Strong refs here would be a slow leak for
-        the life of the connection."""
+        """Refs from this side that have crossed, so the far side can reach
+        them: senders not registered here, every ``ask``'s one-shot address,
+        and refs inside a message (a subscriber in ``Subscribe``). Held
+        weakly: reachable while their owner holds them (an ask while its
+        asker is waiting), released after. Strong refs here would be a slow
+        leak for the life of the connection."""
 
     # --- what is here ------------------------------------------------------
 
@@ -64,8 +66,9 @@ class Peer:
 
     def send(self, to: str, envelope: Envelope, priority: Priority) -> None:
         sender = envelope.sender
-        if sender is not None and sender.address not in self._local:
-            self._senders[sender.address] = sender  # so the far side can answer it
+        for ref in (sender, *_refs_in(envelope.msg)):
+            if ref is not None and ref.address not in self._local:
+                self._senders[ref.address] = ref  # so the far side can reach it
         self._send(self._wire.pack(to, envelope, priority))
 
     def receive(self, frame: bytes) -> None:
@@ -88,3 +91,18 @@ class _Outbound:
 
     def deliver(self, envelope: Envelope, priority: Priority) -> None:
         self._peer.send(self._address, envelope, priority)
+
+
+def _refs_in(value: object) -> Iterator[ActorRef]:
+    """Every ``ActorRef`` inside a message, however deeply nested."""
+    if isinstance(value, ActorRef):
+        yield value
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _refs_in(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _refs_in(item)
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for field in dataclasses.fields(value):
+            yield from _refs_in(getattr(value, field.name))

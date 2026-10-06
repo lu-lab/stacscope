@@ -34,6 +34,10 @@ What the survey found, and the fake copies:
 - The shortest trigger period is the minimum frame time plus the exposure
   plus the trigger delay (probe, 2026-09-30: at 0.97 of it, every other
   trigger was missed). The fake does not time its pulses; ``miss`` stands in.
+- The AOI's grid (position in steps of 2, size of 4 by 2, at least 16 by
+  4) is the survey's; the exposure's range runs from one step to one frame
+  period, and the trigger delay's from 0 to 4 s in 1 us steps, each as the
+  driver reports it (the manual; untried on the camera).
 
 Every call is logged in ``calls``, and any use the manual forbids -- a call
 on a handle that is not open, reading a frame's info after unlocking it,
@@ -83,6 +87,14 @@ class IS_RECT(ctypes.Structure):
     _fields_ = [("s32X", c_int), ("s32Y", c_int), ("s32Width", c_int), ("s32Height", c_int)]
 
 
+class IS_POINT_2D(ctypes.Structure):
+    _fields_ = [("s32X", c_int), ("s32Y", c_int)]
+
+
+class IS_SIZE_2D(ctypes.Structure):
+    _fields_ = [("s32Width", c_int), ("s32Height", c_int)]
+
+
 class IMAGEQUEUEWAITBUFFER(ctypes.Structure):
     _fields_ = [("timeout", c_uint), ("ppcMem", ctypes.POINTER(c_char_p)), ("pnMemId", ctypes.POINTER(c_int))]
 
@@ -126,6 +138,13 @@ COLOR_MODE_BITS = {IS_CM_BGR8_PACKED: 24, IS_CM_MONO8: 8, IS_CM_SENSOR_RAW8: 8, 
 
 IS_AOI_IMAGE_SET_AOI = 0x0001
 IS_AOI_IMAGE_GET_AOI = 0x0002
+IS_AOI_IMAGE_GET_SIZE_MIN = 0x0010
+IS_AOI_IMAGE_GET_SIZE_MAX = 0x0011
+IS_AOI_IMAGE_GET_SIZE_INC = 0x0012
+IS_AOI_IMAGE_GET_POS_INC = 0x0013
+AOI_POSITION_STEP = (2, 2)
+AOI_SIZE_STEP = (4, 2)
+AOI_SMALLEST = (16, 4)
 
 IS_PIXELCLOCK_CMD_GET_NUMBER = 1
 IS_PIXELCLOCK_CMD_GET_LIST = 2
@@ -135,6 +154,7 @@ IS_PIXELCLOCK_CMD_SET = 6
 IS_GET_FRAMERATE = 0x8000
 
 IS_EXPOSURE_CMD_GET_EXPOSURE = 7
+IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE = 8
 IS_EXPOSURE_CMD_SET_EXPOSURE = 12
 
 IS_GET_EXTERNALTRIGGER = 0x8000
@@ -146,6 +166,10 @@ IS_SET_TRIGGER_SOFTWARE = IS_SET_TRIGGER_CONTINUOUS | 0x0008
 HARDWARE_TRIGGERS = {IS_SET_TRIGGER_HI_LO, IS_SET_TRIGGER_LO_HI}
 
 IS_GET_TRIGGER_DELAY = 0x8000
+IS_GET_MIN_TRIGGER_DELAY = 0x8001
+IS_GET_MAX_TRIGGER_DELAY = 0x8002
+IS_GET_TRIGGER_DELAY_GRANULARITY = 0x8003
+MAX_TRIGGER_DELAY_US = 4_000_000
 
 IS_IMAGE_QUEUE_CMD_INIT = 0
 IS_IMAGE_QUEUE_CMD_EXIT = 1
@@ -213,6 +237,8 @@ class FakeUEye:
     c_mem_p = c_mem_p
     HIDS = HIDS
     IS_RECT = IS_RECT
+    IS_POINT_2D = IS_POINT_2D
+    IS_SIZE_2D = IS_SIZE_2D
     IMAGEQUEUEWAITBUFFER = IMAGEQUEUEWAITBUFFER
     UEYEIMAGEINFO = UEYEIMAGEINFO
 
@@ -487,6 +513,23 @@ class FakeUEye:
             if _value(nCommand) == IS_AOI_IMAGE_GET_AOI:
                 pParam.s32X, pParam.s32Y, pParam.s32Width, pParam.s32Height = self.aoi_rect
                 return IS_SUCCESS
+            sizes = {
+                IS_AOI_IMAGE_GET_SIZE_MIN: AOI_SMALLEST,
+                IS_AOI_IMAGE_GET_SIZE_MAX: SENSOR,
+                IS_AOI_IMAGE_GET_SIZE_INC: AOI_SIZE_STEP,
+            }
+            if _value(nCommand) in sizes:
+                if not isinstance(pParam, IS_SIZE_2D):
+                    self.misuse.append(f"is_AOI {_value(nCommand):#x} without an IS_SIZE_2D")
+                    return IS_INVALID_PARAMETER
+                pParam.s32Width, pParam.s32Height = sizes[_value(nCommand)]
+                return IS_SUCCESS
+            if _value(nCommand) == IS_AOI_IMAGE_GET_POS_INC:
+                if not isinstance(pParam, IS_POINT_2D):
+                    self.misuse.append("is_AOI IS_AOI_IMAGE_GET_POS_INC without an IS_POINT_2D")
+                    return IS_INVALID_PARAMETER
+                pParam.s32X, pParam.s32Y = AOI_POSITION_STEP
+                return IS_SUCCESS
             if _value(nCommand) != IS_AOI_IMAGE_SET_AOI:
                 return IS_INVALID_PARAMETER
             x, y, w, h = (pParam.s32X.value, pParam.s32Y.value, pParam.s32Width.value, pParam.s32Height.value)
@@ -555,6 +598,10 @@ class FakeUEye:
             command = _value(nCommand)
             if command == IS_EXPOSURE_CMD_GET_EXPOSURE:
                 pParam.value = self.exposure_ms
+            elif command == IS_EXPOSURE_CMD_GET_EXPOSURE_RANGE:
+                if cbSizeOfParam < 3 * 8:
+                    return IS_INVALID_PARAMETER
+                pParam[0], pParam[1], pParam[2] = EXPOSURE_STEP_MS, 1000 / self.fps, EXPOSURE_STEP_MS
             elif command == IS_EXPOSURE_CMD_SET_EXPOSURE:
                 ms = round(pParam.value / EXPOSURE_STEP_MS) * EXPOSURE_STEP_MS
                 if not 0.009 <= pParam.value <= 1000 / self.fps:
@@ -587,7 +634,13 @@ class FakeUEye:
             delay = _value(nTriggerDelay)
             if delay == IS_GET_TRIGGER_DELAY:
                 return self.trigger_delay_us
-            if not 0 <= delay <= 4_000_000:
+            if delay == IS_GET_MIN_TRIGGER_DELAY:
+                return 0
+            if delay == IS_GET_MAX_TRIGGER_DELAY:
+                return MAX_TRIGGER_DELAY_US
+            if delay == IS_GET_TRIGGER_DELAY_GRANULARITY:
+                return 1
+            if not 0 <= delay <= MAX_TRIGGER_DELAY_US:
                 return IS_INVALID_PARAMETER
             self.trigger_delay_us = delay
             return IS_SUCCESS

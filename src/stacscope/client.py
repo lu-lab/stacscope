@@ -16,12 +16,15 @@ connects to it over a WebSocket, on this computer by default.
         engine.stop()
 
 The Coordinator's own requests are methods: status, start, stop, relaunch.
+So are a device's properties, by the device's name:
+
+    engine.properties("flash")                 every property, by name
+    engine.set("flash", "EXPOSURE TIME", 0.01)  what the set changed
+
 They raise Refused, with the engine's reason, if it refuses. Anything else
 is a message sent to an actor with ask (which waits for the answer and
 returns it, whatever it is) or tell (which does not wait):
 
-    flash = engine.device("flash")
-    engine.ask(flash, SetProperty("EXPOSURE TIME", 0.01))
     engine.ask(engine.source(), SetWaveform(Waveform.MAIN, ao, do))
 
 Every call that waits gives up after the client's timeout (10 s by
@@ -38,8 +41,6 @@ import threading
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 from websockets.sync.client import connect
 
-import stacscope.adapters.dcam.messages  # noqa: F401 - registered, so their answers can be read
-import stacscope.adapters.ueye.messages  # noqa: F401
 from stacscope.core.actors import (
     Accepted,
     ActorRef,
@@ -54,8 +55,13 @@ from stacscope.core.protocol import (
     MESSAGES,
     AcquisitionStarted,
     AcquisitionStopped,
+    GetProperties,
     GetStatus,
+    Properties,
+    PropertiesChanged,
+    Property,
     Relaunch,
+    SetProperty,
     StartAcquisition,
     Status,
     StopAcquisition,
@@ -171,6 +177,26 @@ class Client:
             if device.source and device.present and device.ref is not None:
                 return device.ref
         raise LookupError("the timing source is not running")
+
+    # --- a device's properties ------------------------------------------------------
+
+    def properties(self, device: str | ActorRef) -> dict[str, Property]:
+        """Every property of ``device`` (its name, or its ref), by name, in
+        the device's own order. Raises ``LookupError`` if no such device is
+        running, and ``Refused``."""
+        return dict(self._expect(self.ask(self._device(device), GetProperties()), Properties).properties)
+
+    def set(self, device: str | ActorRef, name: str, value: bool | float | str) -> dict[str, Property]:
+        """Set the property ``name`` of ``device`` (its name, or its ref) to
+        ``value``: a number, a label, or True or False. Returns every
+        property that changed, as the device now holds it, the one set
+        among them. Raises ``Refused`` with the device's reason, in which
+        case nothing changed, and ``LookupError``."""
+        answer = self.ask(self._device(device), SetProperty(name, value))
+        return dict(self._expect(answer, PropertiesChanged).properties)
+
+    def _device(self, device: str | ActorRef) -> ActorRef:
+        return device if isinstance(device, ActorRef) else self.device(device)
 
     # --- any message ----------------------------------------------------------------
 

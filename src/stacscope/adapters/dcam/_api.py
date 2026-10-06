@@ -79,6 +79,25 @@ PROPOPTION_SUPPORT = 0x00000000
 PROPOPTION_NEXT = 0x01000000
 PROPOPTION_PRIOR = _signed(0xFF000000)
 
+PROPTYPE_MASK = 0x0000000F
+PROPTYPE_MODE = 0x00000001
+PROPTYPE_LONG = 0x00000002
+PROPTYPE_REAL = 0x00000003
+
+PROPATTR_HASRANGE = _signed(0x80000000)
+PROPATTR_HASSTEP = 0x40000000
+PROPATTR_READABLE = 0x00010000
+PROPATTR_WRITABLE = 0x00020000
+PROPATTR_ACCESSBUSY = 0x00001000
+
+PROPUNIT_SECOND = 1
+PROPUNIT_CENTIGRADE = 2
+PROPUNIT_KELVIN = 3
+PROPUNIT_METERPERSECOND = 4
+PROPUNIT_PERSECOND = 5
+PROPUNIT_DEGREE = 6
+PROPUNIT_MICROMETER = 7
+
 
 # --- structures ----------------------------------------------------------------------
 # Each begins with its own size, which DCAM reads to tell versions apart; new()
@@ -126,6 +145,29 @@ class DCAMPROP_VALUETEXT(_Sized):
         ("value", c_double),
         ("text", c_void_p),
         ("textbytes", c_int32),
+    ]
+
+
+class DCAMPROP_ATTR(_Sized):
+    _fields_ = [
+        ("cbSize", c_int32),
+        ("iProp", c_int32),
+        ("option", c_int32),
+        ("iReserved1", c_int32),
+        ("attribute", c_int32),
+        ("iGroup", c_int32),
+        ("iUnit", c_int32),
+        ("attribute2", c_int32),
+        ("valuemin", c_double),
+        ("valuemax", c_double),
+        ("valuestep", c_double),
+        ("valuedefault", c_double),
+        ("nMaxChannel", c_int32),
+        ("iReserved3", c_int32),
+        ("nMaxView", c_int32),
+        ("iProp_NumberOfElement", c_int32),
+        ("iProp_ArrayBase", c_int32),
+        ("iPropStep_Element", c_int32),
     ]
 
 
@@ -212,6 +254,7 @@ FUNCTIONS = {
     "dcamdev_getstring": [c_void_p, POINTER(DCAMDEV_STRING)],
     "dcamprop_getnextid": [c_void_p, POINTER(c_int32), c_int32],
     "dcamprop_getname": [c_void_p, c_int32, ctypes.c_char_p, c_int32],
+    "dcamprop_getattr": [c_void_p, POINTER(DCAMPROP_ATTR)],
     "dcamprop_getvalue": [c_void_p, c_int32, POINTER(c_double)],
     "dcamprop_getvaluetext": [c_void_p, POINTER(DCAMPROP_VALUETEXT)],
     "dcamprop_setgetvalue": [c_void_p, c_int32, POINTER(c_double), c_int32],

@@ -20,6 +20,7 @@ from stacscope.core.actors import (
     HeartbeatReply,
     LocalTransport,
     Priority,
+    Subscribe,
     ask,
     spawn,
 )
@@ -154,6 +155,42 @@ async def test_a_ref_inside_a_message_is_usable_from_the_far_side(link, clock):
 
     assert launched.device.address == "device"
     assert device.handled == [StopDevice()]
+
+
+async def test_dp17_a_ref_sent_inside_a_message_is_reachable_back_across_the_boundary(link, clock):
+    """A subscriber is a ref handed over inside ``Subscribe``. The gateway
+    subscribes to a camera in a process of its own with a ref that is no
+    registered actor, and the camera must be able to publish to it. A peer
+    that knew only senders refused every publication as undeliverable."""
+    camera = Actor()
+    await live(camera, link.there, clock, "camera")
+    heard: list[object] = []
+    subscriber = ActorRef(LocalTransport(lambda envelope, _: heard.append(envelope.msg)), "gateway/~camera")
+
+    link.here.ref_to("camera").tell(Subscribe(subscriber))
+    await clock.advance(0)
+    camera.publish(SourcePhase(Phase.RUN))
+    await clock.advance(0)
+
+    assert heard == [SourcePhase(Phase.RUN)]
+
+
+async def test_dp17_a_ref_sent_inside_a_message_is_held_only_while_its_owner_holds_it(link, clock):
+    """Held weakly, as senders are: a long run hands over many refs, and the
+    link must not keep each one alive for its own lifetime."""
+    camera = Actor()
+    await live(camera, link.there, clock, "camera")
+    subscriber = ActorRef(LocalTransport(lambda envelope, _: None), "gateway/~camera")
+    link.here.ref_to("camera").tell(Subscribe(subscriber))
+    await clock.advance(0)
+    camera.stop()
+    await camera.stopped.wait()
+
+    del subscriber
+    gc.collect()
+
+    with pytest.raises(Undeliverable):
+        link.there.ref_to("gateway/~camera").tell(SourcePhase(Phase.RUN))
 
 
 async def test_cm7_an_ordinary_tell_is_answered_across_the_boundary(link, clock):

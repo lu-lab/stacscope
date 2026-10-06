@@ -2,17 +2,26 @@
 
 The camera streams its frames into a shared-memory image buffer, which any
 viewer or processor finds by the buffer's name, and takes its triggers from
-the DAQ on its trigger input. Each setting is changed by a message of its
-own, answered with the setting as the camera took it:
+the DAQ on its trigger input. Its properties are read with GetProperties
+and changed with SetProperty, in seconds, hertz and pixels:
 
-    SetPixelFormat("RAW10")        SetAOI(0, 384, 1280, 256)
-    SetPixelClock(40)              SetFrameRate(20.0)
-    SetExposure(10.0)              SetTrigger("rising", 0)
+    pixel_format     RAW8 or RAW10
+    aoi_x, aoi_y     where the area of interest starts on the sensor
+    aoi_width, aoi_height
+    pixel_clock      one of the clocks the camera offers, in Hz
+    frame_rate       Hz; under a trigger it bounds the exposure
+    exposure         seconds
+    trigger_edge     rising or falling
+    trigger_delay    seconds from the trigger to the exposure
 
-and GetCameraSettings reads them all. During an acquisition, the pixel
-format and area of interest cannot change; the others change at once if
-the camera accepts them. Settings given in the device's configuration are
-applied when it launches.
+Each is listed with the limits the camera gives now, which move as the
+others are set: a slower pixel clock lowers the fastest frame rate, and a
+lower frame rate allows a longer exposure, so set them in that order. A set
+is answered with every property it changed. During an acquisition, the
+pixel format and area of interest cannot change; the others change at once
+if the camera accepts them. Settings given in the device's configuration
+are applied, in order, when it launches; without any, the camera waits for
+a rising edge with no delay.
 
 A trigger that comes before the camera has finished the last frame is
 ignored by the camera, and the acquisition stops with a lost frame. Ask
@@ -33,32 +42,26 @@ another program has just let it go.
 import asyncio
 import contextlib
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
-from stacscope.adapters.ueye.capture import UEyeFrameCapture
-from stacscope.adapters.ueye.messages import (
-    AOI,
-    CameraSettings,
-    Exposure,
-    FrameRate,
-    GetCameraSettings,
-    PixelClock,
-    PixelFormat,
-    SetAOI,
-    SetExposure,
-    SetFrameRate,
-    SetPixelClock,
-    SetPixelFormat,
-    SetTrigger,
-    Trigger,
-)
+from stacscope.adapters.ueye.capture import PIXEL_FORMATS, TRIGGER_EDGES, UEyeFrameCapture
 from stacscope.core.devices import BufferRecording, ImageStreaming, TimedDevice
-from stacscope.core.protocol import GetShortestTriggerPeriod, ShortestTriggerPeriod
+from stacscope.core.protocol import (
+    GetShortestTriggerPeriod,
+    Property,
+    PropertyAccess,
+    PropertyKind,
+    ShortestTriggerPeriod,
+)
 
 IN_FLIGHT = 2
 """Frames the camera's driver may be writing past the newest it reported:
 measured 1 on the instrument's camera, from software triggers and from the
 DAQ, and declared with a margin of 1."""
+
+_NUMBER, _LABEL = PropertyKind.NUMBER, PropertyKind.LABEL
+_IDLE, _ALWAYS = PropertyAccess.IDLE, PropertyAccess.ALWAYS
 
 
 class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
@@ -67,25 +70,21 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
 
     ``capacity_bytes`` and ``max_slots`` size the buffer once, for every
     acquisition; each acquisition lays out ``n_slots`` frames of whatever
-    format the camera's settings give at the time. The settings given are
-    applied at launch, in the camera's order: ``pixel_format``, ``aoi`` (x,
-    y, width, height), ``pixel_clock`` (MHz), ``frame_rate_fps``,
-    ``exposure_ms``, then the trigger, ``trigger_edge`` ("rising" or
-    "falling") and ``trigger_delay_us``. Any left out keep the camera's
-    defaults. One the camera refuses fails the launch. ``in_flight``
-    overrides the declared in-flight depth, and ``open_timeout`` how long
-    to wait for a camera another process holds. ``save_directory`` is where
-    recordings go, an existing directory, checked at launch; without one,
-    only acquisitions that are not recorded can start. ``ueye`` replaces
-    pyueye, for tests.
+    format the camera's properties give at the time. ``pixel_format`` is
+    the format the camera opens in. ``settings`` is a list of ``(name,
+    value)`` pairs, by the property names in the module's description,
+    applied in order at launch; one refused fails the launch. The camera
+    opens triggered on a rising edge with no delay, and any other property
+    left out keeps the camera's default. ``in_flight`` overrides
+    the declared in-flight depth, and ``open_timeout`` how long to wait for
+    a camera another process holds. ``save_directory`` is where recordings
+    go, an existing directory, checked at launch; without one, only
+    acquisitions that are not recorded can start. ``ueye`` replaces pyueye,
+    for tests.
 
-    Answers each ``Set...`` message with the setting as the camera took it,
-    ``GetCameraSettings`` with ``CameraSettings``, and
-    ``GetShortestTriggerPeriod`` with ``ShortestTriggerPeriod``; or with
-    ``Rejected``, whose reason says why. ``SetPixelFormat`` and ``SetAOI``
-    are refused during an acquisition. ``SetSaveDirectory`` is answered
-    with ``SaveDirectory``, or ``Rejected`` during an acquisition or for a
-    directory that does not exist.
+    Answers ``GetShortestTriggerPeriod`` with ``ShortestTriggerPeriod``,
+    and ``SetSaveDirectory`` with ``SaveDirectory``, or ``Rejected`` during
+    an acquisition or for a directory that does not exist.
     """
 
     def __init__(
@@ -97,12 +96,7 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
         max_slots: int,
         camera: int = 0,
         pixel_format: str = "RAW8",
-        aoi: tuple[int, int, int, int] | None = None,
-        pixel_clock: int | None = None,
-        frame_rate_fps: float | None = None,
-        exposure_ms: float | None = None,
-        trigger_edge: str = "rising",
-        trigger_delay_us: int = 0,
+        settings: Iterable[tuple[str, float | str]] = (),
         in_flight: int = IN_FLIGHT,
         open_timeout: float | None = None,
         save_directory: str | os.PathLike | None = None,
@@ -115,12 +109,7 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
         self.max_slots = max_slots
         self.camera_id = camera
         self.pixel_format = pixel_format
-        self.aoi = None if aoi is None else tuple(aoi)
-        self.pixel_clock = pixel_clock
-        self.frame_rate_fps = frame_rate_fps
-        self.exposure_ms = exposure_ms
-        self.trigger_edge = trigger_edge
-        self.trigger_delay_us = trigger_delay_us
+        self.launch_settings = tuple(settings)
         self.in_flight = in_flight
         self.open_timeout = open_timeout
         self.save_directory = None if save_directory is None else Path(save_directory)
@@ -139,28 +128,9 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
             with contextlib.suppress(Exception):
                 self.capture = await opening
             raise
-        # Each bounds the next: the AOI and pixel clock bound the frame rate,
-        # which bounds the exposure.
-        for name, value, apply in [
-            ("aoi", self.aoi, lambda v: self.capture.set_aoi(*v)),
-            ("pixel_clock", self.pixel_clock, self.capture.set_pixel_clock),
-            ("frame_rate_fps", self.frame_rate_fps, self.capture.set_frame_rate),
-            ("exposure_ms", self.exposure_ms, self.capture.set_exposure),
-        ]:
-            if value is None:
-                continue
-            try:
-                apply(value)
-            except Exception as exc:
-                exc.add_note(f"applying {name} = {value!r} from the device's configuration")
-                raise
-        try:
-            self.capture.set_trigger(self.trigger_edge, self.trigger_delay_us)
-        except Exception as exc:
-            exc.add_note("applying the trigger from the device's configuration")
-            raise
-        # Before the segment exists, so a device whose settings are refused
-        # never creates one for a consumer to find.
+        # The capture opens on the rising edge, and the camera opens with no
+        # trigger delay (Y8), as the launch arguments this replaced defaulted.
+        # The launch settings are applied in here, before the segment exists.
         await super().setup()
 
     def _open(self) -> UEyeFrameCapture:
@@ -169,50 +139,70 @@ class UEyeCamera(ImageStreaming, BufferRecording, TimedDevice):
             self.camera_id, in_flight=self.in_flight, pixel_format=self.pixel_format, ueye=self._ueye, **options
         )
 
-    async def handle(self, msg: object) -> None:
+    async def read_properties(self) -> list[Property]:
+        # In the order each bounds the next: the format and AOI bound the
+        # frame time at a pixel clock, which bounds the frame rate, which
+        # bounds the exposure. A batch of writes is applied in this order.
         capture = self.capture
+        grid = capture.aoi_grid()
+        x, y, width, height = capture.aoi()
+        (sensor_w, sensor_h), (min_w, min_h) = grid.sensor, grid.smallest
+        shortest, longest, _ = capture.frame_time_range()
+        exposure_min, exposure_max, exposure_step = capture.exposure_range()
+        delay_min, delay_max, delay_step = capture.trigger_delay_range()
+        edge, delay_us = capture.trigger()
+        clocks = tuple(float(mhz * 1_000_000) for mhz in capture.pixel_clocks())
+
+        def pixels(name, value, low, high, step):
+            return Property(name, _NUMBER, float(value), "px", float(low), float(high), float(step), access=_IDLE)
+
+        return [
+            Property("pixel_format", _LABEL, capture.pixel_format(), labels=tuple(PIXEL_FORMATS), access=_IDLE),
+            pixels("aoi_x", x, 0, sensor_w - width, grid.position_step[0]),
+            pixels("aoi_y", y, 0, sensor_h - height, grid.position_step[1]),
+            pixels("aoi_width", width, min_w, sensor_w - x, grid.size_step[0]),
+            pixels("aoi_height", height, min_h, sensor_h - y, grid.size_step[1]),
+            Property("pixel_clock", _NUMBER, float(capture.pixel_clock() * 1_000_000), "Hz", choices=clocks),
+            # No step: a frame time's step is not one of the frame rate's.
+            Property("frame_rate", _NUMBER, capture.frame_rate(), "Hz", 1 / longest, 1 / shortest),
+            Property(
+                "exposure", _NUMBER, capture.exposure() / 1e3, "s",
+                exposure_min / 1e3, exposure_max / 1e3, exposure_step / 1e3,
+            ),
+            Property("trigger_edge", _LABEL, edge, labels=tuple(TRIGGER_EDGES)),
+            Property(
+                "trigger_delay", _NUMBER, delay_us / 1e6, "s", delay_min / 1e6, delay_max / 1e6, delay_step / 1e6
+            ),
+        ]  # fmt: skip
+
+    async def write_property(self, name: str, value: float | str) -> None:
+        capture = self.capture
+        match name:
+            case "pixel_format":
+                capture.set_pixel_format(value)
+            case "aoi_x" | "aoi_y" | "aoi_width" | "aoi_height":
+                aoi = dict(zip(("aoi_x", "aoi_y", "aoi_width", "aoi_height"), capture.aoi(), strict=True))
+                aoi[name] = round(value)
+                capture.set_aoi(*aoi.values())
+            case "pixel_clock":
+                capture.set_pixel_clock(round(value / 1_000_000))
+            case "frame_rate":
+                capture.set_frame_rate(value)
+            case "exposure":
+                capture.set_exposure(value * 1e3)
+            case "trigger_edge":
+                capture.set_trigger(value, capture.trigger()[1])
+            case "trigger_delay":
+                capture.set_trigger(capture.trigger()[0], round(value * 1e6))
+
+    async def handle(self, msg: object) -> None:
         match msg:
-            case SetPixelFormat(name):
-                self._answer(lambda: PixelFormat(capture.set_pixel_format(name)))
-            case SetAOI(x, y, width, height):
-                self._answer(lambda: AOI(*capture.set_aoi(x, y, width, height)))
-            case SetPixelClock(mhz):
-                self._answer(lambda: PixelClock(capture.set_pixel_clock(mhz)))
-            case SetFrameRate(fps):
-                self._answer(lambda: FrameRate(capture.set_frame_rate(fps)))
-            case SetExposure(ms):
-                self._answer(lambda: Exposure(capture.set_exposure(ms)))
-            case SetTrigger(edge, delay_us):
-                self._answer(lambda: Trigger(*capture.set_trigger(edge, delay_us)))
-            case GetCameraSettings():
-                self._answer(self._settings)
             case GetShortestTriggerPeriod():
-                self._answer(lambda: ShortestTriggerPeriod(capture.shortest_trigger_period()))
+                try:
+                    seconds = self.capture.shortest_trigger_period()
+                except (ValueError, RuntimeError) as exc:
+                    self._reject(str(exc))
+                    return
+                self.reply(ShortestTriggerPeriod(seconds))
             case _:
                 await super().handle(msg)
-
-    def _answer(self, make) -> None:
-        # The capture refuses a change to the frame while its memory is
-        # attached (RuntimeError), and a bad name (ValueError); the camera
-        # refuses the rest (UEyeError). Each is the requester's to handle.
-        try:
-            answer = make()
-        except (ValueError, RuntimeError) as exc:
-            self._reject(str(exc))
-            return
-        self.reply(answer)
-
-    def _settings(self) -> CameraSettings:
-        capture = self.capture
-        edge, delay_us = capture.trigger()
-        return CameraSettings(
-            pixel_format=capture.pixel_format(),
-            aoi=capture.aoi(),
-            pixel_clock_mhz=capture.pixel_clock(),
-            pixel_clocks_mhz=tuple(capture.pixel_clocks()),
-            frame_rate_fps=capture.frame_rate(),
-            exposure_ms=capture.exposure(),
-            trigger_edge=edge,
-            trigger_delay_us=delay_us,
-        )
-

@@ -9,6 +9,10 @@ language. Only these may cross, and anything else raises ``CodecError``:
 - ``numpy.ndarray`` without object dtype, as ``{dtype, shape, data}``
 - ``ActorRef``, as its address string
 - ``tuple[T, ...]`` of the above; ``T | None``
+- ``dict[str, T]``, as a map; it arrives read-only
+- a union of the scalars above, such as ``bool | float | str``, provided
+  the wire alone tells its arms apart: ``int | float`` is refused, since
+  many languages write 2.0 as 2
 - other registered messages, nested
 
 Decoding is driven by the field annotations, so the wire carries no Python
@@ -25,6 +29,7 @@ import msgpack
 import numpy as np
 
 from stacscope.core.actors import ActorRef
+from stacscope.core.protocol.maps import ReadOnlyMap
 from stacscope.core.protocol.registry import MessageRegistry
 
 _TYPE = "type"
@@ -78,7 +83,9 @@ class Codec:
         message -- a field missing or extra, a value of the wrong type --
         raises ``CodecError``."""
         try:
-            raw = msgpack.unpackb(data, raw=False)
+            # Keys of any type are let through so that a map with a bad key
+            # is refused naming its field, below, rather than as not msgpack.
+            raw = msgpack.unpackb(data, raw=False, strict_map_key=False)
         except Exception as exc:  # msgpack's errors share no base worth naming
             raise CodecError(f"not msgpack: {exc!r}") from None
         return self._decode_message(raw, None, resolve)
@@ -89,9 +96,21 @@ class Codec:
         origin = get_origin(tp)
         if origin in (Union, types.UnionType):
             arms = [a for a in get_args(tp) if a is not type(None)]
-            if len(arms) != 1:
-                raise CodecError(f"{where}: only 'T | None' unions are supported, not {tp}")
-            self._check(arms[0], where)
+            if len(arms) == 1:
+                self._check(arms[0], where)
+            # Any other union is decided by the value's type on the wire, so
+            # every arm must be a scalar with a wire type of its own. An int
+            # and a float are distinct in msgpack, but not every language
+            # keeps them so.
+            elif not all(a in _SCALARS for a in arms) or {int, float} <= set(arms):
+                raise CodecError(
+                    f"{where}: a union must be of scalars the wire tells apart, not {tp}"
+                )
+        elif origin is dict:
+            key, value = get_args(tp)
+            if key is not str:
+                raise CodecError(f"{where}: a map's keys must be strings, not {tp}")
+            self._check(value, where)
         elif origin is tuple:
             args = get_args(tp)
             if len(args) != 2 or args[1] is not Ellipsis:
@@ -115,7 +134,7 @@ class Codec:
             try:
                 encoded[field.name] = self._encode_value(getattr(msg, field.name))
             except CodecError as exc:
-                raise CodecError(f"{cls.__name__}.{field.name}: {exc}") from None
+                raise _within(f"{cls.__name__}.{field.name}", exc) from None
         return encoded
 
     def _encode_value(self, value: object) -> object:
@@ -135,6 +154,16 @@ class Codec:
             return value.address
         if isinstance(value, tuple):
             return [self._encode_value(v) for v in value]
+        if isinstance(value, dict):
+            encoded = {}
+            for key, v in value.items():
+                if not isinstance(key, str):
+                    raise CodecError(f"a map's keys must be strings, not {_kind(key)}")
+                try:
+                    encoded[key] = self._encode_value(v)
+                except CodecError as exc:
+                    raise _within(f"[{key!r}]", exc) from None
+            return encoded
         if self._hints_for(type(value)) is not None:
             return self._encode_message(value)
         raise CodecError(f"{type(value).__name__} cannot cross a boundary")
@@ -167,16 +196,31 @@ class Codec:
             try:
                 fields[name] = self._decode_value(raw[name], hints[name], resolve)
             except CodecError as exc:
-                raise CodecError(f"{cls.__name__}.{name}: {exc}") from None
+                raise _within(f"{cls.__name__}.{name}", exc) from None
         return cls(**fields)
 
     def _decode_value(self, raw: object, tp: Any, resolve: Resolve | None) -> object:
         origin = get_origin(tp)
         if origin in (Union, types.UnionType):
-            if raw is None:
+            if raw is None and type(None) in get_args(tp):
                 return None
-            [arm] = [a for a in get_args(tp) if a is not type(None)]
-            return self._decode_value(raw, arm, resolve)
+            arms = [a for a in get_args(tp) if a is not type(None)]
+            if len(arms) == 1:
+                return self._decode_value(raw, arms[0], resolve)
+            return _decode_scalar_union(raw, arms)
+        if origin is dict:
+            if not isinstance(raw, dict):
+                raise CodecError(f"expected a map, got {_kind(raw)}")
+            value_type = get_args(tp)[1]
+            decoded = {}
+            for key, r in raw.items():
+                if not isinstance(key, str):
+                    raise CodecError(f"a map's keys must be strings, not {_kind(key)}")
+                try:
+                    decoded[key] = self._decode_value(r, value_type, resolve)
+                except CodecError as exc:
+                    raise _within(f"[{key!r}]", exc) from None
+            return ReadOnlyMap(decoded)
         if origin is tuple:
             if not isinstance(raw, list):
                 raise CodecError(f"expected a list, got {_kind(raw)}")
@@ -208,6 +252,29 @@ class Codec:
                 raise CodecError(f"cannot resolve actor address {raw!r}")
             return ref
         return self._decode_message(raw, tp, resolve)
+
+
+def _decode_scalar_union(raw: object, arms: list[type]) -> object:
+    """A value of a union of scalars, by its type on the wire."""
+    # bool first: Python calls True an int, and a flag must never become 1.0.
+    if isinstance(raw, bool):
+        if bool in arms:
+            return raw
+    elif isinstance(raw, int):
+        if int in arms:
+            return raw
+        if float in arms:
+            return float(raw)  # many languages write 2.0 as 2
+    elif type(raw) in arms:
+        return raw
+    names = ", ".join(a.__name__ for a in arms)
+    raise CodecError(f"expected one of {names}, got {_kind(raw)}")
+
+
+def _within(where: str, exc: CodecError) -> CodecError:
+    """``exc`` placed inside ``where``: a field, or a key of a map."""
+    detail = str(exc)
+    return CodecError(f"{where}{'' if detail.startswith('[') else ': '}{detail}")
 
 
 _ARRAY_KEYS = {"dtype", "shape", "data"}

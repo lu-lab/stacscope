@@ -2,20 +2,22 @@
 
 The camera streams its frames into a shared-memory image buffer, which any
 viewer or processor finds by the buffer's name, and takes its triggers from
-the DAQ on its trigger input. Its settings are changed by message, by the
-names and value labels the camera itself uses:
+the DAQ on its trigger input. Its properties are the camera's own, by the
+names and value labels the camera itself uses, with the limits and units the
+camera states:
 
-    SetProperty("EXPOSURE TIME", 0.01)
-    SetPropertyLabel("SENSOR MODE", "PROGRESSIVE")
-    GetProperty("TRIGGER SOURCE")
+    GetProperties()                            every one
+    SetProperty("EXPOSURE TIME", 0.01)         a number, in seconds
+    SetProperty("SENSOR MODE", "PROGRESSIVE")  a mode, by its label
 
-Each is answered with what the camera applied, in a PropertyValue, or with
-Rejected and the camera's reason. GetShortestTriggerPeriod answers with the
-shortest trigger period the current settings allow, as the camera states
-it; keep the trigger slower than that. During an acquisition, a setting that
-would change the frame's size or layout is refused; others, such as the
-exposure time, change at once if the camera accepts them. Settings given in
-the device's configuration are applied, in order, when it launches.
+A set is answered with every property it changed, as the camera applied it,
+or with Rejected and the reason. During an acquisition, only what the camera
+allows while capturing can change, such as the exposure time; a change that
+would alter the frame's size or layout is refused. Settings given in the
+device's configuration are applied, in order, when it launches.
+GetShortestTriggerPeriod answers with the shortest trigger period the
+current settings allow, as the camera states it; keep the trigger slower
+than that.
 
 An acquisition started with a file name is also recorded, by the camera's
 driver, to a DCIMG file named after it and the device, in the save
@@ -45,16 +47,24 @@ from collections.abc import Iterable
 from pathlib import Path
 from shutil import disk_usage
 
+from stacscope.adapters.dcam import _api
 from stacscope.adapters.dcam.capture import DcamError, DcamFrameCapture
-from stacscope.adapters.dcam.messages import (
-    GetProperty,
-    PropertyValue,
-    SetProperty,
-    SetPropertyLabel,
+from stacscope.core.actors import Fault
+from stacscope.core.devices import (
+    DeviceState,
+    ImageStreaming,
+    PropertyRefused,
+    Recording,
+    TimedDevice,
 )
-from stacscope.core.devices import DeviceState, ImageStreaming, Recording, TimedDevice
-from stacscope.core.protocol import GetShortestTriggerPeriod, ShortestTriggerPeriod
 from stacscope.core.ports import FrameFormat
+from stacscope.core.protocol import (
+    GetShortestTriggerPeriod,
+    Property,
+    PropertyAccess,
+    PropertyKind,
+    ShortestTriggerPeriod,
+)
 
 IN_FLIGHT = 2
 """Frames the Flash's grabber may be writing past the newest it reported:
@@ -75,6 +85,18 @@ tenth of the disk."""
 
 _MOST_FRAMES = 2**31 - 1  # DCAMREC_OPEN's frame limit is an int32
 
+_UNITS = {
+    _api.PROPUNIT_SECOND: "s",
+    _api.PROPUNIT_CENTIGRADE: "°C",
+    _api.PROPUNIT_KELVIN: "K",
+    _api.PROPUNIT_METERPERSECOND: "m/s",
+    _api.PROPUNIT_PERSECOND: "Hz",
+    _api.PROPUNIT_DEGREE: "°",
+    _api.PROPUNIT_MICROMETER: "µm",
+}
+"""DCAM's units as symbols. Not all SI (°C, °), but each is the symbol a
+reader expects."""
+
 
 class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     """DCAM camera number ``camera``, streaming into the image buffer
@@ -84,19 +106,20 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
     acquisition; each acquisition lays out ``n_slots`` frames of whatever
     format the camera's settings give at the time. ``settings`` is a list
     of ``(name, value)`` pairs applied in order when the device launches, a
-    value being a number or one of the camera's labels; one the camera
-    refuses fails the launch. ``in_flight`` overrides the Flash's declared
+    value being a number, or a mode's label; one refused fails the launch. ``in_flight`` overrides the Flash's declared
     in-flight depth, for another camera or readout. ``save_directory`` is
     where recordings go, an existing directory, checked at launch; without
     one, only acquisitions that are not recorded can start.
     ``max_record_frames`` caps how many frames a file may hold. ``library``
     replaces ``dcamapi.dll``, for tests.
 
-    Answers ``SetProperty``, ``SetPropertyLabel`` and ``GetProperty`` with
-    ``PropertyValue``, or ``Rejected``. While armed, a change that alters the
-    frame format is refused; if the camera accepts one anyway, the device
-    puts it back, answers ``Rejected`` and reports a fatal ``Fault``,
-    since frames of the new format may already have been written.
+    Its properties are every property the camera can read, by the camera's
+    names: a mode as a LABEL of the camera's labels, anything else as a
+    NUMBER with the camera's limits, step and unit. One the camera may
+    change while capturing is ALWAYS, any other it may change is IDLE. If
+    the camera accepts a change while armed that alters the frame format,
+    the device puts it back, answers ``Rejected`` and reports a fatal
+    ``Fault``, since frames of the new format may already have been written.
 
     Answers ``GetShortestTriggerPeriod`` with ``ShortestTriggerPeriod``: the
     camera's own TIMING MIN TRIGGER INTERVAL, for its current settings.
@@ -159,26 +182,54 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
             with contextlib.suppress(Exception):
                 self.capture = await opening
             raise
-        for name, value in self.launch_settings:
-            try:
-                self.capture.set(name, value)
-            except Exception as exc:
-                exc.add_note(f"applying {name} = {value!r} from the device's settings")
-                raise
-        # Before the segment exists, so a device whose settings are refused
-        # never creates one for a consumer to find. The layout is read at
-        # each arm, not here.
+        # Decided once: the names a device lists may not change.
+        self._listed = [n for n in self.capture.names() if self.capture.attributes(n).readable]
+        # The launch settings are applied in here, before the segment exists.
+        # The layout is read at each arm, not here.
         await super().setup()
 
     def _open(self) -> DcamFrameCapture:
         return DcamFrameCapture(self.camera_index, in_flight=self.in_flight, library=self._library)
 
+    async def read_properties(self) -> list[Property]:
+        return [self._describe(name) for name in self._listed]
+
+    def _describe(self, name: str) -> Property:
+        attr = self.capture.attributes(name)
+        if not attr.writable:
+            access = PropertyAccess.READ_ONLY
+        elif attr.while_capturing:
+            access = PropertyAccess.ALWAYS
+        else:
+            access = PropertyAccess.IDLE
+        if attr.labelled:
+            labels = tuple(self.capture.labels(name))
+            return Property(
+                name, PropertyKind.LABEL, self.capture.label(name), labels=labels, access=access
+            )
+        return Property(
+            name,
+            PropertyKind.NUMBER,
+            self.capture.get(name),
+            _UNITS.get(attr.unit, ""),
+            attr.minimum,
+            attr.maximum,
+            attr.step,
+            access=access,
+        )
+
+    async def write_property(self, name: str, value: bool | float | str) -> None:
+        # Memory is attached in every state but IDLE.
+        armed = self.state is not DeviceState.IDLE
+        if armed:
+            fmt = self.capture.frame_format()
+            before = self.capture.get(name)
+        self.capture.set(name, value)
+        if armed and self._format_moved(fmt):
+            self._put_back(name, before)
+
     async def handle(self, msg: object) -> None:
         match msg:
-            case GetProperty(name):
-                self._answer(name)
-            case SetProperty(name, value) | SetPropertyLabel(name, value):
-                self._change(name, value)
             case GetShortestTriggerPeriod():
                 self._shortest_trigger_period()
             case _:
@@ -194,35 +245,12 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
             return
         self.reply(ShortestTriggerPeriod(seconds))
 
-    def _answer(self, name: str) -> None:
-        try:
-            value = self._read(name)
-        except (ValueError, DcamError) as exc:
-            self._reject(str(exc))
-            return
-        self.reply(value)
-
-    def _change(self, name: str, value: float | str) -> None:
-        armed = self.state is DeviceState.ARMED
-        try:
-            if armed:
-                fmt = self.capture.frame_format()
-                before = self.capture.get(name)
-            self.capture.set(name, value)
-            if armed and self._format_moved(fmt):
-                self._put_back(name, before)
-                return
-            applied = self._read(name)
-        except (ValueError, DcamError) as exc:
-            self._reject(str(exc))
-            return
-        self.reply(applied)
-
     def _format_moved(self, fmt: FrameFormat) -> bool:
         # DCAM refuses a change to the frame's shape or readout while memory
-        # is attached, which is what the slots rely on, but the reference
-        # does not list which settings it refuses. Checked after the fact
-        # because a list kept here would be a guess about every camera.
+        # is attached, which is what the slots rely on, and its attributes
+        # say what it takes while capturing, but neither is a promise about
+        # the frame format. Checked after the fact because a list kept here
+        # would be a guess about every camera.
         try:
             return self.capture.frame_format() != fmt
         except Exception:
@@ -236,7 +264,9 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
             reason = f"{name} changed the frame format while armed, and could not be put back: {exc}"
         # Fatal either way: frames of the new format may already be in slots
         # laid out for the old one, under a header that describes the old.
-        self._reject(reason, fatal=True)
+        # Reported here, since the core answers any refusal as a mere one.
+        self.report(Fault(self.ref, reason, fatal=True))
+        raise PropertyRefused(reason)
 
     # --- recording: the driver's own DCIMG writer ---------------------------------------
 
@@ -289,11 +319,3 @@ class OrcaFlash(ImageStreaming, Recording, TimedDevice):
         if self.max_record_frames is not None:
             limit = min(limit, self.max_record_frames)
         return limit
-
-    def _read(self, name: str) -> PropertyValue:
-        value = self.capture.get(name)
-        try:
-            label = self.capture.label(name)
-        except ValueError:  # a plain number, with no labels
-            label = None
-        return PropertyValue(name, value, label)

@@ -1,7 +1,8 @@
-"""O1-O7: the OrcaFlash device over the fake DCAM library, beyond the
-ImageStreaming role contract (test_role_contract.py): its own settings
-messages, the settings its config applies at launch, and opening DCAM
-without stalling the actor runtime.
+"""O1-O12 and DP21-DP24: the OrcaFlash device over the fake DCAM library,
+beyond the ImageStreaming role contract (test_role_contract.py) and the
+property contract (test_property_contract.py): its table of the camera's own
+properties, the settings its config applies at launch, recording, and
+opening DCAM without stalling the actor runtime.
 
 The capture runs DCAM's blocking calls in threads, so this runs on a real
 clock, and every step allows ``GRACE`` for a thread to hand its result back.
@@ -13,6 +14,7 @@ Windows only, like the adapter, and not part of the default run:
 # For end use and not for commercial purposes.
 
 import asyncio
+import importlib
 import pathlib
 import shutil
 import sys
@@ -21,9 +23,13 @@ import uuid
 
 import pytest
 from fake_dcam import (
-    ERR_NOTWRITABLE,
+    ERR_INVALIDPARAM,
+    EXPOSURE_RANGE,
+    EXPOSURE_STEP,
     RECORD_PER_FILE,
     RECORD_PER_SESSION,
+    SENSOR_TEMPERATURE,
+    SUBARRAY_STEP,
     FakeDcam,
     error_text,
 )
@@ -32,14 +38,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "contract"))
 
 from image_streaming_contract import Listener  # noqa: E402
 
-from stacscope.adapters.dcam import (  # noqa: E402
-    GetProperty,
-    OrcaFlash,
-    PropertyValue,
-    SetProperty,
-    SetPropertyLabel,
-    _api,
-)
+from stacscope.adapters.dcam import OrcaFlash  # noqa: E402
 from stacscope.adapters.dcam import camera as camera_module  # noqa: E402
 from stacscope.core.actors import (  # noqa: E402
     Actor,
@@ -52,18 +51,29 @@ from stacscope.core.actors import (  # noqa: E402
     spawn,
 )
 from stacscope.core.buffer import ImageBuffer  # noqa: E402
+from stacscope.core.devices import PropertyRefused  # noqa: E402
 from stacscope.core.protocol import (  # noqa: E402
     MESSAGES,
     SaveDirectory,
     SetSaveDirectory,
     DeviceReady,
     DeviceStopped,
+    GetProperties,
+    GetProperty,
     GetShortestTriggerPeriod,
+    PropertiesChanged,
+    Property,
+    PropertyAccess,
+    PropertyKind,
+    SetProperty,
     ShortestTriggerPeriod,
     StartDevice,
     StopDevice,
 )
 from stacscope.core.transport import Codec  # noqa: E402
+
+NUMBER, LABEL = PropertyKind.NUMBER, PropertyKind.LABEL
+IDLE, ALWAYS, READ_ONLY = PropertyAccess.IDLE, PropertyAccess.ALWAYS, PropertyAccess.READ_ONLY
 
 GRACE = 0.25
 """Seconds allowed for a DCAM wait's thread to return and its caller to run."""
@@ -143,10 +153,62 @@ def _faults(listener) -> list[Fault]:
     return [m for m in listener.heard if isinstance(m, Fault)]
 
 
-# --- O1: settings by the camera's own names and labels -------------------------------------
+# --- O1, DP21: the camera's own properties, as a table ----------------------------------------
 
 
-async def test_o1_a_setting_is_set_by_name_and_answered_with_what_the_camera_applied(launch, fake):
+async def test_dp21_the_table_lists_every_property_the_camera_has_by_its_own_names(launch, fake):
+    """Found by name at run time, never from the header's numbers (the
+    licence; the fake numbers them differently), so a client sees what this
+    camera has, whatever the model."""
+    _, ref, _ = await launch(fake)
+
+    table = (await _ask(ref, GetProperties())).properties
+
+    assert list(table) == list(fake._properties)
+
+
+async def test_dp21_each_property_carries_dcams_limits_step_unit_and_access(launch, fake):
+    _, ref, _ = await launch(fake)
+
+    table = (await _ask(ref, GetProperties())).properties
+
+    assert table["EXPOSURE TIME"] == Property(
+        "EXPOSURE TIME", NUMBER, 0.01, "s", *EXPOSURE_RANGE, EXPOSURE_STEP, access=ALWAYS
+    )
+    assert table["SUBARRAY VSIZE"] == Property(
+        "SUBARRAY VSIZE", NUMBER, float(SHAPE[0]), "", SUBARRAY_STEP, SHAPE[0], SUBARRAY_STEP,
+        access=IDLE,
+    )  # fmt: skip
+    assert table["SENSOR MODE"] == Property(
+        "SENSOR MODE", LABEL, "AREA", labels=("AREA", "PROGRESSIVE"), access=IDLE
+    )
+    assert table["IMAGE WIDTH"].access is READ_ONLY
+    assert table["SENSOR TEMPERATURE"] == Property(
+        "SENSOR TEMPERATURE", NUMBER, SENSOR_TEMPERATURE, "°C", access=READ_ONLY
+    )
+
+
+async def test_dp21_a_step_of_zero_is_no_step(launch, fake):
+    """A step of 0 would tell a client that no value can follow another,
+    and a page would draw a control that cannot move."""
+    fake.zero_step.add("EXPOSURE TIME")
+    _, ref, _ = await launch(fake)
+
+    assert (await _ask(ref, GetProperty("EXPOSURE TIME"))).step is None
+
+
+async def test_dp21_a_property_dcam_cannot_read_is_not_listed(launch, fake):
+    """It has no value to show. Decided once, from DCAM's attributes, so the
+    names stay the same for the device's lifetime."""
+    fake._properties["SENSOR TEMPERATURE"].readable = False
+    _, ref, _ = await launch(fake)
+
+    table = (await _ask(ref, GetProperties())).properties
+
+    assert "SENSOR TEMPERATURE" not in table and "EXPOSURE TIME" in table
+
+
+async def test_o1_a_set_is_answered_with_what_the_camera_applied(launch, fake):
     """The camera rounds a value to one it can do (exposure to whole line
     intervals), so the answer is what was applied, not what was asked for:
     a client recording the request would misstate its exposure."""
@@ -154,37 +216,33 @@ async def test_o1_a_setting_is_set_by_name_and_answered_with_what_the_camera_app
 
     answer = await _ask(ref, SetProperty("EXPOSURE TIME", 0.012345))
 
-    assert answer == PropertyValue("EXPOSURE TIME", pytest.approx(0.0123), None)
-    assert fake._value("EXPOSURE TIME") == answer.value
+    assert isinstance(answer, PropertiesChanged)
+    assert answer.properties["EXPOSURE TIME"].value == pytest.approx(0.0123)
+    assert fake._value("EXPOSURE TIME") == answer.properties["EXPOSURE TIME"].value
 
 
-async def test_o1_a_setting_is_set_by_label_and_answered_with_its_label_and_number(launch, fake):
+async def test_o1_a_mode_is_set_and_read_by_its_label(launch, fake):
     """A mode is chosen by the camera's own label, since the numbers behind
     the labels are the header's (the licence keeps them out of this
     repository), and the fake numbers them differently from it."""
     _, ref, _ = await launch(fake)
 
-    answer = await _ask(ref, SetPropertyLabel("SENSOR MODE", "PROGRESSIVE"))
+    answer = await _ask(ref, SetProperty("SENSOR MODE", "PROGRESSIVE"))
 
-    assert answer == PropertyValue("SENSOR MODE", 32.0, "PROGRESSIVE")
+    assert answer.properties["SENSOR MODE"].value == "PROGRESSIVE"
     assert fake.label("SENSOR MODE") == "PROGRESSIVE"
+    assert (await _ask(ref, GetProperty("TRIGGER SOURCE"))).value == "EXTERNAL"
 
 
-@pytest.mark.parametrize(
-    "name, expected",
-    [
-        ("TRIGGER SOURCE", PropertyValue("TRIGGER SOURCE", 52.0, "EXTERNAL")),
-        ("EXPOSURE TIME", PropertyValue("EXPOSURE TIME", 0.01, None)),
-    ],
-    ids=["labelled", "numeric"],
-)
-async def test_o1_a_setting_is_read_with_its_label_if_it_has_one(launch, fake, name, expected):
-    """A client showing a mode wants its label; one computing with a value
-    wants the number. Every answer carries both where both exist, so a
-    client never has to ask twice or know which kind a property is."""
+async def test_o1_a_set_answers_what_else_it_moved(launch, fake):
+    """A smaller subarray is a smaller frame: the camera's sizes move with
+    it, and a client sees them move without asking."""
     _, ref, _ = await launch(fake)
 
-    assert await _ask(ref, GetProperty(name)) == expected
+    answer = await _ask(ref, SetProperty("SUBARRAY VSIZE", 12))
+
+    assert {"SUBARRAY VSIZE", "IMAGE HEIGHT", "BUFFER FRAMEBYTES"} <= set(answer.properties)
+    assert "EXPOSURE TIME" not in answer.properties
 
 
 # --- O2: refusals are answers, not faults --------------------------------------------------
@@ -193,33 +251,45 @@ async def test_o1_a_setting_is_read_with_its_label_if_it_has_one(launch, fake, n
 @pytest.mark.parametrize(
     "request_, reason",
     [
-        (SetProperty("FAN SPEED", 1.0), "no FAN SPEED property"),
-        (SetPropertyLabel("SENSOR MODE", "SIDEWAYS"), "AREA, PROGRESSIVE"),
-        (SetProperty("IMAGE WIDTH", 20.0), error_text(ERR_NOTWRITABLE)),
-        (GetProperty("FAN SPEED"), "no FAN SPEED property"),
+        (SetProperty("FAN SPEED", 1.0), "'FAN SPEED'"),
+        (SetProperty("SENSOR MODE", "SIDEWAYS"), "AREA, PROGRESSIVE"),
+        (SetProperty("IMAGE WIDTH", 20.0), "read-only"),
+        (SetProperty("EXPOSURE TIME", 20.0), "at most 10"),
+        (GetProperty("FAN SPEED"), "'FAN SPEED'"),
     ],
-    ids=["no such property", "no such label", "dcam refuses", "no such property to read"],
+    ids=["no such property", "no such label", "read-only", "out of range", "no such property to read"],
 )
 async def test_o2_a_setting_the_camera_refuses_is_rejected_and_the_device_carries_on(
     launch, fake, request_, reason
 ):
     """A mistyped name, or a setting the camera will not take, is the
-    client's to correct: answered ``Rejected``, with the camera's own words
-    where it gave some, and nothing else. A fault here would abort an
-    acquisition over a typo, and a device that stopped answering would need
-    a relaunch."""
+    client's to correct: answered ``Rejected``, and nothing else. A fault
+    here would abort an acquisition over a typo, and a device that stopped
+    answering would need a relaunch."""
     _, ref, listener = await launch(fake)
 
     answer = await _ask(ref, request_)
 
     assert isinstance(answer, Rejected)
     assert reason in answer.reason
+    assert "dcamprop_setgetvalue" not in fake.calls
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
     assert _faults(listener) == []
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
 
-# --- O3: while armed, only what leaves the frame format alone ---------------------------------
+async def test_o2_a_value_dcam_refuses_is_rejected_in_dcams_words(launch, fake):
+    _, ref, listener = await launch(fake)
+    fake.fail("dcamprop_setgetvalue", ERR_INVALIDPARAM)
+
+    answer = await _ask(ref, SetProperty("EXPOSURE TIME", 0.02))
+
+    assert isinstance(answer, Rejected) and error_text(ERR_INVALIDPARAM) in answer.reason
+    assert _faults(listener) == []
+    assert isinstance(await _ask(ref, SetProperty("EXPOSURE TIME", 0.02)), PropertiesChanged)
+
+
+# --- O3, DP23: while armed, only what leaves the frame format alone ---------------------------
 
 
 async def test_o3_while_armed_a_setting_that_leaves_the_format_alone_is_applied(launch, fake):
@@ -235,7 +305,7 @@ async def test_o3_while_armed_a_setting_that_leaves_the_format_alone_is_applied(
         answer = await _ask(ref, SetProperty("EXPOSURE TIME", 0.02))
         await _trigger(fake, 1)
 
-        assert answer == PropertyValue("EXPOSURE TIME", pytest.approx(0.02), None)
+        assert answer.properties["EXPOSURE TIME"].value == pytest.approx(0.02)
         assert reader.published() - reader.acquisition_start == 2
         assert _faults(listener) == []
     finally:
@@ -243,27 +313,24 @@ async def test_o3_while_armed_a_setting_that_leaves_the_format_alone_is_applied(
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
 
-async def test_o3_while_armed_a_setting_that_reshapes_the_frame_is_refused(launch, fake):
-    """The buffer's layout is fixed at arm; a frame of another size would
-    not fit its slots. DCAM refuses such a change while memory is attached,
-    and the refusal is the client's answer. The acquisition goes on, and
-    the change can be made once the device is idle, where it reaches the
-    next acquisition's layout."""
+async def test_o3_while_armed_a_setting_dcam_allows_only_when_idle_is_refused(launch, fake):
+    """DCAM says which properties it takes while capturing; the rest wait
+    for the device to be idle, and are refused before DCAM is asked. The
+    acquisition goes on, and the change can be made once the device is
+    idle, where it reaches the next acquisition's layout."""
     device, ref, listener = await launch(fake)
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
 
     answer = await _ask(ref, SetProperty("SUBARRAY VSIZE", 12))
     await _trigger(fake, 1)
 
-    assert isinstance(answer, Rejected)
-    assert error_text(_api.ERR_BUSY) in answer.reason
+    assert isinstance(answer, Rejected) and "idle" in answer.reason
+    assert "dcamprop_setgetvalue" not in fake.calls
     assert _faults(listener) == []
     assert device.writer.published() - device.writer.acquisition_start == 1
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
-    assert await _ask(ref, SetProperty("SUBARRAY VSIZE", 12)) == PropertyValue(
-        "SUBARRAY VSIZE", 12.0, None
-    )
+    assert isinstance(await _ask(ref, SetProperty("SUBARRAY VSIZE", 12)), PropertiesChanged)
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
     reader = ImageBuffer.open(device.buffer_name)
     try:
@@ -273,14 +340,15 @@ async def test_o3_while_armed_a_setting_that_reshapes_the_frame_is_refused(launc
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
 
-async def test_o3_while_armed_a_reshape_the_driver_lets_through_is_undone_and_fatal(launch, fake):
-    """Nothing but DCAM's refusal keeps a larger frame out of slots laid
-    out for a smaller one, and the reference does not list which settings
-    it refuses. So the device checks the frame format after every change
-    while armed. A change that moved it is put back and answered
-    ``Rejected``, and the acquisition is ended by a fatal fault: frames
-    written in between may not be what the header says."""
+async def test_dp23_while_armed_a_reshape_the_driver_lets_through_is_undone_and_fatal(launch, fake):
+    """Nothing but DCAM's word keeps a larger frame out of slots laid out
+    for a smaller one, and its attributes are a camera's own account. So the
+    device checks the frame format after every change while armed. A change
+    that moved it is put back and answered ``Rejected``, and the acquisition
+    is ended by a fatal fault: frames written in between may not be what the
+    header says."""
     fake.refused_while_attached.clear()
+    fake.writable_while_capturing.add("SUBARRAY VSIZE")
     _, ref, listener = await launch(fake)
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
 
@@ -296,13 +364,14 @@ async def test_o3_while_armed_a_reshape_the_driver_lets_through_is_undone_and_fa
     assert await _ask(ref, StopDevice()) == DeviceStopped()
 
 
-async def test_o3_while_armed_a_change_that_leaves_a_format_that_cannot_be_described_is_undone(
+async def test_dp23_while_armed_a_change_that_leaves_a_format_that_cannot_be_described_is_undone(
     launch, fake, monkeypatch
 ):
     """A pixel type STACScope cannot describe (MONO12P, packed) makes the
     format unreadable rather than different. That is a change all the
     same, and the worst kind: put back, and fatal."""
     fake.refused_while_attached.clear()
+    fake.writable_while_capturing.add("SUBARRAY VSIZE")
     device, ref, listener = await launch(fake)
     assert await _ask(ref, StartDevice("", -1)) == DeviceReady()
     describe = device.capture.frame_format
@@ -364,8 +433,8 @@ async def test_o4_a_setting_config_gives_that_is_refused_fails_the_launch_and_cl
     device, _, _ = await launch(fake, settings=[("SENSOR MODE", "SIDEWAYS")])
 
     assert not device.started.is_set()
-    assert isinstance(device.exit_error, ValueError)
-    assert any("SENSOR MODE" in note for note in device.exit_error.__notes__)
+    assert isinstance(device.exit_error, PropertyRefused)
+    assert "SENSOR MODE" in str(device.exit_error) and "SIDEWAYS" in str(device.exit_error)
     assert "dcamapi_uninit" in fake.calls
     assert not fake._initialized
 
@@ -449,17 +518,16 @@ async def test_o6_a_device_cancelled_while_dcam_opens_still_closes_the_camera(la
     assert not fake._initialized
 
 
-# --- O7: the messages cross a process boundary -------------------------------------------
+# --- O7, DP24: the core's messages, and none of the adapter's own --------------------------------
 
 
 @pytest.mark.parametrize(
     "msg",
     [
         SetProperty("EXPOSURE TIME", 0.01),
-        SetPropertyLabel("SENSOR MODE", "PROGRESSIVE"),
+        SetProperty("SENSOR MODE", "PROGRESSIVE"),
         GetProperty("TRIGGER SOURCE"),
-        PropertyValue("TRIGGER SOURCE", 52.0, "EXTERNAL"),
-        PropertyValue("EXPOSURE TIME", 0.01, None),
+        Property("TRIGGER SOURCE", LABEL, "EXTERNAL", labels=("INTERNAL", "EXTERNAL")),
         SetSaveDirectory("E:/data"),
         SaveDirectory("E:/data"),
     ],
@@ -471,6 +539,16 @@ def test_o7_the_settings_messages_cross_a_process_boundary(msg):
     codec = Codec(MESSAGES)
 
     assert codec.decode(codec.encode(msg)) == msg
+
+
+def test_dp24_the_adapter_has_no_messages_of_its_own():
+    """A client configures the camera through the core's property messages,
+    and imports nothing of the adapter's."""
+    import stacscope.adapters.dcam as dcam
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("stacscope.adapters.dcam.messages")
+    assert not {"SetProperty", "SetPropertyLabel", "GetProperty", "PropertyValue"} & set(dir(dcam))
 
 
 # --- O8: recording an acquisition to DCIMG ---------------------------------------------------

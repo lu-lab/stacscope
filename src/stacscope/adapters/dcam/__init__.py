@@ -1,9 +1,8 @@
 """Hamamatsu cameras through DCAM-API.
 
-OrcaFlash is the camera as a device: it streams frames into an image buffer
-and takes its settings by message (SetProperty, SetPropertyLabel,
-GetProperty), and records acquisitions to DCIMG files in a directory set by
-SetSaveDirectory, a core message. DcamFrameCapture, beneath it, drives the
+OrcaFlash is the camera as a device: it streams frames into an image buffer,
+lists the camera's own properties for GetProperties and SetProperty, and
+records acquisitions to DCIMG files in a directory set by SetSaveDirectory. DcamFrameCapture, beneath it, drives the
 camera's frame grabber: the driver writes each frame straight into the
 buffer. Windows only, and DCAM-API must be installed. Nothing in the core
 imports this package.
@@ -12,22 +11,18 @@ imports this package.
 
 from stacscope.adapters.dcam._api import DcamUnavailable
 from stacscope.adapters.dcam.camera import OrcaFlash
-from stacscope.adapters.dcam.capture import DcamError, DcamFrameCapture, RecordingStatus
-from stacscope.adapters.dcam.messages import (
-    GetProperty,
-    PropertyValue,
-    SetProperty,
-    SetPropertyLabel,
+from stacscope.adapters.dcam.capture import (
+    DcamError,
+    DcamFrameCapture,
+    PropertyAttributes,
+    RecordingStatus,
 )
 
 __all__ = [
     "DcamError",
     "DcamFrameCapture",
     "DcamUnavailable",
-    "GetProperty",
     "OrcaFlash",
-    "PropertyValue",
+    "PropertyAttributes",
     "RecordingStatus",
-    "SetProperty",
-    "SetPropertyLabel",
 ]

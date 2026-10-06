@@ -13,8 +13,6 @@ import dataclasses
 
 import pytest
 
-import stacscope.adapters.dcam.messages  # noqa: F401 - registers the cameras' messages
-import stacscope.adapters.ueye.messages  # noqa: F401
 from stacscope.core.protocol import MESSAGES, MessageRegistry
 
 CLIENT_SENDABLE = {
@@ -29,18 +27,10 @@ CLIENT_SENDABLE = {
     # any recording or triggered device
     "SetSaveDirectory",
     "GetShortestTriggerPeriod",
-    # the Flash
-    "SetProperty",
-    "SetPropertyLabel",
+    # any device: its properties
+    "GetProperties",
     "GetProperty",
-    # the uEye
-    "SetPixelFormat",
-    "SetAOI",
-    "SetPixelClock",
-    "SetFrameRate",
-    "SetExposure",
-    "SetTrigger",
-    "GetCameraSettings",
+    "SetProperty",
 }
 
 
